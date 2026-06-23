@@ -698,6 +698,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "StoreOutputBF16(" in lowrank_header
     assert "StoreAccumulatorFP32(" in lowrank_header
     assert "AccumulateScalarBF16(" in lowrank_header
+    assert "RunScalarTileBF16(" in lowrank_header
     assert "BuildDownStagePlan() const" in lowrank_header
     assert "BuildPrimaryUpStagePlan() const" in lowrank_header
     assert "BuildSecondUpStagePlan() const" in lowrank_header
@@ -743,11 +744,18 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "LoadAccumulatorFP32(tilePlan, rowOffset, outputOffset)" in lowrank_header
     assert "static_cast<float>(LoadInputBF16(tilePlan, rowOffset, kOffset))" in lowrank_header
     assert "static_cast<float>(LoadFactorBF16(tilePlan, outputOffset, kOffset))" in lowrank_header
+    assert "for (uint32_t rowOffset = 0; rowOffset < tilePlan.tile.rowCount; ++rowOffset)" in lowrank_header
+    assert "for (uint32_t outputOffset = 0; outputOffset < tilePlan.tile.outputColumnCount; ++outputOffset)" in lowrank_header
+    assert "const float accumulator = AccumulateScalarBF16(tilePlan, rowOffset, outputOffset)" in lowrank_header
+    assert "if (tilePlan.accumulatesLastKTile)" in lowrank_header
+    assert "StoreOutputBF16(tilePlan, rowOffset, outputOffset, static_cast<bfloat16_t>(accumulator))" in lowrank_header
+    assert "StoreAccumulatorFP32(tilePlan, rowOffset, outputOffset, accumulator)" in lowrank_header
     assert "const uint32_t coreIdx = AscendC::GetBlockIdx()" in lowrank_header
     assert "const uint32_t runtimeCoreCount = AscendC::GetBlockNum()" in lowrank_header
     assert "const SVDQLowRankCoreTileRange tileRange = CoreTileRange(coreIdx, scheduledCoreCount)" in lowrank_header
     assert "const SVDQLowRankTilePlan tilePlan = TilePlan(tileRange.tileStart + tileOffset)" in lowrank_header
     assert "const SVDQLowRankTileTensorPlan tileTensorPlan = BuildTileTensorPlan(tilePlan)" in lowrank_header
+    assert "if (!RunScalarTileBF16(tileTensorPlan))" in lowrank_header
     assert "rowTiles * StageColumnTileCount(stage) * StageKTileCount(stage)" in lowrank_header
     assert "const uint32_t tilesPerRow = columnTiles * kTiles" in lowrank_header
     assert "Min(args_.tiling.outputColumnTile, stage.outputColumns - outputColumnOffset)" in lowrank_header

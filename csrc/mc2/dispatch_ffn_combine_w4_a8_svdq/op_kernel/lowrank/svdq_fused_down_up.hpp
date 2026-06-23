@@ -420,6 +420,24 @@ public:
         return accumulator;
     }
 
+    __aicore__ inline bool RunScalarTileBF16(const SVDQLowRankTileTensorPlan& tilePlan) const
+    {
+        if (!tilePlan.HasWork()) {
+            return false;
+        }
+        for (uint32_t rowOffset = 0; rowOffset < tilePlan.tile.rowCount; ++rowOffset) {
+            for (uint32_t outputOffset = 0; outputOffset < tilePlan.tile.outputColumnCount; ++outputOffset) {
+                const float accumulator = AccumulateScalarBF16(tilePlan, rowOffset, outputOffset);
+                if (tilePlan.accumulatesLastKTile) {
+                    StoreOutputBF16(tilePlan, rowOffset, outputOffset, static_cast<bfloat16_t>(accumulator));
+                } else {
+                    StoreAccumulatorFP32(tilePlan, rowOffset, outputOffset, accumulator);
+                }
+            }
+        }
+        return true;
+    }
+
     __aicore__ inline bool IsImplemented() const
     {
         return false;
@@ -453,6 +471,9 @@ public:
             }
             const SVDQLowRankTileTensorPlan tileTensorPlan = BuildTileTensorPlan(tilePlan);
             if (!tileTensorPlan.HasWork()) {
+                return;
+            }
+            if (!RunScalarTileBF16(tileTensorPlan)) {
                 return;
             }
         }
