@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_EVIDENCE_DIR = Path("/root/workspace/lza/svdq_clean_evidence")
 
 OP_ROOT = Path("csrc/mc2/dispatch_ffn_combine_w4_a8_svdq")
+OP_CMAKE = OP_ROOT / "op_host/CMakeLists.txt"
 HOST_TILING = OP_ROOT / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp"
 KERNEL_CONTRACT = OP_ROOT / "op_kernel/dispatch_ffn_combine_w4_a8_svdq.h"
 KERNEL_TILING = OP_ROOT / "op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h"
@@ -380,6 +381,7 @@ LOWRANK_INVOCATIONS = [
 
 def _read_sources(repo_root: Path) -> dict[str, str]:
     return {
+        "op_cmake": (repo_root / OP_CMAKE).read_text(encoding="utf-8"),
         "host_tiling": (repo_root / HOST_TILING).read_text(encoding="utf-8"),
         "kernel_contract": (repo_root / KERNEL_CONTRACT).read_text(encoding="utf-8"),
         "kernel_tiling": (repo_root / KERNEL_TILING).read_text(encoding="utf-8"),
@@ -426,6 +428,17 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         "host_tiling_builds_sync_flags": "BuildSyncFlagTable(tilingData)" in sources["host_tiling"],
         "host_tiling_builds_bf16_stage_shapes": "BuildBF16StageShapeTable(tilingData)" in sources["host_tiling"],
         "host_tiling_builds_lowrank_invocations": "BuildLowRankInvocationTable(tilingData)" in sources["host_tiling"],
+        "op_cmake_has_local_debug_readback_option": (
+            "option(SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK" in sources["op_cmake"]
+        ),
+        "op_cmake_debug_readback_defaults_off": (
+            "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK)" in sources["op_cmake"]
+            and "OFF)" in sources["op_cmake"]
+        ),
+        "op_cmake_scopes_debug_readback_to_svdq_op": (
+            "${_DISPATCH_FFN_SVDQ_DEBUG_OPTS}" in sources["op_cmake"]
+            and "OP_NAME DispatchFFNCombineW4A8SVDQ" in sources["op_cmake"]
+        ),
         "kernel_resolves_workspace_addresses": "WorkspaceAddress(uint32_t regionId)" in sources["kernel_contract"],
         "kernel_exposes_bf16_stage_contracts": "BF16StageContract(uint32_t stageId)" in sources["kernel_contract"],
         "lowrank_helper_fail_closed": "IsImplemented() const\n    {\n        return false;"
@@ -511,6 +524,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
         "schema_version": 1,
         "operator": "DispatchFFNCombineW4A8SVDQ",
         "source_files": {
+            "op_cmake": str(OP_CMAKE),
             "host_tiling": str(HOST_TILING),
             "kernel_contract": str(KERNEL_CONTRACT),
             "kernel_tiling": str(KERNEL_TILING),
@@ -524,6 +538,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
         "lowrank_tile_shape": {"m": 16, "n": 64, "k": 64},
         "debug_readback_contract": {
             "compile_macro": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK",
+            "cmake_option": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK",
             "default_enabled": False,
             "production_abi_changed": False,
             "readback_region": "lowRankAccumulator region selected by invocation.accumulatorRegionId",
@@ -532,6 +547,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "final_tile_semantics": "final full-K FP32 accumulator is mirrored before BF16 output conversion",
             "partial_tile_semantics": "non-final K-tile partial sums are mirrored for host-readable debug validation",
             "source_proof": [
+                "op_cmake_has_local_debug_readback_option",
+                "op_cmake_debug_readback_defaults_off",
+                "op_cmake_scopes_debug_readback_to_svdq_op",
                 "lowrank_mmad_debug_readback_macro",
                 "lowrank_mmad_debug_readback_uses_fp32_l0c_to_gm",
                 "lowrank_mmad_debug_readback_targets_accumulator_gm",

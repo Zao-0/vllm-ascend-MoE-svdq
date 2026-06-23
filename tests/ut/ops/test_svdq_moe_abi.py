@@ -223,6 +223,10 @@ def test_svdq_cann_op_host_surface_uses_canonical_five_factor_abi():
 
     assert "DispatchFFNCombineW4A8SVDQ" in cmake
     assert "dispatch_ffn_combine_w4_a8_svdq" in cmake
+    assert "option(SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK" in cmake
+    assert "OFF)" in cmake
+    assert "list(APPEND _DISPATCH_FFN_SVDQ_DEBUG_OPTS -DSVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK)" in cmake
+    assert "${_DISPATCH_FFN_SVDQ_DEBUG_OPTS}" in cmake
     assert "aclnnDispatchFFNCombineW4A8SVDQGetWorkspaceSize" in header
     assert "aclnnInnerDispatchFFNCombineW4A8SVDQGetWorkspaceSize" in wrapper
     assert "OP_ADD(DispatchFFNCombineW4A8SVDQ)" in op_def
@@ -1099,6 +1103,9 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     loaded = json.loads(output.read_text(encoding="utf-8"))
 
     assert loaded["operator"] == "DispatchFFNCombineW4A8SVDQ"
+    assert loaded["source_files"]["op_cmake"] == (
+        "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_host/CMakeLists.txt"
+    )
     assert loaded["counts"] == {
         "factor_abi": 5,
         "workspace_regions": 14,
@@ -1122,6 +1129,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert all(loaded["source_proof"].values())
     assert loaded["debug_readback_contract"] == {
         "compile_macro": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK",
+        "cmake_option": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK",
         "default_enabled": False,
         "production_abi_changed": False,
         "readback_region": "lowRankAccumulator region selected by invocation.accumulatorRegionId",
@@ -1130,6 +1138,9 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "final_tile_semantics": "final full-K FP32 accumulator is mirrored before BF16 output conversion",
         "partial_tile_semantics": "non-final K-tile partial sums are mirrored for host-readable debug validation",
         "source_proof": [
+            "op_cmake_has_local_debug_readback_option",
+            "op_cmake_debug_readback_defaults_off",
+            "op_cmake_scopes_debug_readback_to_svdq_op",
             "lowrank_mmad_debug_readback_macro",
             "lowrank_mmad_debug_readback_uses_fp32_l0c_to_gm",
             "lowrank_mmad_debug_readback_targets_accumulator_gm",
