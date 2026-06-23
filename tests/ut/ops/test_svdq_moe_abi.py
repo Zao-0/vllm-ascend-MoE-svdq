@@ -679,6 +679,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "SVDQLowRankExpertPlan" in lowrank_header
     assert "SVDQLowRankCoreTileRange" in lowrank_header
     assert "SVDQLowRankTilePlan" in lowrank_header
+    assert "SVDQLowRankOutputTilePlan" in lowrank_header
     assert "SVDQLowRankTileTensorPlan" in lowrank_header
     assert "SVDQLowRankMmadTilePlan" in lowrank_header
     assert "SVDQLowRankMmadBufferPlan" in lowrank_header
@@ -707,7 +708,9 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "StageTileCount(uint32_t stageIndex)" in lowrank_header
     assert "InvocationTileCount() const" in lowrank_header
     assert "CoreTileRange(uint32_t coreIdx, uint32_t coreCount)" in lowrank_header
-    assert "TilePlan(uint32_t tileId)" in lowrank_header
+    assert "OutputTilePlan(uint32_t tileId)" in lowrank_header
+    assert "OutputTileKTileCount(const SVDQLowRankOutputTilePlan& outputTilePlan)" in lowrank_header
+    assert "KTilePlan(" in lowrank_header
     assert "BuildTileTensorPlan(" in lowrank_header
     assert "BuildMmadTilePlan(" in lowrank_header
     assert "BuildMmadBufferPlan(" in lowrank_header
@@ -849,7 +852,9 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "l1_to_l0_b<ArchType::ASCEND_V220, bfloat16_t, true, DataFormatT::ZN, DataFormatT::NZ>" in lowrank_header
     assert "mmad<ArchType::ASCEND_V220, bfloat16_t, bfloat16_t, float, false>" in lowrank_header
     assert "l0c_to_gm<ArchType::ASCEND_V220, DataFormatT::ND, bfloat16_t, float>" in lowrank_header
-    assert "l0c_to_gm<ArchType::ASCEND_V220, DataFormatT::ND, float, float>" in lowrank_header
+    assert "The cube path keeps partial K-loop sums resident in L0C" in lowrank_header
+    assert "if (!pipelinePlan.storesOutput)" in lowrank_header
+    assert "return true" in lowrank_header
     assert "AscendC::PipeBarrier<PIPE_MTE2>()" in lowrank_header
     assert "AscendC::PipeBarrier<PIPE_MTE1>()" in lowrank_header
     assert "AscendC::PipeBarrier<PIPE_M>()" in lowrank_header
@@ -859,7 +864,10 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "const uint32_t coreIdx = AscendC::GetBlockIdx()" in lowrank_header
     assert "const uint32_t runtimeCoreCount = AscendC::GetBlockNum()" in lowrank_header
     assert "const SVDQLowRankCoreTileRange tileRange = CoreTileRange(coreIdx, scheduledCoreCount)" in lowrank_header
-    assert "const SVDQLowRankTilePlan tilePlan = TilePlan(tileRange.tileStart + tileOffset)" in lowrank_header
+    assert "const SVDQLowRankOutputTilePlan outputTilePlan = OutputTilePlan(tileRange.tileStart + tileOffset)" in lowrank_header
+    assert "const uint32_t kTileCount = OutputTileKTileCount(outputTilePlan)" in lowrank_header
+    assert "for (uint32_t kTileIndex = 0; kTileIndex < kTileCount; ++kTileIndex)" in lowrank_header
+    assert "const SVDQLowRankTilePlan tilePlan = KTilePlan(outputTilePlan, kTileIndex)" in lowrank_header
     assert "const SVDQLowRankTileTensorPlan tileTensorPlan = BuildTileTensorPlan(tilePlan)" in lowrank_header
     assert "const SVDQLowRankMmadTilePlan mm" in lowrank_header
     assert "if (!mmadTilePlan.HasCompatibleShape())" in lowrank_header
@@ -869,10 +877,11 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "if (!pipelinePlan.HasCompletePipeline())" in lowrank_header
     assert "if (!RunPlannedTileBF16(pipelinePlan))" in lowrank_header
     assert "return RunScalarTileBF16(pipelinePlan.buffer.tile.tile)" in lowrank_header
-    assert "rowTiles * StageColumnTileCount(stage) * StageKTileCount(stage)" in lowrank_header
-    assert "const uint32_t tilesPerRow = columnTiles * kTiles" in lowrank_header
+    assert "rowTiles * StageColumnTileCount(stage)" in lowrank_header
+    assert "const uint32_t tilesPerRow = columnTiles" in lowrank_header
     assert "Min(args_.tiling.outputColumnTile, stage.outputColumns - outputColumnOffset)" in lowrank_header
     assert "Min(args_.tiling.kTile, stage.inputColumns - kColumnOffset)" in lowrank_header
+    assert "kColumnOffset >= stage.inputColumns" in lowrank_header
     assert "input BF16 -> down factor GEMM -> rank tile -> up factor GEMM -> projection BF16 GM" in lowrank_header
     assert " / 2" not in lowrank_header
     assert "total_rank" not in lowrank_header

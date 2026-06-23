@@ -101,6 +101,20 @@ struct SVDQLowRankTilePlan {
     }
 };
 
+struct SVDQLowRankOutputTilePlan {
+    SVDQLowRankExpertPlan expert;
+    uint32_t tileId;
+    uint32_t rowStart;
+    uint32_t rowCount;
+    uint32_t outputColumnOffset;
+    uint32_t outputColumnCount;
+
+    __aicore__ inline bool HasWork() const
+    {
+        return expert.HasWork() && rowCount > 0 && outputColumnCount > 0;
+    }
+};
+
 struct SVDQLowRankTileTensorPlan {
     SVDQLowRankTilePlan tile;
     GM_ADDR input;
@@ -415,7 +429,7 @@ public:
     {
         const SVDQLowRankStagePlan stage = StagePlan(stageIndex);
         const uint32_t rowTiles = ExpertRowTileCount(ExpertTokenCount(expertId));
-        return rowTiles * StageColumnTileCount(stage) * StageKTileCount(stage);
+        return rowTiles * StageColumnTileCount(stage);
     }
 
     __aicore__ inline uint32_t StageTileCount(uint32_t stageIndex) const
@@ -449,14 +463,13 @@ public:
         return {tileStart, baseTiles + extra};
     }
 
-    __aicore__ inline SVDQLowRankTilePlan TilePlan(uint32_t tileId) const
+    __aicore__ inline SVDQLowRankOutputTilePlan OutputTilePlan(uint32_t tileId) const
     {
         uint32_t remainingTile = tileId;
         for (uint32_t stageIndex = 0; stageIndex < StageCount(); ++stageIndex) {
             const SVDQLowRankStagePlan stage = StagePlan(stageIndex);
             const uint32_t columnTiles = StageColumnTileCount(stage);
-            const uint32_t kTiles = StageKTileCount(stage);
-            const uint32_t tilesPerRow = columnTiles * kTiles;
+            const uint32_t tilesPerRow = columnTiles;
             for (uint32_t expertId = 0; expertId < ExpertCount(); ++expertId) {
                 const SVDQLowRankExpertPlan expertPlan = ExpertStagePlan(stageIndex, expertId);
                 const uint32_t rowTiles = ExpertRowTileCount(expertPlan.tokenCount);
@@ -468,24 +481,51 @@ public:
 
                 const uint32_t rowTileIndex = remainingTile / tilesPerRow;
                 const uint32_t inRowTileOffset = remainingTile - rowTileIndex * tilesPerRow;
-                const uint32_t outputTileIndex = inRowTileOffset / kTiles;
-                const uint32_t kTileIndex = inRowTileOffset - outputTileIndex * kTiles;
+                const uint32_t outputTileIndex = inRowTileOffset;
                 const uint32_t rowOffset = rowTileIndex * args_.tiling.rowTile;
                 const uint32_t outputColumnOffset = outputTileIndex * args_.tiling.outputColumnTile;
-                const uint32_t kColumnOffset = kTileIndex * args_.tiling.kTile;
-                return SVDQLowRankTilePlan{
+                return SVDQLowRankOutputTilePlan{
                     expertPlan,
                     tileId,
                     expertPlan.tokenStart + rowOffset,
                     Min(args_.tiling.rowTile, expertPlan.tokenCount - rowOffset),
                     outputColumnOffset,
                     Min(args_.tiling.outputColumnTile, stage.outputColumns - outputColumnOffset),
-                    kColumnOffset,
-                    Min(args_.tiling.kTile, stage.inputColumns - kColumnOffset),
                 };
             }
         }
         return {};
+    }
+
+    __aicore__ inline uint32_t OutputTileKTileCount(const SVDQLowRankOutputTilePlan& outputTilePlan) const
+    {
+        if (!outputTilePlan.HasWork()) {
+            return 0;
+        }
+        return StageKTileCount(outputTilePlan.expert.stage);
+    }
+
+    __aicore__ inline SVDQLowRankTilePlan KTilePlan(
+        const SVDQLowRankOutputTilePlan& outputTilePlan, uint32_t kTileIndex) const
+    {
+        if (!outputTilePlan.HasWork()) {
+            return {};
+        }
+        const SVDQLowRankStagePlan& stage = outputTilePlan.expert.stage;
+        const uint32_t kColumnOffset = kTileIndex * args_.tiling.kTile;
+        if (kColumnOffset >= stage.inputColumns) {
+            return {};
+        }
+        return SVDQLowRankTilePlan{
+            outputTilePlan.expert,
+            outputTilePlan.tileId,
+            outputTilePlan.rowStart,
+            outputTilePlan.rowCount,
+            outputTilePlan.outputColumnOffset,
+            outputTilePlan.outputColumnCount,
+            kColumnOffset,
+            Min(args_.tiling.kTile, stage.inputColumns - kColumnOffset),
+        };
     }
 
     __aicore__ inline SVDQLowRankTileTensorPlan BuildTileTensorPlan(
@@ -689,14 +729,15 @@ public:
             l0C, l0A, l0B, tile.mActual, tile.nActual, tile.kActual, initC);
         AscendC::PipeBarrier<PIPE_M>();
 
-        if (pipelinePlan.storesOutput) {
-            (void)l0c_to_gm<ArchType::ASCEND_V220, DataFormatT::ND, bfloat16_t, float>(
-                outputGm, l0C, tile.mActual, tile.nActual, tile.nRound, tensorPlan.outputStrideColumns);
-        } else {
-            (void)l0c_to_gm<ArchType::ASCEND_V220, DataFormatT::ND, float, float>(
-                accumulatorGm, l0C, tile.mActual, tile.nActual, tile.nRound,
-                tensorPlan.accumulatorStrideColumns);
+        if (!pipelinePlan.storesOutput) {
+            (void)accumulatorGm;
+            // The cube path keeps partial K-loop sums resident in L0C. The
+            // scalar fallback uses the GM accumulator path for host-readable
+            // validation and non-CUBE builds.
+            return true;
         }
+        (void)l0c_to_gm<ArchType::ASCEND_V220, DataFormatT::ND, bfloat16_t, float>(
+            outputGm, l0C, tile.mActual, tile.nActual, tile.nRound, tensorPlan.outputStrideColumns);
         return true;
 #else
         return false;
@@ -742,28 +783,35 @@ public:
         const uint32_t scheduledCoreCount = args_.tiling.coreCount <= runtimeCoreCount ? args_.tiling.coreCount : runtimeCoreCount;
         const SVDQLowRankCoreTileRange tileRange = CoreTileRange(coreIdx, scheduledCoreCount);
         for (uint32_t tileOffset = 0; tileOffset < tileRange.tileCount; ++tileOffset) {
-            const SVDQLowRankTilePlan tilePlan = TilePlan(tileRange.tileStart + tileOffset);
-            if (!tilePlan.HasWork()) {
+            const SVDQLowRankOutputTilePlan outputTilePlan = OutputTilePlan(tileRange.tileStart + tileOffset);
+            if (!outputTilePlan.HasWork()) {
                 return;
             }
-            const SVDQLowRankTileTensorPlan tileTensorPlan = BuildTileTensorPlan(tilePlan);
-            if (!tileTensorPlan.HasWork()) {
-                return;
-            }
-            const SVDQLowRankMmadTilePlan mmadTilePlan = BuildMmadTilePlan(tileTensorPlan);
-            if (!mmadTilePlan.HasCompatibleShape()) {
-                return;
-            }
-            const SVDQLowRankMmadBufferPlan bufferPlan = BuildMmadBufferPlan(mmadTilePlan);
-            if (!bufferPlan.HasCompleteFootprint()) {
-                return;
-            }
-            const SVDQLowRankMmadPipelinePlan pipelinePlan = BuildMmadPipelinePlan(bufferPlan);
-            if (!pipelinePlan.HasCompletePipeline()) {
-                return;
-            }
-            if (!RunPlannedTileBF16(pipelinePlan)) {
-                return;
+            const uint32_t kTileCount = OutputTileKTileCount(outputTilePlan);
+            for (uint32_t kTileIndex = 0; kTileIndex < kTileCount; ++kTileIndex) {
+                const SVDQLowRankTilePlan tilePlan = KTilePlan(outputTilePlan, kTileIndex);
+                if (!tilePlan.HasWork()) {
+                    return;
+                }
+                const SVDQLowRankTileTensorPlan tileTensorPlan = BuildTileTensorPlan(tilePlan);
+                if (!tileTensorPlan.HasWork()) {
+                    return;
+                }
+                const SVDQLowRankMmadTilePlan mmadTilePlan = BuildMmadTilePlan(tileTensorPlan);
+                if (!mmadTilePlan.HasCompatibleShape()) {
+                    return;
+                }
+                const SVDQLowRankMmadBufferPlan bufferPlan = BuildMmadBufferPlan(mmadTilePlan);
+                if (!bufferPlan.HasCompleteFootprint()) {
+                    return;
+                }
+                const SVDQLowRankMmadPipelinePlan pipelinePlan = BuildMmadPipelinePlan(bufferPlan);
+                if (!pipelinePlan.HasCompletePipeline()) {
+                    return;
+                }
+                if (!RunPlannedTileBF16(pipelinePlan)) {
+                    return;
+                }
             }
         }
         // The fused AIC math body will keep the low-rank bottleneck on-chip:
