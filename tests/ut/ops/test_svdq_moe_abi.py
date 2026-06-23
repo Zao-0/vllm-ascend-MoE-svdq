@@ -672,6 +672,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "SVDQLowRankTilePlan" in lowrank_header
     assert "SVDQLowRankTileTensorPlan" in lowrank_header
     assert "SVDQLowRankMmadTilePlan" in lowrank_header
+    assert "SVDQLowRankMmadBufferPlan" in lowrank_header
     assert "SVDQ_LOWRANK_MMAD_M_TILE = 16" in lowrank_header
     assert "SVDQ_LOWRANK_MMAD_N_TILE = 64" in lowrank_header
     assert "SVDQ_LOWRANK_MMAD_K_TILE = 64" in lowrank_header
@@ -696,7 +697,9 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "TilePlan(uint32_t tileId)" in lowrank_header
     assert "BuildTileTensorPlan(" in lowrank_header
     assert "BuildMmadTilePlan(" in lowrank_header
+    assert "BuildMmadBufferPlan(" in lowrank_header
     assert "HasCompatibleShape() const" in lowrank_header
+    assert "HasCompleteFootprint() const" in lowrank_header
     assert "InputElementOffset(" in lowrank_header
     assert "FactorElementOffset(" in lowrank_header
     assert "OutputElementOffset(" in lowrank_header
@@ -708,6 +711,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "StoreAccumulatorFP32(" in lowrank_header
     assert "AccumulateScalarBF16(" in lowrank_header
     assert "RunScalarTileBF16(" in lowrank_header
+    assert "RunPlannedTileBF16(" in lowrank_header
     assert "BuildDownStagePlan() const" in lowrank_header
     assert "BuildPrimaryUpStagePlan() const" in lowrank_header
     assert "BuildSecondUpStagePlan() const" in lowrank_header
@@ -760,6 +764,22 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "tile.factorStrideColumns >= tile.tile.kColumnOffset + kActual" in lowrank_header
     assert "tile.outputStrideColumns >= tile.tile.outputColumnOffset + nActual" in lowrank_header
     assert "tile.accumulatorStrideColumns >= tile.tile.outputColumnOffset + nActual" in lowrank_header
+    assert "inputElementCount == tile.mRound * tile.kRound" in lowrank_header
+    assert "factorElementCount == tile.nRound * tile.kRound" in lowrank_header
+    assert "outputElementCount == tile.mRound * tile.nRound" in lowrank_header
+    assert "l1InputBytes == BytesForBF16Elements(inputElementCount)" in lowrank_header
+    assert "l1FactorBytes == BytesForBF16Elements(factorElementCount)" in lowrank_header
+    assert "l0ABytes == BytesForBF16Elements(inputElementCount)" in lowrank_header
+    assert "l0BBytes == BytesForBF16Elements(factorElementCount)" in lowrank_header
+    assert "l0CBytes == BytesForFP32Elements(outputElementCount)" in lowrank_header
+    assert "storesAccumulator != storesOutput" in lowrank_header
+    assert "return elementCount * SVDQ_LOWRANK_BF16_BYTES" in lowrank_header
+    assert "return elementCount * sizeof(float)" in lowrank_header
+    assert "const uint32_t inputElementCount = tilePlan.mRound * tilePlan.kRound" in lowrank_header
+    assert "const uint32_t factorElementCount = tilePlan.nRound * tilePlan.kRound" in lowrank_header
+    assert "const uint32_t outputElementCount = tilePlan.mRound * tilePlan.nRound" in lowrank_header
+    assert "!tilePlan.tile.accumulatesLastKTile" in lowrank_header
+    assert "tilePlan.tile.accumulatesLastKTile" in lowrank_header
     assert "input.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tilePlan.input))" in lowrank_header
     assert "factor.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tilePlan.factor))" in lowrank_header
     assert "output.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tilePlan.output))" in lowrank_header
@@ -783,7 +803,10 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "const SVDQLowRankTileTensorPlan tileTensorPlan = BuildTileTensorPlan(tilePlan)" in lowrank_header
     assert "const SVDQLowRankMmadTilePlan mm" in lowrank_header
     assert "if (!mmadTilePlan.HasCompatibleShape())" in lowrank_header
-    assert "if (!RunScalarTileBF16(tileTensorPlan))" in lowrank_header
+    assert "const SVDQLowRankMmadBufferPlan bufferPlan = BuildMmadBufferPlan(mmadTilePlan)" in lowrank_header
+    assert "if (!bufferPlan.HasCompleteFootprint())" in lowrank_header
+    assert "if (!RunPlannedTileBF16(bufferPlan))" in lowrank_header
+    assert "return RunScalarTileBF16(bufferPlan.tile.tile)" in lowrank_header
     assert "rowTiles * StageColumnTileCount(stage) * StageKTileCount(stage)" in lowrank_header
     assert "const uint32_t tilesPerRow = columnTiles * kTiles" in lowrank_header
     assert "Min(args_.tiling.outputColumnTile, stage.outputColumns - outputColumnOffset)" in lowrank_header

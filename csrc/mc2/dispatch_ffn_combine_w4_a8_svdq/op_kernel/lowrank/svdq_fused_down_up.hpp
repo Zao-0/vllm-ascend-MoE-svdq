@@ -137,6 +137,43 @@ struct SVDQLowRankMmadTilePlan {
     }
 };
 
+struct SVDQLowRankMmadBufferPlan {
+    SVDQLowRankMmadTilePlan tile;
+    uint32_t inputElementCount;
+    uint32_t factorElementCount;
+    uint32_t outputElementCount;
+    uint32_t l1InputBytes;
+    uint32_t l1FactorBytes;
+    uint32_t l0ABytes;
+    uint32_t l0BBytes;
+    uint32_t l0CBytes;
+    bool storesAccumulator;
+    bool storesOutput;
+
+    __aicore__ inline bool HasCompleteFootprint() const
+    {
+        return tile.HasCompatibleShape() && inputElementCount == tile.mRound * tile.kRound &&
+               factorElementCount == tile.nRound * tile.kRound &&
+               outputElementCount == tile.mRound * tile.nRound &&
+               l1InputBytes == BytesForBF16Elements(inputElementCount) &&
+               l1FactorBytes == BytesForBF16Elements(factorElementCount) &&
+               l0ABytes == BytesForBF16Elements(inputElementCount) &&
+               l0BBytes == BytesForBF16Elements(factorElementCount) &&
+               l0CBytes == BytesForFP32Elements(outputElementCount) &&
+               storesAccumulator != storesOutput;
+    }
+
+    __aicore__ inline static uint32_t BytesForBF16Elements(uint32_t elementCount)
+    {
+        return elementCount * SVDQ_LOWRANK_BF16_BYTES;
+    }
+
+    __aicore__ inline static uint32_t BytesForFP32Elements(uint32_t elementCount)
+    {
+        return elementCount * sizeof(float);
+    }
+};
+
 struct SVDQFusedDownUpArgs {
     GM_ADDR input;
     GM_ADDR downFactor;
@@ -246,6 +283,30 @@ public:
             MatrixAddress(inputBase, tokenStart, stage.inputStrideColumns, stage.inputColumnOffset),
             FactorAddress(stage, expertId),
             MatrixAddress(args_.output, tokenStart, stage.outputStrideColumns, stage.outputColumnOffset),
+        };
+    }
+
+    __aicore__ inline SVDQLowRankMmadBufferPlan BuildMmadBufferPlan(
+        const SVDQLowRankMmadTilePlan& tilePlan) const
+    {
+        if (!tilePlan.HasCompatibleShape()) {
+            return {};
+        }
+        const uint32_t inputElementCount = tilePlan.mRound * tilePlan.kRound;
+        const uint32_t factorElementCount = tilePlan.nRound * tilePlan.kRound;
+        const uint32_t outputElementCount = tilePlan.mRound * tilePlan.nRound;
+        return SVDQLowRankMmadBufferPlan{
+            tilePlan,
+            inputElementCount,
+            factorElementCount,
+            outputElementCount,
+            SVDQLowRankMmadBufferPlan::BytesForBF16Elements(inputElementCount),
+            SVDQLowRankMmadBufferPlan::BytesForBF16Elements(factorElementCount),
+            SVDQLowRankMmadBufferPlan::BytesForBF16Elements(inputElementCount),
+            SVDQLowRankMmadBufferPlan::BytesForBF16Elements(factorElementCount),
+            SVDQLowRankMmadBufferPlan::BytesForFP32Elements(outputElementCount),
+            !tilePlan.tile.accumulatesLastKTile,
+            tilePlan.tile.accumulatesLastKTile,
         };
     }
 
@@ -498,6 +559,14 @@ public:
         return true;
     }
 
+    __aicore__ inline bool RunPlannedTileBF16(const SVDQLowRankMmadBufferPlan& bufferPlan) const
+    {
+        if (!bufferPlan.HasCompleteFootprint()) {
+            return false;
+        }
+        return RunScalarTileBF16(bufferPlan.tile.tile);
+    }
+
     __aicore__ inline bool IsImplemented() const
     {
         return false;
@@ -537,7 +606,11 @@ public:
             if (!mmadTilePlan.HasCompatibleShape()) {
                 return;
             }
-            if (!RunScalarTileBF16(tileTensorPlan)) {
+            const SVDQLowRankMmadBufferPlan bufferPlan = BuildMmadBufferPlan(mmadTilePlan);
+            if (!bufferPlan.HasCompleteFootprint()) {
+                return;
+            }
+            if (!RunPlannedTileBF16(bufferPlan)) {
                 return;
             }
         }
