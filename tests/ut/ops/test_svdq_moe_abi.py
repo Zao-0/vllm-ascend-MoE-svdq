@@ -673,12 +673,16 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "SVDQLowRankTileTensorPlan" in lowrank_header
     assert "SVDQLowRankMmadTilePlan" in lowrank_header
     assert "SVDQLowRankMmadBufferPlan" in lowrank_header
+    assert "SVDQLowRankMmadPipelinePlan" in lowrank_header
     assert "SVDQ_LOWRANK_MMAD_M_TILE = 16" in lowrank_header
     assert "SVDQ_LOWRANK_MMAD_N_TILE = 64" in lowrank_header
     assert "SVDQ_LOWRANK_MMAD_K_TILE = 64" in lowrank_header
     assert "SVDQ_LOWRANK_MMAD_M_ALIGNMENT = 16" in lowrank_header
     assert "SVDQ_LOWRANK_MMAD_N_ALIGNMENT = 16" in lowrank_header
     assert "SVDQ_LOWRANK_MMAD_K_ALIGNMENT = 16" in lowrank_header
+    assert "SVDQ_LOWRANK_MMAD_FORMAT_ND = 0" in lowrank_header
+    assert "SVDQ_LOWRANK_MMAD_FORMAT_NZ = 1" in lowrank_header
+    assert "SVDQ_LOWRANK_MMAD_FORMAT_ZN = 2" in lowrank_header
     assert "TotalRankColumns() const" in lowrank_header
     assert "PrimaryOutputColumns() const" in lowrank_header
     assert "StageCount() const" in lowrank_header
@@ -698,8 +702,10 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "BuildTileTensorPlan(" in lowrank_header
     assert "BuildMmadTilePlan(" in lowrank_header
     assert "BuildMmadBufferPlan(" in lowrank_header
+    assert "BuildMmadPipelinePlan(" in lowrank_header
     assert "HasCompatibleShape() const" in lowrank_header
     assert "HasCompleteFootprint() const" in lowrank_header
+    assert "HasCompletePipeline() const" in lowrank_header
     assert "InputElementOffset(" in lowrank_header
     assert "FactorElementOffset(" in lowrank_header
     assert "OutputElementOffset(" in lowrank_header
@@ -780,6 +786,26 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "const uint32_t outputElementCount = tilePlan.mRound * tilePlan.nRound" in lowrank_header
     assert "!tilePlan.tile.accumulatesLastKTile" in lowrank_header
     assert "tilePlan.tile.accumulatesLastKTile" in lowrank_header
+    assert "l1InputOffset == 0" in lowrank_header
+    assert "l1FactorOffset == buffer.l1InputBytes" in lowrank_header
+    assert "l0AOffset == 0" in lowrank_header
+    assert "l0BOffset == 0" in lowrank_header
+    assert "l0COffset == 0" in lowrank_header
+    assert "inputGmFormat == SVDQ_LOWRANK_MMAD_FORMAT_ND" in lowrank_header
+    assert "factorGmFormat == SVDQ_LOWRANK_MMAD_FORMAT_ND" in lowrank_header
+    assert "inputL1Format == SVDQ_LOWRANK_MMAD_FORMAT_NZ" in lowrank_header
+    assert "factorL1Format == SVDQ_LOWRANK_MMAD_FORMAT_NZ" in lowrank_header
+    assert "l0AFormat == SVDQ_LOWRANK_MMAD_FORMAT_NZ" in lowrank_header
+    assert "l0BFormat == SVDQ_LOWRANK_MMAD_FORMAT_ZN" in lowrank_header
+    assert "outputFormat == SVDQ_LOWRANK_MMAD_FORMAT_ND" in lowrank_header
+    assert "loadInputGmToL1 &&" in lowrank_header
+    assert "loadFactorGmToL1 && loadInputL1ToL0A && loadFactorL1ToL0B" in lowrank_header
+    assert "factorLoadsTransposed && runMmad && storeL0C" in lowrank_header
+    assert "initAccumulator == buffer.tile.tile.accumulatesFirstKTile" in lowrank_header
+    assert "storesAccumulator == buffer.storesAccumulator" in lowrank_header
+    assert "storesOutput == buffer.storesOutput" in lowrank_header
+    assert "bufferPlan.l1InputBytes" in lowrank_header
+    assert "bufferPlan.tile.tile.accumulatesFirstKTile" in lowrank_header
     assert "input.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tilePlan.input))" in lowrank_header
     assert "factor.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tilePlan.factor))" in lowrank_header
     assert "output.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tilePlan.output))" in lowrank_header
@@ -805,8 +831,10 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "if (!mmadTilePlan.HasCompatibleShape())" in lowrank_header
     assert "const SVDQLowRankMmadBufferPlan bufferPlan = BuildMmadBufferPlan(mmadTilePlan)" in lowrank_header
     assert "if (!bufferPlan.HasCompleteFootprint())" in lowrank_header
-    assert "if (!RunPlannedTileBF16(bufferPlan))" in lowrank_header
-    assert "return RunScalarTileBF16(bufferPlan.tile.tile)" in lowrank_header
+    assert "const SVDQLowRankMmadPipelinePlan pipelinePlan = BuildMmadPipelinePlan(bufferPlan)" in lowrank_header
+    assert "if (!pipelinePlan.HasCompletePipeline())" in lowrank_header
+    assert "if (!RunPlannedTileBF16(pipelinePlan))" in lowrank_header
+    assert "return RunScalarTileBF16(pipelinePlan.buffer.tile.tile)" in lowrank_header
     assert "rowTiles * StageColumnTileCount(stage) * StageKTileCount(stage)" in lowrank_header
     assert "const uint32_t tilesPerRow = columnTiles * kTiles" in lowrank_header
     assert "Min(args_.tiling.outputColumnTile, stage.outputColumns - outputColumnOffset)" in lowrank_header

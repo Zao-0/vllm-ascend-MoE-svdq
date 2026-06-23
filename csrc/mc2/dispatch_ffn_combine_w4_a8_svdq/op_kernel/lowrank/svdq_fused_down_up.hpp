@@ -24,6 +24,9 @@ constexpr uint32_t SVDQ_LOWRANK_MMAD_K_TILE = 64;
 constexpr uint32_t SVDQ_LOWRANK_MMAD_M_ALIGNMENT = 16;
 constexpr uint32_t SVDQ_LOWRANK_MMAD_N_ALIGNMENT = 16;
 constexpr uint32_t SVDQ_LOWRANK_MMAD_K_ALIGNMENT = 16;
+constexpr uint32_t SVDQ_LOWRANK_MMAD_FORMAT_ND = 0;
+constexpr uint32_t SVDQ_LOWRANK_MMAD_FORMAT_NZ = 1;
+constexpr uint32_t SVDQ_LOWRANK_MMAD_FORMAT_ZN = 2;
 
 enum SVDQLowRankStageKind : uint32_t {
     SVDQ_LOWRANK_STAGE_DOWN_PROJECT = 0,
@@ -174,6 +177,50 @@ struct SVDQLowRankMmadBufferPlan {
     }
 };
 
+struct SVDQLowRankMmadPipelinePlan {
+    SVDQLowRankMmadBufferPlan buffer;
+    uint32_t l1InputOffset;
+    uint32_t l1FactorOffset;
+    uint32_t l0AOffset;
+    uint32_t l0BOffset;
+    uint32_t l0COffset;
+    uint32_t inputGmFormat;
+    uint32_t factorGmFormat;
+    uint32_t inputL1Format;
+    uint32_t factorL1Format;
+    uint32_t l0AFormat;
+    uint32_t l0BFormat;
+    uint32_t outputFormat;
+    bool loadInputGmToL1;
+    bool loadFactorGmToL1;
+    bool loadInputL1ToL0A;
+    bool loadFactorL1ToL0B;
+    bool factorLoadsTransposed;
+    bool runMmad;
+    bool storeL0C;
+    bool initAccumulator;
+    bool storesAccumulator;
+    bool storesOutput;
+
+    __aicore__ inline bool HasCompletePipeline() const
+    {
+        return buffer.HasCompleteFootprint() && l1InputOffset == 0 &&
+               l1FactorOffset == buffer.l1InputBytes && l0AOffset == 0 && l0BOffset == 0 &&
+               l0COffset == 0 && inputGmFormat == SVDQ_LOWRANK_MMAD_FORMAT_ND &&
+               factorGmFormat == SVDQ_LOWRANK_MMAD_FORMAT_ND &&
+               inputL1Format == SVDQ_LOWRANK_MMAD_FORMAT_NZ &&
+               factorL1Format == SVDQ_LOWRANK_MMAD_FORMAT_NZ &&
+               l0AFormat == SVDQ_LOWRANK_MMAD_FORMAT_NZ &&
+               l0BFormat == SVDQ_LOWRANK_MMAD_FORMAT_ZN &&
+               outputFormat == SVDQ_LOWRANK_MMAD_FORMAT_ND && loadInputGmToL1 &&
+               loadFactorGmToL1 && loadInputL1ToL0A && loadFactorL1ToL0B &&
+               factorLoadsTransposed && runMmad && storeL0C &&
+               initAccumulator == buffer.tile.tile.accumulatesFirstKTile &&
+               storesAccumulator == buffer.storesAccumulator && storesOutput == buffer.storesOutput &&
+               storesAccumulator != storesOutput;
+    }
+};
+
 struct SVDQFusedDownUpArgs {
     GM_ADDR input;
     GM_ADDR downFactor;
@@ -307,6 +354,39 @@ public:
             SVDQLowRankMmadBufferPlan::BytesForFP32Elements(outputElementCount),
             !tilePlan.tile.accumulatesLastKTile,
             tilePlan.tile.accumulatesLastKTile,
+        };
+    }
+
+    __aicore__ inline SVDQLowRankMmadPipelinePlan BuildMmadPipelinePlan(
+        const SVDQLowRankMmadBufferPlan& bufferPlan) const
+    {
+        if (!bufferPlan.HasCompleteFootprint()) {
+            return {};
+        }
+        return SVDQLowRankMmadPipelinePlan{
+            bufferPlan,
+            0,
+            bufferPlan.l1InputBytes,
+            0,
+            0,
+            0,
+            SVDQ_LOWRANK_MMAD_FORMAT_ND,
+            SVDQ_LOWRANK_MMAD_FORMAT_ND,
+            SVDQ_LOWRANK_MMAD_FORMAT_NZ,
+            SVDQ_LOWRANK_MMAD_FORMAT_NZ,
+            SVDQ_LOWRANK_MMAD_FORMAT_NZ,
+            SVDQ_LOWRANK_MMAD_FORMAT_ZN,
+            SVDQ_LOWRANK_MMAD_FORMAT_ND,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            bufferPlan.tile.tile.accumulatesFirstKTile,
+            bufferPlan.storesAccumulator,
+            bufferPlan.storesOutput,
         };
     }
 
@@ -559,12 +639,12 @@ public:
         return true;
     }
 
-    __aicore__ inline bool RunPlannedTileBF16(const SVDQLowRankMmadBufferPlan& bufferPlan) const
+    __aicore__ inline bool RunPlannedTileBF16(const SVDQLowRankMmadPipelinePlan& pipelinePlan) const
     {
-        if (!bufferPlan.HasCompleteFootprint()) {
+        if (!pipelinePlan.HasCompletePipeline()) {
             return false;
         }
-        return RunScalarTileBF16(bufferPlan.tile.tile);
+        return RunScalarTileBF16(pipelinePlan.buffer.tile.tile);
     }
 
     __aicore__ inline bool IsImplemented() const
@@ -610,7 +690,11 @@ public:
             if (!bufferPlan.HasCompleteFootprint()) {
                 return;
             }
-            if (!RunPlannedTileBF16(bufferPlan)) {
+            const SVDQLowRankMmadPipelinePlan pipelinePlan = BuildMmadPipelinePlan(bufferPlan);
+            if (!pipelinePlan.HasCompletePipeline()) {
+                return;
+            }
+            if (!RunPlannedTileBF16(pipelinePlan)) {
                 return;
             }
         }
