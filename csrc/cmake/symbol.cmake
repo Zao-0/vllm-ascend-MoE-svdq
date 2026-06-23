@@ -51,8 +51,16 @@ endfunction()
 
 # graph_plugin shared
 function(gen_opgraph_symbol)
+  if(NOT TARGET ${GRAPH_PLUGIN_NAME}_obj)
+    return()
+  endif()
+  get_target_property(GRAPH_PLUGIN_SRCS ${GRAPH_PLUGIN_NAME}_obj SOURCES)
+  if(NOT GRAPH_PLUGIN_SRCS)
+    return()
+  endif()
+
   add_library(${OPGRAPH_NAME} SHARED
-    $<$<TARGET_EXISTS:${GRAPH_PLUGIN_NAME}_obj>:$<TARGET_OBJECTS:${GRAPH_PLUGIN_NAME}_obj>>
+    $<TARGET_OBJECTS:${GRAPH_PLUGIN_NAME}_obj>
   )
 
   target_link_libraries(

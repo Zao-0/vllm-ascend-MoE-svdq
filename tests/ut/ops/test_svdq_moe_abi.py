@@ -277,6 +277,17 @@ def test_cann_host_library_build_path_honors_soc_selection():
     assert create_lib_branch.index("set_compute_unit_option") < create_lib_branch.index("build_lib")
 
 
+def test_cann_graph_symbol_generation_skips_empty_filtered_op_sets():
+    symbol_cmake = (REPO_ROOT / "csrc/cmake/symbol.cmake").read_text()
+    graph_symbol = symbol_cmake[symbol_cmake.index("function(gen_opgraph_symbol)") :]
+    graph_symbol = graph_symbol[: graph_symbol.index("function(gen_opapi_symbol)")]
+
+    assert "if(NOT TARGET ${GRAPH_PLUGIN_NAME}_obj)" in graph_symbol
+    assert "get_target_property(GRAPH_PLUGIN_SRCS ${GRAPH_PLUGIN_NAME}_obj SOURCES)" in graph_symbol
+    assert "if(NOT GRAPH_PLUGIN_SRCS)" in graph_symbol
+    assert "$<TARGET_OBJECTS:${GRAPH_PLUGIN_NAME}_obj>" in graph_symbol
+
+
 def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
     op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
     tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
