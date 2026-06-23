@@ -274,6 +274,12 @@ std::tuple<at::Tensor&, at::Tensor&> dispatch_ffn_combine_w4a8_svdq_meta(
     TORCH_CHECK(out.dim() == 2, "out must be rank-2.");
     TORCH_CHECK(x.sizes() == out.sizes(), "out shape must match x shape.");
     TORCH_CHECK(expert_idx.sizes() == probs.sizes(), "expert_idx shape must match probs shape.");
+    TORCH_CHECK(expert_idx.size(0) == x.size(0), "expert_idx token dimension must match x.");
+    TORCH_CHECK(x.scalar_type() == at::kBFloat16, "x must be BF16.");
+    TORCH_CHECK(expert_idx.scalar_type() == at::kInt, "expert_idx must be INT32.");
+    TORCH_CHECK(probs.scalar_type() == at::kFloat, "probs must be FP32.");
+    TORCH_CHECK(out.scalar_type() == at::kBFloat16, "out must be BF16.");
+    TORCH_CHECK(expert_token_nums.scalar_type() == at::kInt, "expert_token_nums must be INT32.");
     TORCH_CHECK(gate_up_svdq_l1.scalar_type() == at::kBFloat16, "gate_up_svdq_l1 must be BF16.");
     TORCH_CHECK(gate_svdq_l2.scalar_type() == at::kBFloat16, "gate_svdq_l2 must be BF16.");
     TORCH_CHECK(up_svdq_l2.scalar_type() == at::kBFloat16, "up_svdq_l2 must be BF16.");
@@ -290,15 +296,47 @@ std::tuple<at::Tensor&, at::Tensor&> dispatch_ffn_combine_w4a8_svdq_meta(
     TORCH_CHECK(gate_up_svdq_l1.size(1) == gate_rank + up_rank,
                 "gate_up_svdq_l1 rank dim must equal gate_rank + up_rank.");
     TORCH_CHECK(max_output_size > 0, "max_output_size must be positive.");
-    (void)weight1;
-    (void)weight2;
-    (void)scale1;
-    (void)scale2;
-    (void)bias1;
-    (void)bias2;
+
+    TORCH_CHECK(!weight1.empty(), "weight1 must not be an empty tensor list.");
+    TORCH_CHECK(!weight2.empty(), "weight2 must not be an empty tensor list.");
+    TORCH_CHECK(!scale1.empty(), "scale1 must not be an empty tensor list.");
+    TORCH_CHECK(!scale2.empty(), "scale2 must not be an empty tensor list.");
+    TORCH_CHECK(!bias1.empty(), "bias1 must not be an empty tensor list.");
+    TORCH_CHECK(!bias2.empty(), "bias2 must not be an empty tensor list.");
+    TORCH_CHECK(weight1[0].dim() == 3, "weight1 must be rank-3.");
+    TORCH_CHECK(weight2[0].dim() == 3, "weight2 must be rank-3.");
+    TORCH_CHECK(weight1[0].scalar_type() == at::kInt, "weight1 must be INT32.");
+    TORCH_CHECK(weight2[0].scalar_type() == at::kInt, "weight2 must be INT32.");
+    TORCH_CHECK(scale1[0].scalar_type() == at::kLong, "scale1 must be INT64.");
+    TORCH_CHECK(scale2[0].scalar_type() == at::kLong, "scale2 must be INT64.");
+    TORCH_CHECK(bias1[0].scalar_type() == at::kFloat, "bias1 must be FP32.");
+    TORCH_CHECK(bias2[0].scalar_type() == at::kFloat, "bias2 must be FP32.");
+
+    const auto num_experts = gate_up_svdq_l1.size(0);
+    const auto hidden_size = gate_up_svdq_l1.size(2);
+    TORCH_CHECK(hidden_size == x.size(1), "gate_up_svdq_l1 hidden dim must match x hidden dim.");
+    TORCH_CHECK(gate_svdq_l2.size(0) == num_experts && gate_svdq_l2.size(2) == gate_rank,
+                "gate_svdq_l2 shape is inconsistent with gate_rank.");
+    const auto intermediate_size = gate_svdq_l2.size(1);
+    TORCH_CHECK(up_svdq_l2.size(0) == num_experts && up_svdq_l2.size(1) == intermediate_size &&
+                    up_svdq_l2.size(2) == up_rank,
+                "up_svdq_l2 shape is inconsistent with up_rank.");
+    TORCH_CHECK(down_svdq_l1.size(0) == num_experts && down_svdq_l1.size(1) == down_rank &&
+                    down_svdq_l1.size(2) == intermediate_size,
+                "down_svdq_l1 shape is inconsistent with down_rank/intermediate_size.");
+    TORCH_CHECK(down_svdq_l2.size(0) == num_experts && down_svdq_l2.size(1) == hidden_size &&
+                    down_svdq_l2.size(2) == down_rank,
+                "down_svdq_l2 shape is inconsistent with down_rank/hidden_size.");
+    TORCH_CHECK(weight1[0].size(0) == num_experts && weight2[0].size(0) == num_experts,
+                "residual W4A8 expert count must match SVDQ factor expert count.");
+    TORCH_CHECK(expert_token_nums.dim() == 1, "expert_token_nums must be rank-1.");
+    TORCH_CHECK(expert_token_nums.size(0) == num_experts, "expert_token_nums expert count must match SVDQ factors.");
+    if (x_active_mask.has_value()) {
+        TORCH_CHECK(x_active_mask.value().dim() == 1, "x_active_mask must be rank-1.");
+        TORCH_CHECK(x_active_mask.value().size(0) == x.size(0), "x_active_mask token dimension must match x.");
+        TORCH_CHECK(x_active_mask.value().scalar_type() == at::kBool, "x_active_mask must be bool.");
+    }
     (void)group;
-    (void)expert_token_nums;
-    (void)x_active_mask;
     (void)swiglu_limit;
     return {out, expert_token_nums};
 }

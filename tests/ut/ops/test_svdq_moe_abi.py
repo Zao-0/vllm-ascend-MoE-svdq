@@ -149,6 +149,35 @@ def test_svdq_csrc_torch_schema_meta_and_adapter_are_registered():
     assert "gate_up_svdq_l2" not in meta
     assert "gate_up_svdq_l2" not in adapter
 
+    for meta_check in (
+        'x.scalar_type() == at::kBFloat16',
+        'expert_idx.scalar_type() == at::kInt',
+        'probs.scalar_type() == at::kFloat',
+        'out.scalar_type() == at::kBFloat16',
+        'expert_token_nums.scalar_type() == at::kInt',
+        '!weight1.empty()',
+        '!weight2.empty()',
+        '!scale1.empty()',
+        '!scale2.empty()',
+        '!bias1.empty()',
+        '!bias2.empty()',
+        'weight1[0].scalar_type() == at::kInt',
+        'weight2[0].scalar_type() == at::kInt',
+        'scale1[0].scalar_type() == at::kLong',
+        'scale2[0].scalar_type() == at::kLong',
+        'bias1[0].scalar_type() == at::kFloat',
+        'bias2[0].scalar_type() == at::kFloat',
+        'hidden_size == x.size(1)',
+        'gate_svdq_l2.size(0) == num_experts && gate_svdq_l2.size(2) == gate_rank',
+        'up_svdq_l2.size(0) == num_experts && up_svdq_l2.size(1) == intermediate_size',
+        'down_svdq_l1.size(0) == num_experts && down_svdq_l1.size(1) == down_rank',
+        'down_svdq_l2.size(0) == num_experts && down_svdq_l2.size(1) == hidden_size',
+        'weight1[0].size(0) == num_experts && weight2[0].size(0) == num_experts',
+        'expert_token_nums.size(0) == num_experts',
+        'x_active_mask.value().scalar_type() == at::kBool',
+    ):
+        assert meta_check in meta
+
     adapter_call_order = (
         "x,",
         "weight1,",
