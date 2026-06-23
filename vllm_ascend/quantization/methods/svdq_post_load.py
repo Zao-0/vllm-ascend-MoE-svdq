@@ -23,6 +23,17 @@ FINAL_SVDQ_FACTOR_NAMES = (
     "down_svdq_l2",
 )
 
+SVDQ_BF16_DEBUG_STAGE_NAMES = (
+    "routing_input",
+    "gate_up_l1_rank",
+    "gate_rank_split",
+    "up_rank_split",
+    "gate_l2_output",
+    "up_l2_output",
+    "down_l1_rank",
+    "down_l2_output",
+)
+
 
 def _as_tensor(value: torch.Tensor | torch.nn.Parameter) -> torch.Tensor:
     return value.data if isinstance(value, torch.nn.Parameter) else value
@@ -117,6 +128,70 @@ def _branch_error(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, flo
     }
 
 
+def _evaluate_svdq_bf16_debug_stages(
+    *,
+    x: torch.Tensor,
+    hidden: torch.Tensor,
+    gate_up_l1: torch.Tensor,
+    gate_l2: torch.Tensor,
+    up_l2: torch.Tensor,
+    down_l1: torch.Tensor,
+    down_l2: torch.Tensor,
+    gate_rank: int,
+    up_rank: int,
+    gate_offset: int,
+    up_offset: int,
+) -> dict[str, torch.Tensor]:
+    """Evaluate named BF16 low-rank stages with final operator-facing factors."""
+    fused_rank = x @ gate_up_l1.T
+    gate_rank_state = fused_rank[:, gate_offset : gate_offset + gate_rank]
+    up_rank_state = fused_rank[:, up_offset : up_offset + up_rank]
+    down_rank_state = hidden @ down_l1.T
+    return {
+        "routing_input": x,
+        "gate_up_l1_rank": fused_rank,
+        "gate_rank_split": gate_rank_state,
+        "up_rank_split": up_rank_state,
+        "gate_l2_output": gate_rank_state @ gate_l2.T,
+        "up_l2_output": up_rank_state @ up_l2.T,
+        "down_l1_rank": down_rank_state,
+        "down_l2_output": down_rank_state @ down_l2.T,
+    }
+
+
+def _stage_shape_metadata(stages: dict[str, torch.Tensor]) -> dict[str, list[int]]:
+    return {name: list(stages[name].shape) for name in SVDQ_BF16_DEBUG_STAGE_NAMES}
+
+
+def _branch_isolation_errors(
+    *,
+    fused_rank: torch.Tensor,
+    gate_l2: torch.Tensor,
+    up_l2: torch.Tensor,
+    gate_rank: int,
+    up_rank: int,
+    gate_offset: int,
+    up_offset: int,
+) -> dict[str, dict[str, float]]:
+    gate_rank_state = fused_rank[:, gate_offset : gate_offset + gate_rank]
+    up_rank_state = fused_rank[:, up_offset : up_offset + up_rank]
+    gate_base = gate_rank_state @ gate_l2.T
+    up_base = up_rank_state @ up_l2.T
+
+    gate_perturbed = fused_rank.clone()
+    gate_perturbed[:, gate_offset : gate_offset + gate_rank] += 1.0
+    up_after_gate_perturb = gate_perturbed[:, up_offset : up_offset + up_rank] @ up_l2.T
+
+    up_perturbed = fused_rank.clone()
+    up_perturbed[:, up_offset : up_offset + up_rank] += 1.0
+    gate_after_up_perturb = up_perturbed[:, gate_offset : gate_offset + gate_rank] @ gate_l2.T
+
+    return {
+        "gate_rank_perturb_does_not_change_up_l2": _branch_error(up_after_gate_perturb, up_base),
+        "up_rank_perturb_does_not_change_gate_l2": _branch_error(gate_after_up_perturb, gate_base),
+    }
+
+
 def audit_svdq_operator_factors(
     layer: torch.nn.Module,
     *,
@@ -184,12 +259,19 @@ def audit_svdq_operator_factors(
         x = torch.randn(num_tokens, hidden_size, generator=generator)
         hidden = torch.randn(num_tokens, intermediate_size, generator=generator)
 
-        fused_rank = x @ final_gate_up_l1.T
-        gate_rank_state = fused_rank[:, gate_offset : gate_offset + gate_rank]
-        up_rank_state = fused_rank[:, up_offset : up_offset + up_rank]
-        gate_final = gate_rank_state @ final_gate_l2.T
-        up_final = up_rank_state @ final_up_l2.T
-        down_final = (hidden @ final_down_l1.T) @ final_down_l2.T
+        stages = _evaluate_svdq_bf16_debug_stages(
+            x=x,
+            hidden=hidden,
+            gate_up_l1=final_gate_up_l1,
+            gate_l2=final_gate_l2,
+            up_l2=final_up_l2,
+            down_l1=final_down_l1,
+            down_l2=final_down_l2,
+            gate_rank=gate_rank,
+            up_rank=up_rank,
+            gate_offset=gate_offset,
+            up_offset=up_offset,
+        )
 
         gate_ref = (x @ raw_gate_l1.T) @ raw_gate_l2.T
         up_ref = (x @ raw_up_l1.T) @ raw_up_l2.T
@@ -198,15 +280,27 @@ def audit_svdq_operator_factors(
         branch_errors.append(
             {
                 "expert": expert,
-                "gate": _branch_error(gate_final, gate_ref),
-                "up": _branch_error(up_final, up_ref),
-                "down": _branch_error(down_final, down_ref),
+                "gate": _branch_error(stages["gate_l2_output"], gate_ref),
+                "up": _branch_error(stages["up_l2_output"], up_ref),
+                "down": _branch_error(stages["down_l2_output"], down_ref),
+                "stage_shapes": _stage_shape_metadata(stages),
+                "branch_isolation": _branch_isolation_errors(
+                    fused_rank=stages["gate_up_l1_rank"],
+                    gate_l2=final_gate_l2,
+                    up_l2=final_up_l2,
+                    gate_rank=gate_rank,
+                    up_rank=up_rank,
+                    gate_offset=gate_offset,
+                    up_offset=up_offset,
+                ),
             }
         )
 
     max_abs = 0.0
     for entry in branch_errors:
         max_abs = max(max_abs, entry["gate"]["max_abs"], entry["up"]["max_abs"], entry["down"]["max_abs"])
+        for isolation_error in entry["branch_isolation"].values():
+            max_abs = max(max_abs, isolation_error["max_abs"])
 
     return {
         "passed": max_abs == 0.0,

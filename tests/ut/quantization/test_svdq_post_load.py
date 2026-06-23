@@ -13,6 +13,7 @@ import vllm_ascend.quantization.methods.w4a8_svdq as w4a8_svdq
 from vllm_ascend.ops.fused_moe.moe_runtime_args import build_fused_experts_input
 from vllm_ascend.quantization.methods.w4a8_svdq import AscendW4A8SVDQFusedMoEMethod
 from vllm_ascend.quantization.methods.svdq_post_load import (
+    SVDQ_BF16_DEBUG_STAGE_NAMES,
     FINAL_SVDQ_FACTOR_NAMES,
     audit_svdq_operator_factors,
     build_svdq_operator_factors,
@@ -66,6 +67,27 @@ def test_svdq_post_load_builds_five_operator_factors_and_audits_branches():
     audit = audit_svdq_operator_factors(layer, max_experts=2, num_tokens=2)
     assert audit["passed"]
     assert audit["max_abs"] == 0.0
+    assert len(audit["branch_errors"]) == 2
+    for entry in audit["branch_errors"]:
+        assert set(entry["stage_shapes"]) == set(SVDQ_BF16_DEBUG_STAGE_NAMES)
+        assert entry["stage_shapes"]["routing_input"] == [2, 4]
+        assert entry["stage_shapes"]["gate_up_l1_rank"] == [2, 3]
+        assert entry["stage_shapes"]["gate_rank_split"] == [2, 2]
+        assert entry["stage_shapes"]["up_rank_split"] == [2, 1]
+        assert entry["stage_shapes"]["gate_l2_output"] == [2, 3]
+        assert entry["stage_shapes"]["up_l2_output"] == [2, 3]
+        assert entry["stage_shapes"]["down_l1_rank"] == [2, 2]
+        assert entry["stage_shapes"]["down_l2_output"] == [2, 4]
+        assert entry["branch_isolation"] == {
+            "gate_rank_perturb_does_not_change_up_l2": {
+                "max_abs": 0.0,
+                "mean_abs": 0.0,
+            },
+            "up_rank_perturb_does_not_change_gate_l2": {
+                "max_abs": 0.0,
+                "mean_abs": 0.0,
+            },
+        }
     assert audit["rank_metadata"] == {
         "gate_rank": 2,
         "up_rank": 1,
