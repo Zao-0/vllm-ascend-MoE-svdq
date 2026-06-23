@@ -665,6 +665,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "SVDQLowRankExpertPlan" in lowrank_header
     assert "SVDQLowRankCoreTileRange" in lowrank_header
     assert "SVDQLowRankTilePlan" in lowrank_header
+    assert "SVDQLowRankTileTensorPlan" in lowrank_header
     assert "TotalRankColumns() const" in lowrank_header
     assert "PrimaryOutputColumns() const" in lowrank_header
     assert "StageCount() const" in lowrank_header
@@ -681,6 +682,15 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "InvocationTileCount() const" in lowrank_header
     assert "CoreTileRange(uint32_t coreIdx, uint32_t coreCount)" in lowrank_header
     assert "TilePlan(uint32_t tileId)" in lowrank_header
+    assert "BuildTileTensorPlan(" in lowrank_header
+    assert "InputElementOffset(" in lowrank_header
+    assert "FactorElementOffset(" in lowrank_header
+    assert "OutputElementOffset(" in lowrank_header
+    assert "LoadInputBF16(" in lowrank_header
+    assert "LoadFactorBF16(" in lowrank_header
+    assert "LoadOutputBF16(" in lowrank_header
+    assert "StoreOutputBF16(" in lowrank_header
+    assert "AccumulateScalarBF16(" in lowrank_header
     assert "BuildDownStagePlan() const" in lowrank_header
     assert "BuildPrimaryUpStagePlan() const" in lowrank_header
     assert "BuildSecondUpStagePlan() const" in lowrank_header
@@ -688,6 +698,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "Min(uint32_t lhs, uint32_t rhs)" in lowrank_header
     assert "MatrixAddress(" in lowrank_header
     assert "FactorAddress(const SVDQLowRankStagePlan& stage, uint32_t expertId)" in lowrank_header
+    assert "FactorTileAddress(" in lowrank_header
     assert "GM_ADDR inputBase = args_.input" in lowrank_header
     assert "if (stageIndex != 0)" in lowrank_header
     assert "inputBase = args_.output" in lowrank_header
@@ -708,10 +719,21 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "expertTokenNums.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(args_.expertTokenNums))" in lowrank_header
     assert "static_cast<uint64_t>(row) * strideColumns + columnOffset" in lowrank_header
     assert "static_cast<uint64_t>(expertId) * stage.inputColumns * stage.outputColumns" in lowrank_header
+    assert "static_cast<uint64_t>(outputColumnOffset) * expert.stage.inputColumns + kColumnOffset" in lowrank_header
+    assert "MatrixAddress(expert.input, rowOffset, stage.inputStrideColumns, tilePlan.kColumnOffset)" in lowrank_header
+    assert "FactorTileAddress(expert, tilePlan.outputColumnOffset, tilePlan.kColumnOffset)" in lowrank_header
+    assert "MatrixAddress(expert.output, rowOffset, stage.outputStrideColumns, tilePlan.outputColumnOffset)" in lowrank_header
+    assert "input.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tilePlan.input))" in lowrank_header
+    assert "factor.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tilePlan.factor))" in lowrank_header
+    assert "output.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tilePlan.output))" in lowrank_header
+    assert "output.SetValue(OutputElementOffset(tilePlan, rowOffset, outputOffset), value)" in lowrank_header
+    assert "static_cast<float>(LoadInputBF16(tilePlan, rowOffset, kOffset))" in lowrank_header
+    assert "static_cast<float>(LoadFactorBF16(tilePlan, outputOffset, kOffset))" in lowrank_header
     assert "const uint32_t coreIdx = AscendC::GetBlockIdx()" in lowrank_header
     assert "const uint32_t runtimeCoreCount = AscendC::GetBlockNum()" in lowrank_header
     assert "const SVDQLowRankCoreTileRange tileRange = CoreTileRange(coreIdx, scheduledCoreCount)" in lowrank_header
     assert "const SVDQLowRankTilePlan tilePlan = TilePlan(tileRange.tileStart + tileOffset)" in lowrank_header
+    assert "const SVDQLowRankTileTensorPlan tileTensorPlan = BuildTileTensorPlan(tilePlan)" in lowrank_header
     assert "rowTiles * StageColumnTileCount(stage) * StageKTileCount(stage)" in lowrank_header
     assert "const uint32_t tilesPerRow = columnTiles * kTiles" in lowrank_header
     assert "Min(args_.tiling.outputColumnTile, stage.outputColumns - outputColumnOffset)" in lowrank_header
