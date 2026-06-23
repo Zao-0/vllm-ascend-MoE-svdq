@@ -321,6 +321,127 @@ def _branch_isolation_errors(
     }
 
 
+def build_svdq_bf16_stage_reference(
+    layer: torch.nn.Module,
+    expert: int,
+    *,
+    x: torch.Tensor | None = None,
+    hidden: torch.Tensor | None = None,
+    num_tokens: int = 3,
+    generator: torch.Generator | None = None,
+) -> dict[str, Any]:
+    """Build E2-E7 BF16 low-rank stage references for one post-loaded expert."""
+    gate_up_l1 = _as_tensor(layer.gate_up_svdq_l1)
+    gate_l2 = _as_tensor(layer.gate_svdq_l2)
+    up_l2 = _as_tensor(layer.up_svdq_l2)
+    down_l1 = _as_tensor(layer.down_svdq_l1)
+    down_l2 = _as_tensor(layer.down_svdq_l2)
+    final_tensors = {
+        "gate_up_svdq_l1": gate_up_l1,
+        "gate_svdq_l2": gate_l2,
+        "up_svdq_l2": up_l2,
+        "down_svdq_l1": down_l1,
+        "down_svdq_l2": down_l2,
+    }
+    for name, tensor in final_tensors.items():
+        _require_bf16(name, tensor)
+
+    local_experts = int(gate_up_l1.shape[0])
+    if expert < 0 or expert >= local_experts:
+        raise ValueError(f"expert {expert} is outside local expert range [0, {local_experts}).")
+
+    gate_rank = int(layer.svdq_gate_rank)
+    up_rank = int(layer.svdq_up_rank)
+    down_rank = int(layer.svdq_down_rank)
+    gate_offset = int(layer.svdq_gate_rank_offset)
+    up_offset = int(layer.svdq_up_rank_offset)
+    if gate_offset != 0 or up_offset != gate_rank:
+        raise ValueError(
+            f"invalid SVDQ rank offsets: gate={gate_offset}, up={up_offset}, gate_rank={gate_rank}."
+        )
+
+    hidden_size = int(gate_up_l1.shape[2])
+    intermediate_size = int(gate_l2.shape[1])
+    if x is None:
+        x = torch.randn(num_tokens, hidden_size, generator=generator)
+    else:
+        x = x.detach().float().cpu()
+        num_tokens = int(x.shape[0])
+    if hidden is None:
+        hidden = torch.randn(num_tokens, intermediate_size, generator=generator)
+    else:
+        hidden = hidden.detach().float().cpu()
+    if tuple(x.shape) != (num_tokens, hidden_size):
+        raise ValueError(f"x expected shape {(num_tokens, hidden_size)}, got {tuple(x.shape)}.")
+    if tuple(hidden.shape) != (num_tokens, intermediate_size):
+        raise ValueError(f"hidden expected shape {(num_tokens, intermediate_size)}, got {tuple(hidden.shape)}.")
+
+    raw_gate_l1 = _as_tensor(layer.gate_svd_l1_raw)[expert].detach().float().cpu()
+    raw_gate_l2 = _as_tensor(layer.gate_svd_l2_raw)[expert].detach().float().cpu()
+    raw_up_l1 = _as_tensor(layer.up_svd_l1_raw)[expert].detach().float().cpu()
+    raw_up_l2 = _as_tensor(layer.up_svd_l2_raw)[expert].detach().float().cpu()
+    raw_down_l1 = _as_tensor(layer.down_svd_l1_raw)[expert].detach().float().cpu()
+    raw_down_l2 = _as_tensor(layer.down_svd_l2_raw)[expert].detach().float().cpu()
+
+    final_gate_up_l1 = gate_up_l1[expert].detach().float().cpu()
+    final_gate_l2 = gate_l2[expert].detach().float().cpu()
+    final_up_l2 = up_l2[expert].detach().float().cpu()
+    final_down_l1 = down_l1[expert].detach().float().cpu()
+    final_down_l2 = down_l2[expert].detach().float().cpu()
+
+    stages = _evaluate_svdq_bf16_debug_stages(
+        x=x,
+        hidden=hidden,
+        gate_up_l1=final_gate_up_l1,
+        gate_l2=final_gate_l2,
+        up_l2=final_up_l2,
+        down_l1=final_down_l1,
+        down_l2=final_down_l2,
+        gate_rank=gate_rank,
+        up_rank=up_rank,
+        gate_offset=gate_offset,
+        up_offset=up_offset,
+    )
+
+    gate_rank_ref = x @ raw_gate_l1.T
+    up_rank_ref = x @ raw_up_l1.T
+    down_rank_ref = hidden @ raw_down_l1.T
+    references = {
+        "routing_input": x,
+        "gate_up_l1_rank": torch.cat((gate_rank_ref, up_rank_ref), dim=1),
+        "gate_rank_split": gate_rank_ref,
+        "up_rank_split": up_rank_ref,
+        "gate_l2_output": gate_rank_ref @ raw_gate_l2.T,
+        "up_l2_output": up_rank_ref @ raw_up_l2.T,
+        "down_l1_rank": down_rank_ref,
+        "down_l2_output": down_rank_ref @ raw_down_l2.T,
+    }
+
+    return {
+        "expert": expert,
+        "actual": stages,
+        "reference": references,
+        "stage_shapes": _stage_shape_metadata(stages),
+        "stage_errors": _stage_error_metadata(stages, references),
+        "branch_isolation": _branch_isolation_errors(
+            fused_rank=stages["gate_up_l1_rank"],
+            gate_l2=final_gate_l2,
+            up_l2=final_up_l2,
+            gate_rank=gate_rank,
+            up_rank=up_rank,
+            gate_offset=gate_offset,
+            up_offset=up_offset,
+        ),
+        "rank_metadata": {
+            "gate_rank": gate_rank,
+            "up_rank": up_rank,
+            "down_rank": down_rank,
+            "gate_rank_offset": gate_offset,
+            "up_rank_offset": up_offset,
+        },
+    }
+
+
 def audit_svdq_operator_factors(
     layer: torch.nn.Module,
     *,
@@ -372,82 +493,42 @@ def audit_svdq_operator_factors(
     sampled_experts = list(range(min(local_experts, max_experts)))
     branch_errors: list[dict[str, Any]] = []
     for expert in sampled_experts:
-        raw_gate_l1 = _as_tensor(layer.gate_svd_l1_raw)[expert].detach().float().cpu()
-        raw_gate_l2 = _as_tensor(layer.gate_svd_l2_raw)[expert].detach().float().cpu()
-        raw_up_l1 = _as_tensor(layer.up_svd_l1_raw)[expert].detach().float().cpu()
-        raw_up_l2 = _as_tensor(layer.up_svd_l2_raw)[expert].detach().float().cpu()
-        raw_down_l1 = _as_tensor(layer.down_svd_l1_raw)[expert].detach().float().cpu()
-        raw_down_l2 = _as_tensor(layer.down_svd_l2_raw)[expert].detach().float().cpu()
-
-        final_gate_up_l1 = gate_up_l1[expert].detach().float().cpu()
-        final_gate_l2 = gate_l2[expert].detach().float().cpu()
-        final_up_l2 = up_l2[expert].detach().float().cpu()
-        final_down_l1 = down_l1[expert].detach().float().cpu()
-        final_down_l2 = down_l2[expert].detach().float().cpu()
-
-        x = torch.randn(num_tokens, hidden_size, generator=generator)
-        hidden = torch.randn(num_tokens, intermediate_size, generator=generator)
-
-        stages = _evaluate_svdq_bf16_debug_stages(
-            x=x,
-            hidden=hidden,
-            gate_up_l1=final_gate_up_l1,
-            gate_l2=final_gate_l2,
-            up_l2=final_up_l2,
-            down_l1=final_down_l1,
-            down_l2=final_down_l2,
-            gate_rank=gate_rank,
-            up_rank=up_rank,
-            gate_offset=gate_offset,
-            up_offset=up_offset,
+        stage_audit = build_svdq_bf16_stage_reference(
+            layer,
+            expert,
+            num_tokens=num_tokens,
+            generator=generator,
         )
-
-        gate_rank_ref = x @ raw_gate_l1.T
-        up_rank_ref = x @ raw_up_l1.T
-        down_rank_ref = hidden @ raw_down_l1.T
-        gate_ref = gate_rank_ref @ raw_gate_l2.T
-        up_ref = up_rank_ref @ raw_up_l2.T
-        down_ref = down_rank_ref @ raw_down_l2.T
-        stage_references = {
-            "routing_input": x,
-            "gate_up_l1_rank": torch.cat((gate_rank_ref, up_rank_ref), dim=1),
-            "gate_rank_split": gate_rank_ref,
-            "up_rank_split": up_rank_ref,
-            "gate_l2_output": gate_ref,
-            "up_l2_output": up_ref,
-            "down_l1_rank": down_rank_ref,
-            "down_l2_output": down_ref,
-        }
+        stages = stage_audit["actual"]
+        stage_references = stage_audit["reference"]
 
         branch_errors.append(
             {
                 "expert": expert,
-                "gate": _branch_error(stages["gate_l2_output"], gate_ref),
-                "up": _branch_error(stages["up_l2_output"], up_ref),
-                "down": _branch_error(stages["down_l2_output"], down_ref),
-                "stage_shapes": _stage_shape_metadata(stages),
-                "stage_errors": _stage_error_metadata(stages, stage_references),
-                "branch_isolation": _branch_isolation_errors(
-                    fused_rank=stages["gate_up_l1_rank"],
-                    gate_l2=final_gate_l2,
-                    up_l2=final_up_l2,
-                    gate_rank=gate_rank,
-                    up_rank=up_rank,
-                    gate_offset=gate_offset,
-                    up_offset=up_offset,
-                ),
+                "gate": _branch_error(stages["gate_l2_output"], stage_references["gate_l2_output"]),
+                "up": _branch_error(stages["up_l2_output"], stage_references["up_l2_output"]),
+                "down": _branch_error(stages["down_l2_output"], stage_references["down_l2_output"]),
+                "stage_shapes": stage_audit["stage_shapes"],
+                "stage_errors": stage_audit["stage_errors"],
+                "branch_isolation": stage_audit["branch_isolation"],
             }
         )
 
     max_abs = 0.0
+    bf16_stage_max_abs = 0.0
     all_finite = True
+    bf16_stage_all_finite = True
     for entry in branch_errors:
         max_abs = max(max_abs, entry["gate"]["max_abs"], entry["up"]["max_abs"], entry["down"]["max_abs"])
         for stage_error in entry["stage_errors"].values():
             max_abs = max(max_abs, float(stage_error["max_abs"]))
+            bf16_stage_max_abs = max(bf16_stage_max_abs, float(stage_error["max_abs"]))
             all_finite = all_finite and bool(stage_error["actual_finite"])
             all_finite = all_finite and bool(stage_error["expected_finite"])
             all_finite = all_finite and bool(stage_error["diff_finite"])
+            bf16_stage_all_finite = bf16_stage_all_finite and bool(stage_error["actual_finite"])
+            bf16_stage_all_finite = bf16_stage_all_finite and bool(stage_error["expected_finite"])
+            bf16_stage_all_finite = bf16_stage_all_finite and bool(stage_error["diff_finite"])
         for isolation_error in entry["branch_isolation"].values():
             max_abs = max(max_abs, isolation_error["max_abs"])
 
@@ -464,6 +545,9 @@ def audit_svdq_operator_factors(
         "passed": max_abs == 0.0 and all_finite,
         "max_abs": max_abs,
         "all_finite": all_finite,
+        "bf16_stage_names": list(SVDQ_BF16_DEBUG_STAGE_NAMES),
+        "bf16_stage_max_abs": bf16_stage_max_abs,
+        "bf16_stage_all_finite": bf16_stage_all_finite,
         "sampled_experts": sampled_experts,
         "branch_errors": branch_errors,
         "factor_metadata": {

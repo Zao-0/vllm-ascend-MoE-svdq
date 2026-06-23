@@ -16,6 +16,7 @@ from vllm_ascend.quantization.methods.svdq_post_load import (
     SVDQ_BF16_DEBUG_STAGE_NAMES,
     FINAL_SVDQ_FACTOR_NAMES,
     audit_svdq_operator_factors,
+    build_svdq_bf16_stage_reference,
     build_svdq_operator_factors,
 )
 from vllm_ascend.quantization.quant_type import QuantType
@@ -68,6 +69,9 @@ def test_svdq_post_load_builds_five_operator_factors_and_audits_branches():
     assert audit["passed"]
     assert audit["max_abs"] == 0.0
     assert audit["all_finite"]
+    assert audit["bf16_stage_names"] == list(SVDQ_BF16_DEBUG_STAGE_NAMES)
+    assert audit["bf16_stage_max_abs"] == 0.0
+    assert audit["bf16_stage_all_finite"]
     assert len(audit["branch_errors"]) == 2
     for entry in audit["branch_errors"]:
         assert set(entry["stage_shapes"]) == set(SVDQ_BF16_DEBUG_STAGE_NAMES)
@@ -148,6 +152,41 @@ def test_svdq_post_load_builds_five_operator_factors_and_audits_branches():
         "expert": 2,
         "hidden": 4,
         "rank": 2,
+    }
+
+
+def test_svdq_bf16_stage_reference_exposes_e2_e7_intermediates():
+    layer = _make_raw_factor_layer()
+    build_svdq_operator_factors(layer)
+
+    x = _bf16_arange((2, 4), 600).float()
+    hidden = _bf16_arange((2, 3), 700).float()
+    stage_audit = build_svdq_bf16_stage_reference(layer, expert=1, x=x, hidden=hidden, num_tokens=2)
+
+    assert stage_audit["expert"] == 1
+    assert set(stage_audit["actual"]) == set(SVDQ_BF16_DEBUG_STAGE_NAMES)
+    assert set(stage_audit["reference"]) == set(SVDQ_BF16_DEBUG_STAGE_NAMES)
+    assert set(stage_audit["stage_shapes"]) == set(SVDQ_BF16_DEBUG_STAGE_NAMES)
+    assert set(stage_audit["stage_errors"]) == set(SVDQ_BF16_DEBUG_STAGE_NAMES)
+    assert stage_audit["rank_metadata"] == {
+        "gate_rank": 2,
+        "up_rank": 1,
+        "down_rank": 2,
+        "gate_rank_offset": 0,
+        "up_rank_offset": 2,
+    }
+    for stage_name in SVDQ_BF16_DEBUG_STAGE_NAMES:
+        assert torch.equal(stage_audit["actual"][stage_name], stage_audit["reference"][stage_name])
+        assert stage_audit["stage_errors"][stage_name]["max_abs"] == 0.0
+    assert stage_audit["branch_isolation"] == {
+        "gate_rank_perturb_does_not_change_up_l2": {
+            "max_abs": 0.0,
+            "mean_abs": 0.0,
+        },
+        "up_rank_perturb_does_not_change_gate_l2": {
+            "max_abs": 0.0,
+            "mean_abs": 0.0,
+        },
     }
 
 

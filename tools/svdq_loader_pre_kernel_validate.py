@@ -295,6 +295,9 @@ def _validate_layer(
         "loaded_expert_counts": {name: len(experts) for name, experts in loaded_summary.items()},
         "audit_passed": bool(audit["passed"]),
         "audit_max_abs": audit["max_abs"],
+        "bf16_stage_names": audit["bf16_stage_names"],
+        "bf16_stage_max_abs": audit["bf16_stage_max_abs"],
+        "bf16_stage_all_finite": audit["bf16_stage_all_finite"],
         "rank_metadata": audit["rank_metadata"],
         "mapping_first_factor_entries": [
             mapping for mapping in expert_params_mapping[:6] if mapping[3] in SVDQ_FACTOR_SPECS
