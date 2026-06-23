@@ -162,6 +162,50 @@ static void BuildSyncFlagTable(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
     tilingData->info.syncFlagCount = SVDQ_SYNC_FLAG_COUNT;
 }
 
+static void SetBF16StageShape(
+    DispatchFFNCombineW4A8SVDQTilingData* tilingData, uint32_t stageId, uint32_t factorId,
+    uint32_t inputRegionId, uint32_t outputRegionId, uint32_t m, uint32_t k, uint32_t n,
+    uint32_t inputColumnOffset, uint32_t outputColumnOffset, uint32_t factorColumnOffset)
+{
+    auto& stage = tilingData->bf16StageShapes[stageId];
+    stage.stageId = stageId;
+    stage.factorId = factorId;
+    stage.inputRegionId = inputRegionId;
+    stage.outputRegionId = outputRegionId;
+    stage.m = m;
+    stage.k = k;
+    stage.n = n;
+    stage.inputColumnOffset = inputColumnOffset;
+    stage.outputColumnOffset = outputColumnOffset;
+    stage.factorColumnOffset = factorColumnOffset;
+}
+
+static void BuildBF16StageShapeTable(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
+{
+    auto& info = tilingData->info;
+    const uint32_t routedRows = info.maxOutputSize;
+    const uint32_t gateUpRank = info.gateRank + info.upRank;
+    const uint32_t gateOutputOffset = 0;
+    const uint32_t upOutputOffset = info.intermediateSize;
+
+    SetBF16StageShape(tilingData, SVDQ_BF16_STAGE_ROUTING, SVDQ_INVALID_ID,
+        SVDQ_INVALID_ID, SVDQ_REGION_ROUTED_X, routedRows, info.hiddenSize, info.hiddenSize, 0, 0, 0);
+    SetBF16StageShape(tilingData, SVDQ_BF16_STAGE_GATE_UP_L1_GEMM, SVDQ_FACTOR_GATE_UP_L1,
+        SVDQ_REGION_ROUTED_X, SVDQ_REGION_PROJECTION_1, routedRows, info.hiddenSize, gateUpRank, 0, 0, 0);
+    SetBF16StageShape(tilingData, SVDQ_BF16_STAGE_GATE_UP_RANK_SPLIT, SVDQ_INVALID_ID,
+        SVDQ_REGION_PROJECTION_1, SVDQ_REGION_PROJECTION_1, routedRows, gateUpRank, gateUpRank, 0, 0, 0);
+    SetBF16StageShape(tilingData, SVDQ_BF16_STAGE_GATE_L2_GEMM, SVDQ_FACTOR_GATE_L2,
+        SVDQ_REGION_PROJECTION_1, SVDQ_REGION_PROJECTION_1, routedRows, info.gateRank, info.intermediateSize,
+        info.gateRankOffset, gateOutputOffset, 0);
+    SetBF16StageShape(tilingData, SVDQ_BF16_STAGE_UP_L2_GEMM, SVDQ_FACTOR_UP_L2,
+        SVDQ_REGION_PROJECTION_1, SVDQ_REGION_PROJECTION_1, routedRows, info.upRank, info.intermediateSize,
+        info.upRankOffset, upOutputOffset, 0);
+    SetBF16StageShape(tilingData, SVDQ_BF16_STAGE_DOWN_L1_GEMM, SVDQ_FACTOR_DOWN_L1,
+        SVDQ_REGION_HIDDEN, SVDQ_REGION_PROJECTION_2, routedRows, info.intermediateSize, info.downRank, 0, 0, 0);
+    SetBF16StageShape(tilingData, SVDQ_BF16_STAGE_DOWN_L2_GEMM, SVDQ_FACTOR_DOWN_L2,
+        SVDQ_REGION_PROJECTION_2, SVDQ_REGION_PROJECTION_2, routedRows, info.downRank, info.hiddenSize, 0, 0, 0);
+}
+
 static ge::graphStatus DispatchFFNCombineW4A8SVDQCheckAttrAndSetTiling(
     gert::TilingContext* context, DispatchFFNCombineW4A8SVDQInfo& info)
 {
@@ -394,6 +438,7 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
 
     BuildWorkspaceMap(tilingData);
     BuildSyncFlagTable(tilingData);
+    BuildBF16StageShapeTable(tilingData);
     size_t* workSpaces = context->GetWorkspaceSizes(1);
     OP_TILING_CHECK(workSpaces == nullptr,
         OP_LOGE(nodeName, "workSpaces is nullptr."), return ge::GRAPH_FAILED);

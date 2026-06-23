@@ -509,6 +509,125 @@ def test_svdq_cann_tiling_sync_flags_match_required_dataflow():
         assert call in tiling
 
 
+def test_svdq_cann_tiling_records_bf16_stage_shapes_and_factor_bindings():
+    op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
+    tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
+    tiling_header = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h").read_text()
+    contract = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq.h").read_text()
+
+    assert "SVDQ_BF16_STAGE_COUNT = 7" in tiling_header
+    assert "SVDQ_INVALID_ID = 0xffffffffU" in tiling_header
+    assert "SVDQFactorId" in tiling_header
+    assert "SVDQBF16StageShape" in tiling_header
+    assert "SVDQBF16StageShape bf16StageShapes[SVDQ_BF16_STAGE_COUNT]" in tiling_header
+    assert "SetBF16StageShape" in tiling
+    assert "BuildBF16StageShapeTable" in tiling
+    assert "BuildBF16StageShapeTable(tilingData)" in tiling
+    assert "const uint32_t gateUpRank = info.gateRank + info.upRank" in tiling
+    assert "const uint32_t upOutputOffset = info.intermediateSize" in tiling
+
+    for factor in (
+        "SVDQ_FACTOR_GATE_UP_L1",
+        "SVDQ_FACTOR_GATE_L2",
+        "SVDQ_FACTOR_UP_L2",
+        "SVDQ_FACTOR_DOWN_L1",
+        "SVDQ_FACTOR_DOWN_L2",
+    ):
+        assert factor in tiling_header
+        assert factor in tiling
+        assert f"case {factor}:" in contract
+
+    expected_stage_shapes = (
+        (
+            "SVDQ_BF16_STAGE_ROUTING",
+            "SVDQ_INVALID_ID",
+            "SVDQ_INVALID_ID",
+            "SVDQ_REGION_ROUTED_X",
+            "routedRows",
+            "info.hiddenSize",
+            "info.hiddenSize",
+            "0",
+            "0",
+            "0",
+        ),
+        (
+            "SVDQ_BF16_STAGE_GATE_UP_L1_GEMM",
+            "SVDQ_FACTOR_GATE_UP_L1",
+            "SVDQ_REGION_ROUTED_X",
+            "SVDQ_REGION_PROJECTION_1",
+            "routedRows",
+            "info.hiddenSize",
+            "gateUpRank",
+            "0",
+            "0",
+            "0",
+        ),
+        (
+            "SVDQ_BF16_STAGE_GATE_L2_GEMM",
+            "SVDQ_FACTOR_GATE_L2",
+            "SVDQ_REGION_PROJECTION_1",
+            "SVDQ_REGION_PROJECTION_1",
+            "routedRows",
+            "info.gateRank",
+            "info.intermediateSize",
+            "info.gateRankOffset",
+            "gateOutputOffset",
+            "0",
+        ),
+        (
+            "SVDQ_BF16_STAGE_UP_L2_GEMM",
+            "SVDQ_FACTOR_UP_L2",
+            "SVDQ_REGION_PROJECTION_1",
+            "SVDQ_REGION_PROJECTION_1",
+            "routedRows",
+            "info.upRank",
+            "info.intermediateSize",
+            "info.upRankOffset",
+            "upOutputOffset",
+            "0",
+        ),
+        (
+            "SVDQ_BF16_STAGE_DOWN_L1_GEMM",
+            "SVDQ_FACTOR_DOWN_L1",
+            "SVDQ_REGION_HIDDEN",
+            "SVDQ_REGION_PROJECTION_2",
+            "routedRows",
+            "info.intermediateSize",
+            "info.downRank",
+            "0",
+            "0",
+            "0",
+        ),
+        (
+            "SVDQ_BF16_STAGE_DOWN_L2_GEMM",
+            "SVDQ_FACTOR_DOWN_L2",
+            "SVDQ_REGION_PROJECTION_2",
+            "SVDQ_REGION_PROJECTION_2",
+            "routedRows",
+            "info.downRank",
+            "info.hiddenSize",
+            "0",
+            "0",
+            "0",
+        ),
+    )
+    for stage, factor, input_region, output_region, m, k, n, input_offset, output_offset, factor_offset in expected_stage_shapes:
+        assert stage in tiling
+        assert factor in tiling
+        assert input_region in tiling
+        assert output_region in tiling
+        assert m in tiling
+        assert k in tiling
+        assert n in tiling
+        assert input_offset in tiling
+        assert output_offset in tiling
+        assert factor_offset in tiling
+
+    assert "BF16StageShape(uint32_t stageId)" in contract
+    assert "return tilingData_.bf16StageShapes[stageId]" in contract
+    assert "FactorAddress(uint32_t factorId)" in contract
+
+
 def test_svdq_cann_kernel_contract_resolves_factors_workspace_and_bf16_stages():
     op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
     kernel = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq.cpp").read_text()

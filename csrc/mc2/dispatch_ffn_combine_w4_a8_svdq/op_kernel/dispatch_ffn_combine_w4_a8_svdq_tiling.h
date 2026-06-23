@@ -15,6 +15,8 @@
 
 constexpr uint32_t SVDQ_WORKSPACE_REGION_COUNT = 12;
 constexpr uint32_t SVDQ_SYNC_FLAG_COUNT = 14;
+constexpr uint32_t SVDQ_BF16_STAGE_COUNT = 7;
+constexpr uint32_t SVDQ_INVALID_ID = 0xffffffffU;
 
 enum SVDQWorkspaceRegionId : uint32_t {
     SVDQ_REGION_EXPANDED_ROW_IDX = 0,
@@ -49,6 +51,24 @@ enum SVDQWorkspaceStage : uint32_t {
     SVDQ_STAGE_W4A8_GEMM_2 = 8,
     SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE = 9,
     SVDQ_STAGE_UNPERMUTE_COMBINE = 10,
+};
+
+enum SVDQFactorId : uint32_t {
+    SVDQ_FACTOR_GATE_UP_L1 = 0,
+    SVDQ_FACTOR_GATE_L2 = 1,
+    SVDQ_FACTOR_UP_L2 = 2,
+    SVDQ_FACTOR_DOWN_L1 = 3,
+    SVDQ_FACTOR_DOWN_L2 = 4,
+};
+
+enum SVDQBF16LowRankStageId : uint32_t {
+    SVDQ_BF16_STAGE_ROUTING = 0,
+    SVDQ_BF16_STAGE_GATE_UP_L1_GEMM = 1,
+    SVDQ_BF16_STAGE_GATE_UP_RANK_SPLIT = 2,
+    SVDQ_BF16_STAGE_GATE_L2_GEMM = 3,
+    SVDQ_BF16_STAGE_UP_L2_GEMM = 4,
+    SVDQ_BF16_STAGE_DOWN_L1_GEMM = 5,
+    SVDQ_BF16_STAGE_DOWN_L2_GEMM = 6,
 };
 
 struct SVDQWorkspaceRegion {
@@ -86,6 +106,19 @@ struct SVDQSyncFlag {
     uint32_t consumerWaitIndex;
 };
 
+struct SVDQBF16StageShape {
+    uint32_t stageId;
+    uint32_t factorId;
+    uint32_t inputRegionId;
+    uint32_t outputRegionId;
+    uint32_t m;
+    uint32_t k;
+    uint32_t n;
+    uint32_t inputColumnOffset;
+    uint32_t outputColumnOffset;
+    uint32_t factorColumnOffset;
+};
+
 struct DispatchFFNCombineW4A8SVDQInfo {
     uint32_t m;
     uint32_t hiddenSize;
@@ -108,6 +141,7 @@ struct DispatchFFNCombineW4A8SVDQTilingData {
     DispatchFFNCombineW4A8SVDQInfo info;
     SVDQWorkspaceRegion workspaceRegions[SVDQ_WORKSPACE_REGION_COUNT];
     SVDQSyncFlag syncFlags[SVDQ_SYNC_FLAG_COUNT];
+    SVDQBF16StageShape bf16StageShapes[SVDQ_BF16_STAGE_COUNT];
 };
 
 #endif  // ASCENDC_DISPATCH_FFN_COMBINE_W4A8_SVDQ_TILING_H

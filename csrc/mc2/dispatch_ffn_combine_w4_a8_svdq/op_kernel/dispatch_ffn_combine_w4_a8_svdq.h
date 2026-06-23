@@ -148,6 +148,29 @@ public:
         return tilingData_.syncFlags[flagId];
     }
 
+    __aicore__ inline SVDQBF16StageShape BF16StageShape(uint32_t stageId) const
+    {
+        return tilingData_.bf16StageShapes[stageId];
+    }
+
+    __aicore__ inline GM_ADDR FactorAddress(uint32_t factorId) const
+    {
+        switch (factorId) {
+            case SVDQ_FACTOR_GATE_UP_L1:
+                return runtime_.factors.gateUpSvdqL1;
+            case SVDQ_FACTOR_GATE_L2:
+                return runtime_.factors.gateSvdqL2;
+            case SVDQ_FACTOR_UP_L2:
+                return runtime_.factors.upSvdqL2;
+            case SVDQ_FACTOR_DOWN_L1:
+                return runtime_.factors.downSvdqL1;
+            case SVDQ_FACTOR_DOWN_L2:
+                return runtime_.factors.downSvdqL2;
+            default:
+                return nullptr;
+        }
+    }
+
     __aicore__ inline SVDQBF16StageContract BF16StageContract(uint32_t stageId) const
     {
         switch (stageId) {
