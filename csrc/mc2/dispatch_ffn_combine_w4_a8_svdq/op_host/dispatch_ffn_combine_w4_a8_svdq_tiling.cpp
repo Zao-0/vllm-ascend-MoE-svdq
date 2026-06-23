@@ -34,12 +34,19 @@ constexpr uint32_t X_INDEX = 0;
 constexpr uint32_t WEIGHT1_INDEX = 1;
 constexpr uint32_t WEIGHT2_INDEX = 2;
 constexpr uint32_t EXPERT_ID_INDEX = 3;
+constexpr uint32_t SCALE1_INDEX = 4;
+constexpr uint32_t SCALE2_INDEX = 5;
+constexpr uint32_t BIAS1_INDEX = 6;
+constexpr uint32_t BIAS2_INDEX = 7;
+constexpr uint32_t PROBS_INDEX = 8;
 constexpr uint32_t GATE_UP_SVDQ_L1_INDEX = 9;
 constexpr uint32_t GATE_SVDQ_L2_INDEX = 10;
 constexpr uint32_t UP_SVDQ_L2_INDEX = 11;
 constexpr uint32_t DOWN_SVDQ_L1_INDEX = 12;
 constexpr uint32_t DOWN_SVDQ_L2_INDEX = 13;
 constexpr uint32_t X_ACTIVE_MASK_INDEX = 14;
+constexpr uint32_t OUT_INDEX = 0;
+constexpr uint32_t EXPERT_TOKEN_NUMS_INDEX = 1;
 
 constexpr uint64_t SVDQ_WORKSPACE_ALIGNMENT = 512;
 constexpr uint64_t SVDQ_SYSTEM_WORKSPACE = 16UL * 1024UL * 1024UL;
@@ -209,6 +216,79 @@ static ge::graphStatus CheckRank3Shape(
     return ge::GRAPH_SUCCESS;
 }
 
+static ge::graphStatus CheckRequiredInputDType(
+    gert::TilingContext* context, uint32_t index, const char* name, ge::DataType expected)
+{
+    auto desc = context->GetInputDesc(index);
+    OP_TILING_CHECK(desc == nullptr, OP_LOGE(K_INNER_DEBUG, "%s desc is null.", name), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(desc->GetDataType() != expected,
+        OP_LOGE(K_INNER_DEBUG, "%s dtype mismatch.", name), return ge::GRAPH_FAILED);
+    return ge::GRAPH_SUCCESS;
+}
+
+static ge::graphStatus CheckDynamicInputDType(
+    gert::TilingContext* context, uint32_t index, const char* name, ge::DataType expected)
+{
+    auto desc = context->GetDynamicInputDesc(index, 0);
+    OP_TILING_CHECK(desc == nullptr, OP_LOGE(K_INNER_DEBUG, "%s dynamic desc is null.", name), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(desc->GetDataType() != expected,
+        OP_LOGE(K_INNER_DEBUG, "%s dtype mismatch.", name), return ge::GRAPH_FAILED);
+    return ge::GRAPH_SUCCESS;
+}
+
+static ge::graphStatus CheckOutputDType(
+    gert::TilingContext* context, uint32_t index, const char* name, ge::DataType expected)
+{
+    auto desc = context->GetOutputDesc(index);
+    OP_TILING_CHECK(desc == nullptr, OP_LOGE(K_INNER_DEBUG, "%s output desc is null.", name), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(desc->GetDataType() != expected,
+        OP_LOGE(K_INNER_DEBUG, "%s output dtype mismatch.", name), return ge::GRAPH_FAILED);
+    return ge::GRAPH_SUCCESS;
+}
+
+static ge::graphStatus DispatchFFNCombineW4A8SVDQCheckDType(gert::TilingContext* context)
+{
+    OP_TILING_CHECK(CheckRequiredInputDType(context, X_INDEX, "x", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "x dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckDynamicInputDType(context, WEIGHT1_INDEX, "w1", ge::DT_INT32) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "w1 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckDynamicInputDType(context, WEIGHT2_INDEX, "w2", ge::DT_INT32) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "w2 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, EXPERT_ID_INDEX, "expertIdx", ge::DT_INT32) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "expertIdx dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckDynamicInputDType(context, SCALE1_INDEX, "scale1", ge::DT_INT64) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "scale1 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckDynamicInputDType(context, SCALE2_INDEX, "scale2", ge::DT_INT64) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "scale2 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckDynamicInputDType(context, BIAS1_INDEX, "bias1", ge::DT_FLOAT) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "bias1 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckDynamicInputDType(context, BIAS2_INDEX, "bias2", ge::DT_FLOAT) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "bias2 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, PROBS_INDEX, "probs", ge::DT_FLOAT) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "probs dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, GATE_UP_SVDQ_L1_INDEX, "gateUpSvdqL1", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "gateUpSvdqL1 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, GATE_SVDQ_L2_INDEX, "gateSvdqL2", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "gateSvdqL2 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, UP_SVDQ_L2_INDEX, "upSvdqL2", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "upSvdqL2 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, DOWN_SVDQ_L1_INDEX, "downSvdqL1", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "downSvdqL1 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, DOWN_SVDQ_L2_INDEX, "downSvdqL2", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "downSvdqL2 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckOutputDType(context, OUT_INDEX, "out", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "out dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckOutputDType(context, EXPERT_TOKEN_NUMS_INDEX, "expertTokenNums", ge::DT_INT32) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "expertTokenNums dtype check failed."), return ge::GRAPH_FAILED);
+
+    auto xActiveMaskDesc = context->GetOptionalInputDesc(X_ACTIVE_MASK_INDEX);
+    if (xActiveMaskDesc != nullptr) {
+        OP_TILING_CHECK(xActiveMaskDesc->GetDataType() != ge::DT_BOOL,
+            OP_LOGE(K_INNER_DEBUG, "xActiveMask dtype mismatch."), return ge::GRAPH_FAILED);
+    }
+    return ge::GRAPH_SUCCESS;
+}
+
 static ge::graphStatus DispatchFFNCombineW4A8SVDQCheckShapeAndSetTiling(
     gert::TilingContext* context, DispatchFFNCombineW4A8SVDQInfo& info)
 {
@@ -245,14 +325,45 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQCheckShapeAndSetTiling(
 
     const gert::StorageShape* gateUpL1Shape = context->GetInputShape(GATE_UP_SVDQ_L1_INDEX);
     const gert::StorageShape* gateL2Shape = context->GetInputShape(GATE_SVDQ_L2_INDEX);
+    const gert::StorageShape* upL2Shape = context->GetInputShape(UP_SVDQ_L2_INDEX);
     const gert::StorageShape* downL1Shape = context->GetInputShape(DOWN_SVDQ_L1_INDEX);
+    const gert::StorageShape* downL2Shape = context->GetInputShape(DOWN_SVDQ_L2_INDEX);
     OP_TILING_CHECK(gateUpL1Shape->GetStorageShape().GetDim(1) != static_cast<int64_t>(info.gateRank + info.upRank),
         OP_LOGE(K_INNER_DEBUG, "gateUpSvdqL1 rank dim mismatch."), return ge::GRAPH_FAILED);
     OP_TILING_CHECK(gateUpL1Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(info.hiddenSize),
         OP_LOGE(K_INNER_DEBUG, "gateUpSvdqL1 hidden dim mismatch."), return ge::GRAPH_FAILED);
     info.intermediateSize = static_cast<uint32_t>(gateL2Shape->GetStorageShape().GetDim(1));
+    OP_TILING_CHECK(gateL2Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(info.gateRank),
+        OP_LOGE(K_INNER_DEBUG, "gateSvdqL2 rank dim mismatch."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(upL2Shape->GetStorageShape().GetDim(1) != static_cast<int64_t>(info.intermediateSize),
+        OP_LOGE(K_INNER_DEBUG, "upSvdqL2 intermediate dim mismatch."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(upL2Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(info.upRank),
+        OP_LOGE(K_INNER_DEBUG, "upSvdqL2 rank dim mismatch."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(downL1Shape->GetStorageShape().GetDim(1) != static_cast<int64_t>(info.downRank),
+        OP_LOGE(K_INNER_DEBUG, "downSvdqL1 rank dim mismatch."), return ge::GRAPH_FAILED);
     OP_TILING_CHECK(downL1Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(info.intermediateSize),
         OP_LOGE(K_INNER_DEBUG, "downSvdqL1 intermediate dim mismatch."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(downL2Shape->GetStorageShape().GetDim(1) != static_cast<int64_t>(info.hiddenSize),
+        OP_LOGE(K_INNER_DEBUG, "downSvdqL2 hidden dim mismatch."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(downL2Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(info.downRank),
+        OP_LOGE(K_INNER_DEBUG, "downSvdqL2 rank dim mismatch."), return ge::GRAPH_FAILED);
+
+    const gert::StorageShape* outShape = context->GetOutputShape(OUT_INDEX);
+    OP_TILING_CHECK(outShape == nullptr, OP_LOGE(K_INNER_DEBUG, "out shape is null."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(outShape->GetStorageShape().GetDimNum() != 2,
+        OP_LOGE(K_INNER_DEBUG, "out must be rank-2."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(outShape->GetStorageShape().GetDim(0) != static_cast<int64_t>(info.m),
+        OP_LOGE(K_INNER_DEBUG, "out token dim mismatch."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(outShape->GetStorageShape().GetDim(1) != static_cast<int64_t>(info.hiddenSize),
+        OP_LOGE(K_INNER_DEBUG, "out hidden dim mismatch."), return ge::GRAPH_FAILED);
+
+    const gert::StorageShape* expertTokenNumsShape = context->GetOutputShape(EXPERT_TOKEN_NUMS_INDEX);
+    OP_TILING_CHECK(expertTokenNumsShape == nullptr,
+        OP_LOGE(K_INNER_DEBUG, "expertTokenNums shape is null."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(expertTokenNumsShape->GetStorageShape().GetDimNum() != 1,
+        OP_LOGE(K_INNER_DEBUG, "expertTokenNums must be rank-1."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(expertTokenNumsShape->GetStorageShape().GetDim(0) != static_cast<int64_t>(info.expertPerRank),
+        OP_LOGE(K_INNER_DEBUG, "expertTokenNums expert dim mismatch."), return ge::GRAPH_FAILED);
 
     const gert::StorageShape* xActiveMaskShape = context->GetOptionalInputShape(X_ACTIVE_MASK_INDEX);
     if (xActiveMaskShape != nullptr) {
@@ -276,6 +387,8 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
     auto& info = tilingData->info;
     OP_TILING_CHECK(DispatchFFNCombineW4A8SVDQCheckAttrAndSetTiling(context, info) != ge::GRAPH_SUCCESS,
         OP_LOGE(nodeName, "CheckAttrAndSetTiling failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(DispatchFFNCombineW4A8SVDQCheckDType(context) != ge::GRAPH_SUCCESS,
+        OP_LOGE(nodeName, "CheckDType failed."), return ge::GRAPH_FAILED);
     OP_TILING_CHECK(DispatchFFNCombineW4A8SVDQCheckShapeAndSetTiling(context, info) != ge::GRAPH_SUCCESS,
         OP_LOGE(nodeName, "CheckShapeAndSetTiling failed."), return ge::GRAPH_FAILED);
 

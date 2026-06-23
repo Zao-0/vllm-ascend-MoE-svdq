@@ -283,6 +283,52 @@ def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
     assert "AscendC kernel is not implemented yet" in tiling
 
 
+def test_svdq_cann_tiling_validates_dtype_and_all_factor_shapes():
+    op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
+    tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
+
+    assert "DispatchFFNCombineW4A8SVDQCheckDType" in tiling
+    assert "CheckRequiredInputDType" in tiling
+    assert "CheckDynamicInputDType" in tiling
+    assert "CheckOutputDType" in tiling
+    assert "DispatchFFNCombineW4A8SVDQCheckDType(context)" in tiling
+
+    for expected_check in (
+        'CheckRequiredInputDType(context, X_INDEX, "x", ge::DT_BF16)',
+        'CheckDynamicInputDType(context, WEIGHT1_INDEX, "w1", ge::DT_INT32)',
+        'CheckDynamicInputDType(context, WEIGHT2_INDEX, "w2", ge::DT_INT32)',
+        'CheckRequiredInputDType(context, EXPERT_ID_INDEX, "expertIdx", ge::DT_INT32)',
+        'CheckDynamicInputDType(context, SCALE1_INDEX, "scale1", ge::DT_INT64)',
+        'CheckDynamicInputDType(context, SCALE2_INDEX, "scale2", ge::DT_INT64)',
+        'CheckDynamicInputDType(context, BIAS1_INDEX, "bias1", ge::DT_FLOAT)',
+        'CheckDynamicInputDType(context, BIAS2_INDEX, "bias2", ge::DT_FLOAT)',
+        'CheckRequiredInputDType(context, PROBS_INDEX, "probs", ge::DT_FLOAT)',
+        'CheckRequiredInputDType(context, GATE_UP_SVDQ_L1_INDEX, "gateUpSvdqL1", ge::DT_BF16)',
+        'CheckRequiredInputDType(context, GATE_SVDQ_L2_INDEX, "gateSvdqL2", ge::DT_BF16)',
+        'CheckRequiredInputDType(context, UP_SVDQ_L2_INDEX, "upSvdqL2", ge::DT_BF16)',
+        'CheckRequiredInputDType(context, DOWN_SVDQ_L1_INDEX, "downSvdqL1", ge::DT_BF16)',
+        'CheckRequiredInputDType(context, DOWN_SVDQ_L2_INDEX, "downSvdqL2", ge::DT_BF16)',
+        'CheckOutputDType(context, OUT_INDEX, "out", ge::DT_BF16)',
+        'CheckOutputDType(context, EXPERT_TOKEN_NUMS_INDEX, "expertTokenNums", ge::DT_INT32)',
+        "xActiveMaskDesc->GetDataType() != ge::DT_BOOL",
+    ):
+        assert expected_check in tiling
+
+    for expected_shape_check in (
+        "gateL2Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(info.gateRank)",
+        "upL2Shape->GetStorageShape().GetDim(1) != static_cast<int64_t>(info.intermediateSize)",
+        "upL2Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(info.upRank)",
+        "downL1Shape->GetStorageShape().GetDim(1) != static_cast<int64_t>(info.downRank)",
+        "downL1Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(info.intermediateSize)",
+        "downL2Shape->GetStorageShape().GetDim(1) != static_cast<int64_t>(info.hiddenSize)",
+        "downL2Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(info.downRank)",
+        "outShape->GetStorageShape().GetDim(0) != static_cast<int64_t>(info.m)",
+        "outShape->GetStorageShape().GetDim(1) != static_cast<int64_t>(info.hiddenSize)",
+        "expertTokenNumsShape->GetStorageShape().GetDim(0) != static_cast<int64_t>(info.expertPerRank)",
+    ):
+        assert expected_shape_check in tiling
+
+
 def test_svdq_cann_tiling_sync_flags_match_required_dataflow():
     op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
     tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
