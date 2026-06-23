@@ -930,6 +930,46 @@ private:
     SVDQFusedDownUpArgs args_{};
 };
 
+class SVDQLowRankDebugReadback {
+public:
+    __aicore__ inline SVDQLowRankDebugReadback() {}
+
+    __aicore__ inline void Init(const SVDQFusedDownUpArgs& args)
+    {
+        args_ = args;
+    }
+
+    __aicore__ inline bool IsEnabled() const
+    {
+#ifdef SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    __aicore__ inline bool HasCompleteContract() const
+    {
+        SVDQFusedDownUp lowRankOp;
+        lowRankOp.Init(args_);
+        return IsEnabled() && lowRankOp.HasCompleteContract();
+    }
+
+    __aicore__ inline bool Process() const
+    {
+        if (!HasCompleteContract()) {
+            return false;
+        }
+        SVDQFusedDownUp lowRankOp;
+        lowRankOp.Init(args_);
+        lowRankOp.Process();
+        return true;
+    }
+
+private:
+    SVDQFusedDownUpArgs args_{};
+};
+
 }  // namespace DispatchFFNCombineW4A8SVDQImpl
 
 #endif  // SVDQ_FUSED_DOWN_UP_HPP

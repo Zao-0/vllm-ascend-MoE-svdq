@@ -455,6 +455,15 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             "accumulatorGm, l0C, tile.mActual, tile.nActual, tile.nRound"
             in sources["lowrank_header"]
         ),
+        "lowrank_debug_runner_exists": "class SVDQLowRankDebugReadback" in sources["lowrank_header"],
+        "lowrank_debug_runner_macro_gated": (
+            "IsEnabled() const" in sources["lowrank_header"]
+            and "#ifdef SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK" in sources["lowrank_header"]
+        ),
+        "lowrank_debug_runner_bypasses_production_is_implemented_gate": (
+            "lowRankOp.Process();" in sources["lowrank_header"]
+            and "lowRankOp.HasCompleteContract()" in sources["lowrank_header"]
+        ),
     }
 
 
@@ -553,6 +562,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "lowrank_mmad_debug_readback_macro",
                 "lowrank_mmad_debug_readback_uses_fp32_l0c_to_gm",
                 "lowrank_mmad_debug_readback_targets_accumulator_gm",
+                "lowrank_debug_runner_exists",
+                "lowrank_debug_runner_macro_gated",
+                "lowrank_debug_runner_bypasses_production_is_implemented_gate",
             ],
         },
         "rank_split_contract": {

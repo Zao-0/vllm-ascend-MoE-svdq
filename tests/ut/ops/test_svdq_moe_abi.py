@@ -745,6 +745,11 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "RunScalarTileBF16(" in lowrank_header
     assert "RunMmadTileBF16(" in lowrank_header
     assert "RunPlannedTileBF16(" in lowrank_header
+    assert "class SVDQLowRankDebugReadback" in lowrank_header
+    assert "IsEnabled() const" in lowrank_header
+    assert "#ifdef SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK" in lowrank_header
+    assert "lowRankOp.HasCompleteContract()" in lowrank_header
+    assert "lowRankOp.Process();" in lowrank_header
     assert "BuildDownStagePlan() const" in lowrank_header
     assert "BuildPrimaryUpStagePlan() const" in lowrank_header
     assert "BuildSecondUpStagePlan() const" in lowrank_header
@@ -1144,6 +1149,9 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
             "lowrank_mmad_debug_readback_macro",
             "lowrank_mmad_debug_readback_uses_fp32_l0c_to_gm",
             "lowrank_mmad_debug_readback_targets_accumulator_gm",
+            "lowrank_debug_runner_exists",
+            "lowrank_debug_runner_macro_gated",
+            "lowrank_debug_runner_bypasses_production_is_implemented_gate",
         ],
     }
 
