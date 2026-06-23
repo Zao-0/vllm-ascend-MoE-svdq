@@ -651,9 +651,28 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "SVDQFusedDownUpArgs" in lowrank_header
     assert "SVDQFusedDownUp" in lowrank_header
     assert "HasIndependentSecondUp" in lowrank_header
+    assert "SVDQLowRankStageKind" in lowrank_header
+    assert "SVDQ_LOWRANK_STAGE_DOWN_PROJECT" in lowrank_header
+    assert "SVDQ_LOWRANK_STAGE_UP_PROJECT" in lowrank_header
+    assert "SVDQ_LOWRANK_STAGE_SECOND_UP_PROJECT" in lowrank_header
+    assert "SVDQLowRankStagePlan" in lowrank_header
+    assert "TotalRankColumns() const" in lowrank_header
+    assert "PrimaryOutputColumns() const" in lowrank_header
+    assert "StageCount() const" in lowrank_header
+    assert "StagePlan(uint32_t stageIndex)" in lowrank_header
+    assert "BuildDownStagePlan() const" in lowrank_header
+    assert "BuildPrimaryUpStagePlan() const" in lowrank_header
+    assert "BuildSecondUpStagePlan() const" in lowrank_header
     assert "IsImplemented() const" in lowrank_header
     assert "return false" in lowrank_header
+    assert "args_.tiling.invocationId < SVDQ_LOWRANK_INVOCATION_COUNT" in lowrank_header
+    assert "args_.tiling.secondInputColumnOffset + args_.tiling.secondRankColumns <= TotalRankColumns()" in lowrank_header
+    assert "args_.tiling.outputColumnOffset < args_.tiling.secondOutputColumnOffset" in lowrank_header
+    assert "for (uint32_t stageIndex = 0; stageIndex < StageCount(); ++stageIndex)" in lowrank_header
+    assert "stage.HasCompleteContract()" in lowrank_header
     assert "input BF16 -> down factor GEMM -> rank tile -> up factor GEMM -> projection BF16 GM" in lowrank_header
+    assert " / 2" not in lowrank_header
+    assert "total_rank" not in lowrank_header
 
     assert "SVDQFusedDownUpTiling" in tiling_header
     assert "lowRankInvocations[DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_COUNT]" in tiling_header

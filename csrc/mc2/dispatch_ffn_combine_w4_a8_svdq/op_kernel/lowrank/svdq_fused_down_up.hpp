@@ -17,6 +17,29 @@
 
 namespace DispatchFFNCombineW4A8SVDQImpl {
 
+enum SVDQLowRankStageKind : uint32_t {
+    SVDQ_LOWRANK_STAGE_DOWN_PROJECT = 0,
+    SVDQ_LOWRANK_STAGE_UP_PROJECT = 1,
+    SVDQ_LOWRANK_STAGE_SECOND_UP_PROJECT = 2,
+};
+
+struct SVDQLowRankStagePlan {
+    uint32_t stageKind;
+    uint32_t factorId;
+    GM_ADDR factor;
+    uint32_t inputColumns;
+    uint32_t outputColumns;
+    uint32_t inputColumnOffset;
+    uint32_t outputColumnOffset;
+    uint32_t factorColumnOffset;
+    bool writesGlobalOutput;
+
+    __aicore__ inline bool HasCompleteContract() const
+    {
+        return factor != nullptr && factorId != SVDQ_INVALID_ID && inputColumns > 0 && outputColumns > 0;
+    }
+};
+
 struct SVDQFusedDownUpArgs {
     GM_ADDR input;
     GM_ADDR downFactor;
@@ -43,13 +66,43 @@ public:
                args_.tiling.inputColumns > 0 && args_.tiling.rankColumns > 0 &&
                args_.tiling.outputColumns > 0 && args_.tiling.downFactorId != SVDQ_INVALID_ID &&
                args_.tiling.upFactorId != SVDQ_INVALID_ID &&
-               (args_.tiling.secondUpFactorId == SVDQ_INVALID_ID || args_.secondUpFactor != nullptr);
+               args_.tiling.invocationId < SVDQ_LOWRANK_INVOCATION_COUNT &&
+               (args_.tiling.secondUpFactorId == SVDQ_INVALID_ID || HasCompleteSecondUpContract());
     }
 
     __aicore__ inline bool HasIndependentSecondUp() const
     {
         return args_.tiling.secondUpFactorId != SVDQ_INVALID_ID && args_.secondUpFactor != nullptr &&
                args_.tiling.secondRankColumns > 0;
+    }
+
+    __aicore__ inline uint32_t TotalRankColumns() const
+    {
+        return args_.tiling.rankColumns + args_.tiling.secondRankColumns;
+    }
+
+    __aicore__ inline uint32_t PrimaryOutputColumns() const
+    {
+        if (!HasIndependentSecondUp()) {
+            return args_.tiling.outputColumns;
+        }
+        return args_.tiling.secondOutputColumnOffset - args_.tiling.outputColumnOffset;
+    }
+
+    __aicore__ inline uint32_t StageCount() const
+    {
+        return HasIndependentSecondUp() ? 3 : 2;
+    }
+
+    __aicore__ inline SVDQLowRankStagePlan StagePlan(uint32_t stageIndex) const
+    {
+        if (stageIndex == 0) {
+            return BuildDownStagePlan();
+        }
+        if (stageIndex == 1) {
+            return BuildPrimaryUpStagePlan();
+        }
+        return BuildSecondUpStagePlan();
     }
 
     __aicore__ inline bool IsImplemented() const
@@ -62,11 +115,70 @@ public:
         if (!HasCompleteContract()) {
             return;
         }
+        for (uint32_t stageIndex = 0; stageIndex < StageCount(); ++stageIndex) {
+            const SVDQLowRankStagePlan stage = StagePlan(stageIndex);
+            if (!stage.HasCompleteContract()) {
+                return;
+            }
+        }
         // The fused AIC math body will keep the low-rank bottleneck on-chip:
         // input BF16 -> down factor GEMM -> rank tile -> up factor GEMM -> projection BF16 GM.
     }
 
 private:
+    __aicore__ inline bool HasCompleteSecondUpContract() const
+    {
+        return args_.secondUpFactor != nullptr && args_.tiling.secondRankColumns > 0 &&
+               args_.tiling.secondInputColumnOffset + args_.tiling.secondRankColumns <= TotalRankColumns() &&
+               args_.tiling.secondOutputColumnOffset < args_.tiling.outputColumns &&
+               args_.tiling.outputColumnOffset < args_.tiling.secondOutputColumnOffset;
+    }
+
+    __aicore__ inline SVDQLowRankStagePlan BuildDownStagePlan() const
+    {
+        return SVDQLowRankStagePlan{
+            SVDQ_LOWRANK_STAGE_DOWN_PROJECT,
+            args_.tiling.downFactorId,
+            args_.downFactor,
+            args_.tiling.inputColumns,
+            TotalRankColumns(),
+            args_.tiling.inputColumnOffset,
+            0,
+            0,
+            false,
+        };
+    }
+
+    __aicore__ inline SVDQLowRankStagePlan BuildPrimaryUpStagePlan() const
+    {
+        return SVDQLowRankStagePlan{
+            SVDQ_LOWRANK_STAGE_UP_PROJECT,
+            args_.tiling.upFactorId,
+            args_.upFactor,
+            args_.tiling.rankColumns,
+            PrimaryOutputColumns(),
+            args_.tiling.inputColumnOffset,
+            args_.tiling.outputColumnOffset,
+            0,
+            true,
+        };
+    }
+
+    __aicore__ inline SVDQLowRankStagePlan BuildSecondUpStagePlan() const
+    {
+        return SVDQLowRankStagePlan{
+            SVDQ_LOWRANK_STAGE_SECOND_UP_PROJECT,
+            args_.tiling.secondUpFactorId,
+            args_.secondUpFactor,
+            args_.tiling.secondRankColumns,
+            args_.tiling.outputColumns - args_.tiling.secondOutputColumnOffset,
+            args_.tiling.secondInputColumnOffset,
+            args_.tiling.secondOutputColumnOffset,
+            0,
+            true,
+        };
+    }
+
     SVDQFusedDownUpArgs args_{};
 };
 
