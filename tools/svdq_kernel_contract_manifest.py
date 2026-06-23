@@ -23,6 +23,8 @@ HOST_TILING = OP_ROOT / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp"
 KERNEL_CONTRACT = OP_ROOT / "op_kernel/dispatch_ffn_combine_w4_a8_svdq.h"
 KERNEL_TILING = OP_ROOT / "op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h"
 LOWRANK_HEADER = OP_ROOT / "op_kernel/lowrank/svdq_fused_down_up.hpp"
+LOWRANK_DEBUG_HEADER = OP_ROOT / "op_kernel/lowrank/svdq_lowrank_debug_readback.h"
+LOWRANK_DEBUG_KERNEL = OP_ROOT / "op_kernel/lowrank/svdq_lowrank_debug_readback.cpp"
 
 FACTOR_ABI = [
     {"id": 0, "name": "SVDQ_FACTOR_GATE_UP_L1", "operator_tensor": "gate_up_svdq_l1"},
@@ -386,6 +388,8 @@ def _read_sources(repo_root: Path) -> dict[str, str]:
         "kernel_contract": (repo_root / KERNEL_CONTRACT).read_text(encoding="utf-8"),
         "kernel_tiling": (repo_root / KERNEL_TILING).read_text(encoding="utf-8"),
         "lowrank_header": (repo_root / LOWRANK_HEADER).read_text(encoding="utf-8"),
+        "lowrank_debug_header": (repo_root / LOWRANK_DEBUG_HEADER).read_text(encoding="utf-8"),
+        "lowrank_debug_kernel": (repo_root / LOWRANK_DEBUG_KERNEL).read_text(encoding="utf-8"),
     }
 
 
@@ -464,6 +468,28 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             "lowRankOp.Process();" in sources["lowrank_header"]
             and "lowRankOp.HasCompleteContract()" in sources["lowrank_header"]
         ),
+        "lowrank_debug_kernel_exists": "svdq_lowrank_debug_readback(" in sources["lowrank_debug_kernel"],
+        "lowrank_debug_kernel_uses_debug_runner": (
+            "SVDQLowRankDebugReadbackKernel op" in sources["lowrank_debug_kernel"]
+            and "op.Process();" in sources["lowrank_debug_kernel"]
+        ),
+        "lowrank_debug_kernel_exposes_readback_buffers": (
+            "GM_ADDR gateUpOutput" in sources["lowrank_debug_kernel"]
+            and "GM_ADDR downOutput" in sources["lowrank_debug_kernel"]
+            and "GM_ADDR gateUpAccumulator" in sources["lowrank_debug_kernel"]
+            and "GM_ADDR downAccumulator" in sources["lowrank_debug_kernel"]
+        ),
+        "lowrank_debug_kernel_uses_separate_tiling_contract": (
+            "struct SVDQLowRankDebugTilingData" in sources["lowrank_debug_header"]
+            and "SVDQFusedDownUpTiling gateUpInvocation" in sources["lowrank_debug_header"]
+            and "SVDQFusedDownUpTiling downInvocation" in sources["lowrank_debug_header"]
+        ),
+        "lowrank_debug_kernel_preserves_branch_separation": (
+            "BuildGateUpArgs() const" in sources["lowrank_debug_header"]
+            and "BuildDownArgs() const" in sources["lowrank_debug_header"]
+            and "runtime_.gateSvdqL2" in sources["lowrank_debug_header"]
+            and "runtime_.upSvdqL2" in sources["lowrank_debug_header"]
+        ),
     }
 
 
@@ -526,6 +552,11 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
         if not manifest["source_proof"].get(proof_name):
             raise ValueError(f"debug readback source proof failed: {proof_name}.")
 
+    debug_launch = manifest["debug_launch_contract"]
+    for proof_name in debug_launch["source_proof"]:
+        if not manifest["source_proof"].get(proof_name):
+            raise ValueError(f"debug launch source proof failed: {proof_name}.")
+
 
 def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
     sources = _read_sources(repo_root)
@@ -538,6 +569,8 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "kernel_contract": str(KERNEL_CONTRACT),
             "kernel_tiling": str(KERNEL_TILING),
             "lowrank_header": str(LOWRANK_HEADER),
+            "lowrank_debug_header": str(LOWRANK_DEBUG_HEADER),
+            "lowrank_debug_kernel": str(LOWRANK_DEBUG_KERNEL),
         },
         "factor_abi": FACTOR_ABI,
         "workspace_regions": WORKSPACE_REGIONS,
@@ -565,6 +598,34 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "lowrank_debug_runner_exists",
                 "lowrank_debug_runner_macro_gated",
                 "lowrank_debug_runner_bypasses_production_is_implemented_gate",
+            ],
+        },
+        "debug_launch_contract": {
+            "kernel_symbol": "svdq_lowrank_debug_readback",
+            "production_abi_changed": False,
+            "input_tensors": [
+                "routed_x",
+                "hidden",
+                "gate_up_svdq_l1",
+                "gate_svdq_l2",
+                "up_svdq_l2",
+                "down_svdq_l1",
+                "down_svdq_l2",
+                "expert_token_nums",
+            ],
+            "readback_tensors": [
+                "gate_up_output_bf16",
+                "down_output_bf16",
+                "gate_up_accumulator_fp32",
+                "down_accumulator_fp32",
+            ],
+            "tiling_contract": "SVDQLowRankDebugTilingData with gate/up and down SVDQFusedDownUpTiling records",
+            "source_proof": [
+                "lowrank_debug_kernel_exists",
+                "lowrank_debug_kernel_uses_debug_runner",
+                "lowrank_debug_kernel_exposes_readback_buffers",
+                "lowrank_debug_kernel_uses_separate_tiling_contract",
+                "lowrank_debug_kernel_preserves_branch_separation",
             ],
         },
         "rank_split_contract": {

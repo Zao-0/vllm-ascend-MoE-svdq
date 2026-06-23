@@ -654,6 +654,8 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     lowrank_tiling = (op_root / "op_kernel/lowrank/svdq_fused_down_up_tiling.h").read_text()
     lowrank_header = (op_root / "op_kernel/lowrank/svdq_fused_down_up.hpp").read_text()
     lowrank_cpp = (op_root / "op_kernel/lowrank/svdq_fused_down_up.cpp").read_text()
+    lowrank_debug_header = (op_root / "op_kernel/lowrank/svdq_lowrank_debug_readback.h").read_text()
+    lowrank_debug_kernel = (op_root / "op_kernel/lowrank/svdq_lowrank_debug_readback.cpp").read_text()
 
     assert '#include "lowrank/svdq_fused_down_up_tiling.h"' in tiling_header
     assert '#include "lowrank/svdq_fused_down_up.hpp"' in contract
@@ -750,6 +752,21 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "#ifdef SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK" in lowrank_header
     assert "lowRankOp.HasCompleteContract()" in lowrank_header
     assert "lowRankOp.Process();" in lowrank_header
+    assert "struct SVDQLowRankDebugTilingData" in lowrank_debug_header
+    assert "SVDQFusedDownUpTiling gateUpInvocation" in lowrank_debug_header
+    assert "SVDQFusedDownUpTiling downInvocation" in lowrank_debug_header
+    assert "class SVDQLowRankDebugReadbackKernel" in lowrank_debug_header
+    assert "BuildGateUpArgs() const" in lowrank_debug_header
+    assert "BuildDownArgs() const" in lowrank_debug_header
+    assert "runtime_.gateSvdqL2" in lowrank_debug_header
+    assert "runtime_.upSvdqL2" in lowrank_debug_header
+    assert "svdq_lowrank_debug_readback(" in lowrank_debug_kernel
+    assert "GM_ADDR gateUpOutput" in lowrank_debug_kernel
+    assert "GM_ADDR downOutput" in lowrank_debug_kernel
+    assert "GM_ADDR gateUpAccumulator" in lowrank_debug_kernel
+    assert "GM_ADDR downAccumulator" in lowrank_debug_kernel
+    assert "SVDQLowRankDebugReadbackKernel op" in lowrank_debug_kernel
+    assert "op.Process();" in lowrank_debug_kernel
     assert "BuildDownStagePlan() const" in lowrank_header
     assert "BuildPrimaryUpStagePlan() const" in lowrank_header
     assert "BuildSecondUpStagePlan() const" in lowrank_header
@@ -974,6 +991,10 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "gate_up_svdq_l2" not in lowrank_header
     assert "gateUpSvdqL2" not in lowrank_tiling
     assert "gate_up_svdq_l2" not in lowrank_tiling
+    assert "gateUpSvdqL2" not in lowrank_debug_header
+    assert "gate_up_svdq_l2" not in lowrank_debug_header
+    assert "gateUpSvdqL2" not in lowrank_debug_kernel
+    assert "gate_up_svdq_l2" not in lowrank_debug_kernel
 
 
 def test_svdq_cann_kernel_contract_resolves_factors_workspace_and_bf16_stages():
@@ -1111,6 +1132,12 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_files"]["op_cmake"] == (
         "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_host/CMakeLists.txt"
     )
+    assert loaded["source_files"]["lowrank_debug_header"] == (
+        "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/lowrank/svdq_lowrank_debug_readback.h"
+    )
+    assert loaded["source_files"]["lowrank_debug_kernel"] == (
+        "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/lowrank/svdq_lowrank_debug_readback.cpp"
+    )
     assert loaded["counts"] == {
         "factor_abi": 5,
         "workspace_regions": 14,
@@ -1152,6 +1179,34 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
             "lowrank_debug_runner_exists",
             "lowrank_debug_runner_macro_gated",
             "lowrank_debug_runner_bypasses_production_is_implemented_gate",
+        ],
+    }
+    assert loaded["debug_launch_contract"] == {
+        "kernel_symbol": "svdq_lowrank_debug_readback",
+        "production_abi_changed": False,
+        "input_tensors": [
+            "routed_x",
+            "hidden",
+            "gate_up_svdq_l1",
+            "gate_svdq_l2",
+            "up_svdq_l2",
+            "down_svdq_l1",
+            "down_svdq_l2",
+            "expert_token_nums",
+        ],
+        "readback_tensors": [
+            "gate_up_output_bf16",
+            "down_output_bf16",
+            "gate_up_accumulator_fp32",
+            "down_accumulator_fp32",
+        ],
+        "tiling_contract": "SVDQLowRankDebugTilingData with gate/up and down SVDQFusedDownUpTiling records",
+        "source_proof": [
+            "lowrank_debug_kernel_exists",
+            "lowrank_debug_kernel_uses_debug_runner",
+            "lowrank_debug_kernel_exposes_readback_buffers",
+            "lowrank_debug_kernel_uses_separate_tiling_contract",
+            "lowrank_debug_kernel_preserves_branch_separation",
         ],
     }
 
