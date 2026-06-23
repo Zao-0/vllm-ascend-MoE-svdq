@@ -671,6 +671,13 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "SVDQLowRankCoreTileRange" in lowrank_header
     assert "SVDQLowRankTilePlan" in lowrank_header
     assert "SVDQLowRankTileTensorPlan" in lowrank_header
+    assert "SVDQLowRankMmadTilePlan" in lowrank_header
+    assert "SVDQ_LOWRANK_MMAD_M_TILE = 16" in lowrank_header
+    assert "SVDQ_LOWRANK_MMAD_N_TILE = 64" in lowrank_header
+    assert "SVDQ_LOWRANK_MMAD_K_TILE = 64" in lowrank_header
+    assert "SVDQ_LOWRANK_MMAD_M_ALIGNMENT = 16" in lowrank_header
+    assert "SVDQ_LOWRANK_MMAD_N_ALIGNMENT = 16" in lowrank_header
+    assert "SVDQ_LOWRANK_MMAD_K_ALIGNMENT = 16" in lowrank_header
     assert "TotalRankColumns() const" in lowrank_header
     assert "PrimaryOutputColumns() const" in lowrank_header
     assert "StageCount() const" in lowrank_header
@@ -688,6 +695,8 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "CoreTileRange(uint32_t coreIdx, uint32_t coreCount)" in lowrank_header
     assert "TilePlan(uint32_t tileId)" in lowrank_header
     assert "BuildTileTensorPlan(" in lowrank_header
+    assert "BuildMmadTilePlan(" in lowrank_header
+    assert "HasCompatibleShape() const" in lowrank_header
     assert "InputElementOffset(" in lowrank_header
     assert "FactorElementOffset(" in lowrank_header
     assert "OutputElementOffset(" in lowrank_header
@@ -704,6 +713,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "BuildSecondUpStagePlan() const" in lowrank_header
     assert "CeilDiv(uint32_t value, uint32_t divisor)" in lowrank_header
     assert "Min(uint32_t lhs, uint32_t rhs)" in lowrank_header
+    assert "RoundUp(uint32_t value, uint32_t alignment)" in lowrank_header
     assert "MatrixAddress(" in lowrank_header
     assert "FactorAddress(const SVDQLowRankStagePlan& stage, uint32_t expertId)" in lowrank_header
     assert "AccumulatorAddress(" in lowrank_header
@@ -734,6 +744,22 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "FactorTileAddress(expert, tilePlan.outputColumnOffset, tilePlan.kColumnOffset)" in lowrank_header
     assert "MatrixAddress(expert.output, rowOffset, stage.outputStrideColumns, tilePlan.outputColumnOffset)" in lowrank_header
     assert "AccumulatorAddress(expert, rowOffset, tilePlan.outputColumnOffset)" in lowrank_header
+    assert "const uint32_t mActual = tilePlan.tile.rowCount" in lowrank_header
+    assert "const uint32_t nActual = tilePlan.tile.outputColumnCount" in lowrank_header
+    assert "const uint32_t kActual = tilePlan.tile.kColumnCount" in lowrank_header
+    assert "const uint32_t mRound = RoundUp(mActual, SVDQ_LOWRANK_MMAD_M_ALIGNMENT)" in lowrank_header
+    assert "const uint32_t nRound = RoundUp(nActual, SVDQ_LOWRANK_MMAD_N_ALIGNMENT)" in lowrank_header
+    assert "const uint32_t kRound = RoundUp(kActual, SVDQ_LOWRANK_MMAD_K_ALIGNMENT)" in lowrank_header
+    assert "mActual <= SVDQ_LOWRANK_MMAD_M_TILE" in lowrank_header
+    assert "nActual <= SVDQ_LOWRANK_MMAD_N_TILE" in lowrank_header
+    assert "kActual <= SVDQ_LOWRANK_MMAD_K_TILE" in lowrank_header
+    assert "mRound <= SVDQ_LOWRANK_MMAD_M_TILE" in lowrank_header
+    assert "nRound <= SVDQ_LOWRANK_MMAD_N_TILE" in lowrank_header
+    assert "kRound <= SVDQ_LOWRANK_MMAD_K_TILE" in lowrank_header
+    assert "tile.inputStrideColumns >= tile.tile.kColumnOffset + kActual" in lowrank_header
+    assert "tile.factorStrideColumns >= tile.tile.kColumnOffset + kActual" in lowrank_header
+    assert "tile.outputStrideColumns >= tile.tile.outputColumnOffset + nActual" in lowrank_header
+    assert "tile.accumulatorStrideColumns >= tile.tile.outputColumnOffset + nActual" in lowrank_header
     assert "input.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tilePlan.input))" in lowrank_header
     assert "factor.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tilePlan.factor))" in lowrank_header
     assert "output.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tilePlan.output))" in lowrank_header
@@ -755,6 +781,8 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "const SVDQLowRankCoreTileRange tileRange = CoreTileRange(coreIdx, scheduledCoreCount)" in lowrank_header
     assert "const SVDQLowRankTilePlan tilePlan = TilePlan(tileRange.tileStart + tileOffset)" in lowrank_header
     assert "const SVDQLowRankTileTensorPlan tileTensorPlan = BuildTileTensorPlan(tilePlan)" in lowrank_header
+    assert "const SVDQLowRankMmadTilePlan mm" in lowrank_header
+    assert "if (!mmadTilePlan.HasCompatibleShape())" in lowrank_header
     assert "if (!RunScalarTileBF16(tileTensorPlan))" in lowrank_header
     assert "rowTiles * StageColumnTileCount(stage) * StageKTileCount(stage)" in lowrank_header
     assert "const uint32_t tilesPerRow = columnTiles * kTiles" in lowrank_header

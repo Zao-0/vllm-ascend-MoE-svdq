@@ -18,6 +18,12 @@
 namespace DispatchFFNCombineW4A8SVDQImpl {
 
 constexpr uint32_t SVDQ_LOWRANK_BF16_BYTES = 2;
+constexpr uint32_t SVDQ_LOWRANK_MMAD_M_TILE = 16;
+constexpr uint32_t SVDQ_LOWRANK_MMAD_N_TILE = 64;
+constexpr uint32_t SVDQ_LOWRANK_MMAD_K_TILE = 64;
+constexpr uint32_t SVDQ_LOWRANK_MMAD_M_ALIGNMENT = 16;
+constexpr uint32_t SVDQ_LOWRANK_MMAD_N_ALIGNMENT = 16;
+constexpr uint32_t SVDQ_LOWRANK_MMAD_K_ALIGNMENT = 16;
 
 enum SVDQLowRankStageKind : uint32_t {
     SVDQ_LOWRANK_STAGE_DOWN_PROJECT = 0,
@@ -104,6 +110,30 @@ struct SVDQLowRankTileTensorPlan {
         return tile.HasWork() && input != nullptr && factor != nullptr && output != nullptr &&
                accumulator != nullptr && inputStrideColumns > 0 && factorStrideColumns > 0 &&
                outputStrideColumns > 0 && accumulatorStrideColumns > 0;
+    }
+};
+
+struct SVDQLowRankMmadTilePlan {
+    SVDQLowRankTileTensorPlan tile;
+    uint32_t mActual;
+    uint32_t nActual;
+    uint32_t kActual;
+    uint32_t mRound;
+    uint32_t nRound;
+    uint32_t kRound;
+    bool canUseMmad;
+
+    __aicore__ inline bool HasCompatibleShape() const
+    {
+        return canUseMmad && tile.HasWork() && mActual > 0 && nActual > 0 && kActual > 0 &&
+               mActual <= SVDQ_LOWRANK_MMAD_M_TILE && nActual <= SVDQ_LOWRANK_MMAD_N_TILE &&
+               kActual <= SVDQ_LOWRANK_MMAD_K_TILE && mRound > 0 && nRound > 0 && kRound > 0 &&
+               mRound <= SVDQ_LOWRANK_MMAD_M_TILE && nRound <= SVDQ_LOWRANK_MMAD_N_TILE &&
+               kRound <= SVDQ_LOWRANK_MMAD_K_TILE &&
+               tile.inputStrideColumns >= tile.tile.kColumnOffset + kActual &&
+               tile.factorStrideColumns >= tile.tile.kColumnOffset + kActual &&
+               tile.outputStrideColumns >= tile.tile.outputColumnOffset + nActual &&
+               tile.accumulatorStrideColumns >= tile.tile.outputColumnOffset + nActual;
     }
 };
 
@@ -335,6 +365,36 @@ public:
         };
     }
 
+    __aicore__ inline SVDQLowRankMmadTilePlan BuildMmadTilePlan(
+        const SVDQLowRankTileTensorPlan& tilePlan) const
+    {
+        if (!tilePlan.HasWork()) {
+            return {};
+        }
+        const uint32_t mActual = tilePlan.tile.rowCount;
+        const uint32_t nActual = tilePlan.tile.outputColumnCount;
+        const uint32_t kActual = tilePlan.tile.kColumnCount;
+        const uint32_t mRound = RoundUp(mActual, SVDQ_LOWRANK_MMAD_M_ALIGNMENT);
+        const uint32_t nRound = RoundUp(nActual, SVDQ_LOWRANK_MMAD_N_ALIGNMENT);
+        const uint32_t kRound = RoundUp(kActual, SVDQ_LOWRANK_MMAD_K_ALIGNMENT);
+        const bool canUseMmad = mActual <= SVDQ_LOWRANK_MMAD_M_TILE &&
+                                nActual <= SVDQ_LOWRANK_MMAD_N_TILE &&
+                                kActual <= SVDQ_LOWRANK_MMAD_K_TILE &&
+                                mRound <= SVDQ_LOWRANK_MMAD_M_TILE &&
+                                nRound <= SVDQ_LOWRANK_MMAD_N_TILE &&
+                                kRound <= SVDQ_LOWRANK_MMAD_K_TILE;
+        return SVDQLowRankMmadTilePlan{
+            tilePlan,
+            mActual,
+            nActual,
+            kActual,
+            mRound,
+            nRound,
+            kRound,
+            canUseMmad,
+        };
+    }
+
     __aicore__ inline uint64_t InputElementOffset(
         const SVDQLowRankTileTensorPlan& tilePlan, uint32_t rowOffset, uint32_t kOffset) const
     {
@@ -473,6 +533,10 @@ public:
             if (!tileTensorPlan.HasWork()) {
                 return;
             }
+            const SVDQLowRankMmadTilePlan mmadTilePlan = BuildMmadTilePlan(tileTensorPlan);
+            if (!mmadTilePlan.HasCompatibleShape()) {
+                return;
+            }
             if (!RunScalarTileBF16(tileTensorPlan)) {
                 return;
             }
@@ -498,6 +562,11 @@ private:
     __aicore__ inline uint32_t Min(uint32_t lhs, uint32_t rhs) const
     {
         return lhs < rhs ? lhs : rhs;
+    }
+
+    __aicore__ inline uint32_t RoundUp(uint32_t value, uint32_t alignment) const
+    {
+        return alignment == 0 ? 0 : CeilDiv(value, alignment) * alignment;
     }
 
     __aicore__ inline SVDQLowRankStagePlan BuildDownStagePlan() const
