@@ -1537,6 +1537,7 @@ if [[ "$ENABLE_TEST" == "TRUE" ]]; then
     set_compute_unit_option
     build_ut ${BUILD}
 elif [[ "$ENABLE_CREATE_LIB" == "TRUE" ]]; then
+    set_compute_unit_option
     build_lib
 elif [[ "$ENABLE_STATIC" == "TRUE" ]]; then
     IFS=';' read -ra SOC_ARRAY <<< "$ASCEND_SOC_UNITS"  # 分割字符串为数组

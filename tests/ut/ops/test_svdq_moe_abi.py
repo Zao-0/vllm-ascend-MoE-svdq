@@ -269,6 +269,14 @@ def test_svdq_cann_op_is_selected_by_a3_aclnn_build_script():
     assert a3_ops.index('"dispatch_ffn_combine_w4_a8_svdq"') < a3_ops.index('"dispatch_ffn_combine_bf16"')
 
 
+def test_cann_host_library_build_path_honors_soc_selection():
+    build_script = (REPO_ROOT / "csrc/build.sh").read_text()
+    create_lib_branch = build_script[build_script.index('elif [[ "$ENABLE_CREATE_LIB" == "TRUE" ]];') :]
+    create_lib_branch = create_lib_branch[: create_lib_branch.index('elif [[ "$ENABLE_STATIC" == "TRUE" ]];')]
+
+    assert create_lib_branch.index("set_compute_unit_option") < create_lib_branch.index("build_lib")
+
+
 def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
     op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
     tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
