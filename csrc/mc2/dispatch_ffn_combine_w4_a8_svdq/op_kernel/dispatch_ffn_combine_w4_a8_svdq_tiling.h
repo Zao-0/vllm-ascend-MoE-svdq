@@ -134,6 +134,7 @@ struct DispatchFFNCombineW4A8SVDQInfo {
     uint32_t downRank;
     uint32_t gateRankOffset;
     uint32_t upRankOffset;
+    uint32_t lowRankCoreCount;
     uint64_t workspaceBytes;
     uint32_t syncFlagCount;
     float swigluLimit;

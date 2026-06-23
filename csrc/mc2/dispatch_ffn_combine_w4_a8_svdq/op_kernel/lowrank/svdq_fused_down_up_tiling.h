@@ -38,6 +38,10 @@ struct SVDQFusedDownUpTiling {
     uint32_t outputColumnOffset;
     uint32_t secondInputColumnOffset;
     uint32_t secondOutputColumnOffset;
+    uint32_t rowTile;
+    uint32_t outputColumnTile;
+    uint32_t kTile;
+    uint32_t coreCount;
 };
 
 }  // namespace DispatchFFNCombineW4A8SVDQImpl

@@ -54,6 +54,9 @@ constexpr uint64_t INT8_BYTES = 1;
 constexpr uint64_t INT32_BYTES = 4;
 constexpr uint64_t BF16_BYTES = 2;
 constexpr uint64_t FP32_BYTES = 4;
+constexpr uint32_t SVDQ_LOWRANK_ROW_TILE = 16;
+constexpr uint32_t SVDQ_LOWRANK_OUTPUT_COLUMN_TILE = 64;
+constexpr uint32_t SVDQ_LOWRANK_K_TILE = 64;
 }  // namespace
 
 namespace optiling {
@@ -211,7 +214,7 @@ static void SetLowRankInvocation(
     uint32_t outputRegionId, uint32_t downFactorId, uint32_t upFactorId, uint32_t secondUpFactorId,
     uint32_t m, uint32_t inputColumns, uint32_t rankColumns, uint32_t secondRankColumns,
     uint32_t outputColumns, uint32_t inputColumnOffset, uint32_t outputColumnOffset,
-    uint32_t secondInputColumnOffset, uint32_t secondOutputColumnOffset)
+    uint32_t secondInputColumnOffset, uint32_t secondOutputColumnOffset, uint32_t coreCount)
 {
     auto& invocation = tilingData->lowRankInvocations[invocationId];
     invocation.invocationId = invocationId;
@@ -229,6 +232,10 @@ static void SetLowRankInvocation(
     invocation.outputColumnOffset = outputColumnOffset;
     invocation.secondInputColumnOffset = secondInputColumnOffset;
     invocation.secondOutputColumnOffset = secondOutputColumnOffset;
+    invocation.rowTile = SVDQ_LOWRANK_ROW_TILE;
+    invocation.outputColumnTile = SVDQ_LOWRANK_OUTPUT_COLUMN_TILE;
+    invocation.kTile = SVDQ_LOWRANK_K_TILE;
+    invocation.coreCount = coreCount;
 }
 
 static void BuildLowRankInvocationTable(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
@@ -239,10 +246,25 @@ static void BuildLowRankInvocationTable(DispatchFFNCombineW4A8SVDQTilingData* ti
     SetLowRankInvocation(tilingData, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_GATE_UP,
         SVDQ_REGION_ROUTED_X, SVDQ_REGION_PROJECTION_1, SVDQ_FACTOR_GATE_UP_L1, SVDQ_FACTOR_GATE_L2,
         SVDQ_FACTOR_UP_L2, routedRows, info.hiddenSize, info.gateRank, info.upRank,
-        info.intermediateSize * 2, info.gateRankOffset, 0, info.upRankOffset, info.intermediateSize);
+        info.intermediateSize * 2, info.gateRankOffset, 0, info.upRankOffset, info.intermediateSize,
+        info.lowRankCoreCount);
     SetLowRankInvocation(tilingData, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_DOWN,
         SVDQ_REGION_HIDDEN, SVDQ_REGION_PROJECTION_2, SVDQ_FACTOR_DOWN_L1, SVDQ_FACTOR_DOWN_L2,
-        SVDQ_INVALID_ID, routedRows, info.intermediateSize, info.downRank, 0, info.hiddenSize, 0, 0, 0, 0);
+        SVDQ_INVALID_ID, routedRows, info.intermediateSize, info.downRank, 0, info.hiddenSize, 0, 0, 0, 0,
+        info.lowRankCoreCount);
+}
+
+static ge::graphStatus DispatchFFNCombineW4A8SVDQGetPlatformInfoAndSetTiling(
+    gert::TilingContext* context, DispatchFFNCombineW4A8SVDQInfo& info)
+{
+    auto ascendcPlatform = platform_ascendc::PlatformAscendC(context->GetPlatformInfo());
+    const uint32_t aicNum = ascendcPlatform.GetCoreNumAic();
+    const uint32_t aivNum = ascendcPlatform.GetCoreNumAiv();
+    const uint32_t blockDim = ascendcPlatform.CalcTschBlockDim(aivNum, aicNum, aivNum);
+    info.lowRankCoreCount = blockDim;
+    context->SetBlockDim(blockDim);
+    context->SetTilingKey(1000000);
+    return ge::GRAPH_SUCCESS;
 }
 
 static ge::graphStatus DispatchFFNCombineW4A8SVDQCheckAttrAndSetTiling(
@@ -474,6 +496,8 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
         OP_LOGE(nodeName, "CheckDType failed."), return ge::GRAPH_FAILED);
     OP_TILING_CHECK(DispatchFFNCombineW4A8SVDQCheckShapeAndSetTiling(context, info) != ge::GRAPH_SUCCESS,
         OP_LOGE(nodeName, "CheckShapeAndSetTiling failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(DispatchFFNCombineW4A8SVDQGetPlatformInfoAndSetTiling(context, info) != ge::GRAPH_SUCCESS,
+        OP_LOGE(nodeName, "GetPlatformInfoAndSetTiling failed."), return ge::GRAPH_FAILED);
 
     BuildWorkspaceMap(tilingData);
     BuildSyncFlagTable(tilingData);

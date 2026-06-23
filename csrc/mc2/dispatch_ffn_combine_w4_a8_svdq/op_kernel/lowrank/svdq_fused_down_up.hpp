@@ -60,6 +60,32 @@ struct SVDQLowRankExpertPlan {
     }
 };
 
+struct SVDQLowRankCoreTileRange {
+    uint32_t tileStart;
+    uint32_t tileCount;
+
+    __aicore__ inline bool HasWork() const
+    {
+        return tileCount > 0;
+    }
+};
+
+struct SVDQLowRankTilePlan {
+    SVDQLowRankExpertPlan expert;
+    uint32_t tileId;
+    uint32_t rowStart;
+    uint32_t rowCount;
+    uint32_t outputColumnOffset;
+    uint32_t outputColumnCount;
+    uint32_t kColumnOffset;
+    uint32_t kColumnCount;
+
+    __aicore__ inline bool HasWork() const
+    {
+        return expert.HasWork() && rowCount > 0 && outputColumnCount > 0 && kColumnCount > 0;
+    }
+};
+
 struct SVDQFusedDownUpArgs {
     GM_ADDR input;
     GM_ADDR downFactor;
@@ -88,7 +114,9 @@ public:
                args_.tiling.outputColumns > 0 && args_.tiling.downFactorId != SVDQ_INVALID_ID &&
                args_.tiling.upFactorId != SVDQ_INVALID_ID &&
                args_.tiling.invocationId < SVDQ_LOWRANK_INVOCATION_COUNT &&
-               args_.expertPerRank > 0 &&
+               args_.expertPerRank > 0 && args_.tiling.rowTile > 0 &&
+               args_.tiling.outputColumnTile > 0 && args_.tiling.kTile > 0 &&
+               args_.tiling.coreCount > 0 &&
                (args_.tiling.secondUpFactorId == SVDQ_INVALID_ID || HasCompleteSecondUpContract());
     }
 
@@ -169,6 +197,98 @@ public:
         };
     }
 
+    __aicore__ inline uint32_t StageColumnTileCount(const SVDQLowRankStagePlan& stage) const
+    {
+        return CeilDiv(stage.outputColumns, args_.tiling.outputColumnTile);
+    }
+
+    __aicore__ inline uint32_t StageKTileCount(const SVDQLowRankStagePlan& stage) const
+    {
+        return CeilDiv(stage.inputColumns, args_.tiling.kTile);
+    }
+
+    __aicore__ inline uint32_t ExpertRowTileCount(uint32_t tokenCount) const
+    {
+        return CeilDiv(tokenCount, args_.tiling.rowTile);
+    }
+
+    __aicore__ inline uint32_t ExpertTileCount(uint32_t stageIndex, uint32_t expertId) const
+    {
+        const SVDQLowRankStagePlan stage = StagePlan(stageIndex);
+        const uint32_t rowTiles = ExpertRowTileCount(ExpertTokenCount(expertId));
+        return rowTiles * StageColumnTileCount(stage) * StageKTileCount(stage);
+    }
+
+    __aicore__ inline uint32_t StageTileCount(uint32_t stageIndex) const
+    {
+        uint32_t tileCount = 0;
+        for (uint32_t expertId = 0; expertId < ExpertCount(); ++expertId) {
+            tileCount += ExpertTileCount(stageIndex, expertId);
+        }
+        return tileCount;
+    }
+
+    __aicore__ inline uint32_t InvocationTileCount() const
+    {
+        uint32_t tileCount = 0;
+        for (uint32_t stageIndex = 0; stageIndex < StageCount(); ++stageIndex) {
+            tileCount += StageTileCount(stageIndex);
+        }
+        return tileCount;
+    }
+
+    __aicore__ inline SVDQLowRankCoreTileRange CoreTileRange(uint32_t coreIdx, uint32_t coreCount) const
+    {
+        const uint32_t tileCount = InvocationTileCount();
+        if (coreIdx >= coreCount || coreCount == 0 || tileCount == 0) {
+            return {0, 0};
+        }
+        const uint32_t baseTiles = tileCount / coreCount;
+        const uint32_t remainder = tileCount - baseTiles * coreCount;
+        const uint32_t extra = coreIdx < remainder ? 1 : 0;
+        const uint32_t tileStart = coreIdx * baseTiles + Min(coreIdx, remainder);
+        return {tileStart, baseTiles + extra};
+    }
+
+    __aicore__ inline SVDQLowRankTilePlan TilePlan(uint32_t tileId) const
+    {
+        uint32_t remainingTile = tileId;
+        for (uint32_t stageIndex = 0; stageIndex < StageCount(); ++stageIndex) {
+            const SVDQLowRankStagePlan stage = StagePlan(stageIndex);
+            const uint32_t columnTiles = StageColumnTileCount(stage);
+            const uint32_t kTiles = StageKTileCount(stage);
+            const uint32_t tilesPerRow = columnTiles * kTiles;
+            for (uint32_t expertId = 0; expertId < ExpertCount(); ++expertId) {
+                const SVDQLowRankExpertPlan expertPlan = ExpertStagePlan(stageIndex, expertId);
+                const uint32_t rowTiles = ExpertRowTileCount(expertPlan.tokenCount);
+                const uint32_t expertTileCount = rowTiles * tilesPerRow;
+                if (remainingTile >= expertTileCount) {
+                    remainingTile -= expertTileCount;
+                    continue;
+                }
+
+                const uint32_t rowTileIndex = remainingTile / tilesPerRow;
+                const uint32_t inRowTileOffset = remainingTile - rowTileIndex * tilesPerRow;
+                const uint32_t outputTileIndex = inRowTileOffset / kTiles;
+                const uint32_t kTileIndex = inRowTileOffset - outputTileIndex * kTiles;
+                const uint32_t rowOffset = rowTileIndex * args_.tiling.rowTile;
+                const uint32_t outputColumnOffset = outputTileIndex * args_.tiling.outputColumnTile;
+                const uint32_t kColumnOffset = kTileIndex * args_.tiling.kTile;
+                return SVDQLowRankTilePlan{
+                    expertPlan,
+                    tileId,
+                    expertPlan.tokenStart + rowOffset,
+                    Min(args_.tiling.rowTile, expertPlan.tokenCount - rowOffset),
+                    outputColumnOffset,
+                    Min(args_.tiling.outputColumnTile, stage.outputColumns - outputColumnOffset),
+                    kColumnOffset,
+                    Min(args_.tiling.kTile, stage.inputColumns - kColumnOffset),
+                };
+            }
+        }
+        return {};
+    }
+
     __aicore__ inline bool IsImplemented() const
     {
         return false;
@@ -191,6 +311,16 @@ public:
                 }
             }
         }
+        const uint32_t coreIdx = AscendC::GetBlockIdx();
+        const uint32_t runtimeCoreCount = AscendC::GetBlockNum();
+        const uint32_t scheduledCoreCount = args_.tiling.coreCount <= runtimeCoreCount ? args_.tiling.coreCount : runtimeCoreCount;
+        const SVDQLowRankCoreTileRange tileRange = CoreTileRange(coreIdx, scheduledCoreCount);
+        for (uint32_t tileOffset = 0; tileOffset < tileRange.tileCount; ++tileOffset) {
+            const SVDQLowRankTilePlan tilePlan = TilePlan(tileRange.tileStart + tileOffset);
+            if (!tilePlan.HasWork()) {
+                return;
+            }
+        }
         // The fused AIC math body will keep the low-rank bottleneck on-chip:
         // input BF16 -> down factor GEMM -> rank tile -> up factor GEMM -> projection BF16 GM.
     }
@@ -202,6 +332,16 @@ private:
                args_.tiling.secondInputColumnOffset + args_.tiling.secondRankColumns <= TotalRankColumns() &&
                args_.tiling.secondOutputColumnOffset < args_.tiling.outputColumns &&
                args_.tiling.outputColumnOffset < args_.tiling.secondOutputColumnOffset;
+    }
+
+    __aicore__ inline uint32_t CeilDiv(uint32_t value, uint32_t divisor) const
+    {
+        return divisor == 0 ? 0 : (value + divisor - 1) / divisor;
+    }
+
+    __aicore__ inline uint32_t Min(uint32_t lhs, uint32_t rhs) const
+    {
+        return lhs < rhs ? lhs : rhs;
     }
 
     __aicore__ inline SVDQLowRankStagePlan BuildDownStagePlan() const

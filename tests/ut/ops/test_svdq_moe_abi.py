@@ -648,6 +648,10 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "secondRankColumns" in lowrank_tiling
     assert "secondInputColumnOffset" in lowrank_tiling
     assert "secondOutputColumnOffset" in lowrank_tiling
+    assert "rowTile" in lowrank_tiling
+    assert "outputColumnTile" in lowrank_tiling
+    assert "kTile" in lowrank_tiling
+    assert "coreCount" in lowrank_tiling
     assert "SVDQFusedDownUpArgs" in lowrank_header
     assert "SVDQFusedDownUp" in lowrank_header
     assert "SVDQ_LOWRANK_BF16_BYTES = 2" in lowrank_header
@@ -659,6 +663,8 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "SVDQ_LOWRANK_STAGE_SECOND_UP_PROJECT" in lowrank_header
     assert "SVDQLowRankStagePlan" in lowrank_header
     assert "SVDQLowRankExpertPlan" in lowrank_header
+    assert "SVDQLowRankCoreTileRange" in lowrank_header
+    assert "SVDQLowRankTilePlan" in lowrank_header
     assert "TotalRankColumns() const" in lowrank_header
     assert "PrimaryOutputColumns() const" in lowrank_header
     assert "StageCount() const" in lowrank_header
@@ -667,9 +673,19 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "ExpertTokenStart(uint32_t expertId)" in lowrank_header
     assert "StagePlan(uint32_t stageIndex)" in lowrank_header
     assert "ExpertStagePlan(uint32_t stageIndex, uint32_t expertId)" in lowrank_header
+    assert "StageColumnTileCount(const SVDQLowRankStagePlan& stage)" in lowrank_header
+    assert "StageKTileCount(const SVDQLowRankStagePlan& stage)" in lowrank_header
+    assert "ExpertRowTileCount(uint32_t tokenCount)" in lowrank_header
+    assert "ExpertTileCount(uint32_t stageIndex, uint32_t expertId)" in lowrank_header
+    assert "StageTileCount(uint32_t stageIndex)" in lowrank_header
+    assert "InvocationTileCount() const" in lowrank_header
+    assert "CoreTileRange(uint32_t coreIdx, uint32_t coreCount)" in lowrank_header
+    assert "TilePlan(uint32_t tileId)" in lowrank_header
     assert "BuildDownStagePlan() const" in lowrank_header
     assert "BuildPrimaryUpStagePlan() const" in lowrank_header
     assert "BuildSecondUpStagePlan() const" in lowrank_header
+    assert "CeilDiv(uint32_t value, uint32_t divisor)" in lowrank_header
+    assert "Min(uint32_t lhs, uint32_t rhs)" in lowrank_header
     assert "MatrixAddress(" in lowrank_header
     assert "FactorAddress(const SVDQLowRankStagePlan& stage, uint32_t expertId)" in lowrank_header
     assert "GM_ADDR inputBase = args_.input" in lowrank_header
@@ -679,6 +695,10 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "return false" in lowrank_header
     assert "args_.tiling.invocationId < SVDQ_LOWRANK_INVOCATION_COUNT" in lowrank_header
     assert "args_.expertPerRank > 0" in lowrank_header
+    assert "args_.tiling.rowTile > 0" in lowrank_header
+    assert "args_.tiling.outputColumnTile > 0" in lowrank_header
+    assert "args_.tiling.kTile > 0" in lowrank_header
+    assert "args_.tiling.coreCount > 0" in lowrank_header
     assert "args_.tiling.secondInputColumnOffset + args_.tiling.secondRankColumns <= TotalRankColumns()" in lowrank_header
     assert "args_.tiling.outputColumnOffset < args_.tiling.secondOutputColumnOffset" in lowrank_header
     assert "for (uint32_t stageIndex = 0; stageIndex < StageCount(); ++stageIndex)" in lowrank_header
@@ -688,10 +708,30 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "expertTokenNums.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(args_.expertTokenNums))" in lowrank_header
     assert "static_cast<uint64_t>(row) * strideColumns + columnOffset" in lowrank_header
     assert "static_cast<uint64_t>(expertId) * stage.inputColumns * stage.outputColumns" in lowrank_header
+    assert "const uint32_t coreIdx = AscendC::GetBlockIdx()" in lowrank_header
+    assert "const uint32_t runtimeCoreCount = AscendC::GetBlockNum()" in lowrank_header
+    assert "const SVDQLowRankCoreTileRange tileRange = CoreTileRange(coreIdx, scheduledCoreCount)" in lowrank_header
+    assert "const SVDQLowRankTilePlan tilePlan = TilePlan(tileRange.tileStart + tileOffset)" in lowrank_header
+    assert "rowTiles * StageColumnTileCount(stage) * StageKTileCount(stage)" in lowrank_header
+    assert "const uint32_t tilesPerRow = columnTiles * kTiles" in lowrank_header
+    assert "Min(args_.tiling.outputColumnTile, stage.outputColumns - outputColumnOffset)" in lowrank_header
+    assert "Min(args_.tiling.kTile, stage.inputColumns - kColumnOffset)" in lowrank_header
     assert "input BF16 -> down factor GEMM -> rank tile -> up factor GEMM -> projection BF16 GM" in lowrank_header
     assert " / 2" not in lowrank_header
     assert "total_rank" not in lowrank_header
 
+    assert "lowRankCoreCount" in tiling_header
+    assert "SVDQ_LOWRANK_ROW_TILE = 16" in tiling
+    assert "SVDQ_LOWRANK_OUTPUT_COLUMN_TILE = 64" in tiling
+    assert "SVDQ_LOWRANK_K_TILE = 64" in tiling
+    assert "DispatchFFNCombineW4A8SVDQGetPlatformInfoAndSetTiling" in tiling
+    assert "info.lowRankCoreCount = blockDim" in tiling
+    assert "context->SetBlockDim(blockDim)" in tiling
+    assert "context->SetTilingKey(1000000)" in tiling
+    assert "invocation.rowTile = SVDQ_LOWRANK_ROW_TILE" in tiling
+    assert "invocation.outputColumnTile = SVDQ_LOWRANK_OUTPUT_COLUMN_TILE" in tiling
+    assert "invocation.kTile = SVDQ_LOWRANK_K_TILE" in tiling
+    assert "invocation.coreCount = coreCount" in tiling
     assert "SVDQFusedDownUpTiling" in tiling_header
     assert "lowRankInvocations[DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_COUNT]" in tiling_header
     assert "SetLowRankInvocation" in tiling
@@ -716,12 +756,14 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
         "SetLowRankInvocation(tilingData, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_GATE_UP,\n"
         "        SVDQ_REGION_ROUTED_X, SVDQ_REGION_PROJECTION_1, SVDQ_FACTOR_GATE_UP_L1, SVDQ_FACTOR_GATE_L2,\n"
         "        SVDQ_FACTOR_UP_L2, routedRows, info.hiddenSize, info.gateRank, info.upRank,\n"
-        "        info.intermediateSize * 2, info.gateRankOffset, 0, info.upRankOffset, info.intermediateSize)"
+        "        info.intermediateSize * 2, info.gateRankOffset, 0, info.upRankOffset, info.intermediateSize,\n"
+        "        info.lowRankCoreCount)"
     )
     down_call = (
         "SetLowRankInvocation(tilingData, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_DOWN,\n"
         "        SVDQ_REGION_HIDDEN, SVDQ_REGION_PROJECTION_2, SVDQ_FACTOR_DOWN_L1, SVDQ_FACTOR_DOWN_L2,\n"
-        "        SVDQ_INVALID_ID, routedRows, info.intermediateSize, info.downRank, 0, info.hiddenSize, 0, 0, 0, 0)"
+        "        SVDQ_INVALID_ID, routedRows, info.intermediateSize, info.downRank, 0, info.hiddenSize, 0, 0, 0, 0,\n"
+        "        info.lowRankCoreCount)"
     )
     assert gate_up_call in tiling
     assert down_call in tiling
