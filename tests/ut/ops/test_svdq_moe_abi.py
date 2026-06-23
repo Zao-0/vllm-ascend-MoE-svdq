@@ -402,3 +402,124 @@ def test_svdq_cann_tiling_sync_flags_match_required_dataflow():
         assert flag in tiling
         call = f"SetSyncFlag(tilingData, {flag}, {producer},\n        {consumer}, {region}, {index})"
         assert call in tiling
+
+
+def test_svdq_cann_kernel_contract_resolves_factors_workspace_and_bf16_stages():
+    op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
+    kernel = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq.cpp").read_text()
+    contract = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq.h").read_text()
+
+    assert '#include "dispatch_ffn_combine_w4_a8_svdq.h"' in kernel
+    assert "DispatchFFNCombineW4A8SVDQ op" in kernel
+    assert "op.Init(x, w1, w2, expertId, scale1, scale2, bias1, bias2, probs, gateUpSvdqL1" in kernel
+    assert "op.Process()" in kernel
+
+    assert "SVDQ_FACTOR_COUNT = 5" in contract
+    assert "SVDQ_BF16_STAGE_COUNT = 7" in contract
+    assert "SVDQFactorGM" in contract
+    assert "SVDQResidualGM" in contract
+    assert "SVDQRuntimeGM" in contract
+    assert "SVDQWorkspaceGM" in contract
+    assert "SVDQBF16StageContract" in contract
+    assert "GET_TILING_DATA(tilingData, tilingGM)" in contract
+    assert "WorkspaceAddress(uint32_t regionId)" in contract
+    assert "runtime_.workspace + tilingData_.workspaceRegions[regionId].offset" in contract
+    assert "WorkspaceRegion(uint32_t regionId)" in contract
+    assert "SyncFlag(uint32_t flagId)" in contract
+    assert "HasCompleteTilingContract" in contract
+    assert "tilingData_.info.syncFlagCount == SVDQ_SYNC_FLAG_COUNT" in contract
+    assert "tilingData_.info.upRankOffset == tilingData_.info.gateRank" in contract
+
+    for factor in (
+        "gateUpSvdqL1",
+        "gateSvdqL2",
+        "upSvdqL2",
+        "downSvdqL1",
+        "downSvdqL2",
+    ):
+        assert factor in contract
+
+    for region_field, region_id in (
+        ("expandedRowIdx", "SVDQ_REGION_EXPANDED_ROW_IDX"),
+        ("routedX", "SVDQ_REGION_ROUTED_X"),
+        ("xQ", "SVDQ_REGION_X_Q"),
+        ("xScale", "SVDQ_REGION_X_SCALE"),
+        ("projection1", "SVDQ_REGION_PROJECTION_1"),
+        ("accumulator1", "SVDQ_REGION_ACCUMULATOR_1"),
+        ("hidden", "SVDQ_REGION_HIDDEN"),
+        ("hiddenQ", "SVDQ_REGION_HIDDEN_Q"),
+        ("hiddenScale", "SVDQ_REGION_HIDDEN_SCALE"),
+        ("projection2", "SVDQ_REGION_PROJECTION_2"),
+        ("accumulator2", "SVDQ_REGION_ACCUMULATOR_2"),
+        ("peerOutput", "SVDQ_REGION_PEER_OUTPUT"),
+    ):
+        assert f"workspace_.{region_field} = WorkspaceAddress({region_id})" in contract
+
+    expected_bf16_stages = (
+        (
+            "SVDQ_BF16_STAGE_ROUTING",
+            "SVDQ_STAGE_BF16_DISPATCH",
+            "SVDQ_INVALID_ID",
+            "SVDQ_REGION_ROUTED_X",
+            "SVDQ_INVALID_ID",
+            "SVDQ_SYNC_DISPATCH_TO_LOWRANK_1",
+        ),
+        (
+            "SVDQ_BF16_STAGE_GATE_UP_L1_GEMM",
+            "SVDQ_STAGE_LOWRANK_1",
+            "SVDQ_REGION_ROUTED_X",
+            "SVDQ_REGION_PROJECTION_1",
+            "SVDQ_SYNC_DISPATCH_TO_LOWRANK_1",
+            "SVDQ_INVALID_ID",
+        ),
+        (
+            "SVDQ_BF16_STAGE_GATE_UP_RANK_SPLIT",
+            "SVDQ_STAGE_LOWRANK_1",
+            "SVDQ_REGION_PROJECTION_1",
+            "SVDQ_REGION_PROJECTION_1",
+            "SVDQ_INVALID_ID",
+            "SVDQ_INVALID_ID",
+        ),
+        (
+            "SVDQ_BF16_STAGE_GATE_L2_GEMM",
+            "SVDQ_STAGE_LOWRANK_1",
+            "SVDQ_REGION_PROJECTION_1",
+            "SVDQ_REGION_PROJECTION_1",
+            "SVDQ_INVALID_ID",
+            "SVDQ_INVALID_ID",
+        ),
+        (
+            "SVDQ_BF16_STAGE_UP_L2_GEMM",
+            "SVDQ_STAGE_LOWRANK_1",
+            "SVDQ_REGION_PROJECTION_1",
+            "SVDQ_REGION_PROJECTION_1",
+            "SVDQ_INVALID_ID",
+            "SVDQ_SYNC_LOWRANK_1_TO_MIXED_EPILOGUE_1",
+        ),
+        (
+            "SVDQ_BF16_STAGE_DOWN_L1_GEMM",
+            "SVDQ_STAGE_LOWRANK_2",
+            "SVDQ_REGION_HIDDEN",
+            "SVDQ_REGION_PROJECTION_2",
+            "SVDQ_SYNC_MIXED_EPILOGUE_1_TO_LOWRANK_2",
+            "SVDQ_INVALID_ID",
+        ),
+        (
+            "SVDQ_BF16_STAGE_DOWN_L2_GEMM",
+            "SVDQ_STAGE_LOWRANK_2",
+            "SVDQ_REGION_PROJECTION_2",
+            "SVDQ_REGION_PROJECTION_2",
+            "SVDQ_INVALID_ID",
+            "SVDQ_SYNC_LOWRANK_2_TO_MIXED_OUTPUT_EPILOGUE",
+        ),
+    )
+    for stage, tiling_stage, input_region, output_region, wait_flag, signal_flag in expected_bf16_stages:
+        assert f"case {stage}:" in contract
+        assert tiling_stage in contract
+        assert input_region in contract
+        assert output_region in contract
+        assert wait_flag in contract
+        assert signal_flag in contract
+
+    assert "gateUpSvdqL2" not in contract
+    assert "gate_up_svdq_l2" not in contract
