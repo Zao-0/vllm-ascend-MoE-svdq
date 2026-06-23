@@ -663,6 +663,16 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "LowRankInvocation(uint32_t invocationId)" in contract
     assert "BuildLowRankArgs(uint32_t invocationId)" in contract
     assert "FactorAddress(invocation.secondUpFactorId)" in contract
+    assert "LowRankInvocationReady(uint32_t invocationId)" in contract
+    assert "ExecuteLowRankInvocation(uint32_t invocationId)" in contract
+    assert "RunBF16LowRankStages()" in contract
+    assert "SVDQFusedDownUp lowRankOp" in contract
+    assert "lowRankOp.Init(BuildLowRankArgs(invocationId))" in contract
+    assert "lowRankOp.HasCompleteContract() && lowRankOp.IsImplemented()" in contract
+    assert "lowRankOp.Process()" in contract
+    assert "ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_GATE_UP)" in contract
+    assert "ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_DOWN)" in contract
+    assert "if (!RunBF16LowRankStages())" in contract
 
     gate_up_call = (
         "SetLowRankInvocation(tilingData, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_GATE_UP,\n"

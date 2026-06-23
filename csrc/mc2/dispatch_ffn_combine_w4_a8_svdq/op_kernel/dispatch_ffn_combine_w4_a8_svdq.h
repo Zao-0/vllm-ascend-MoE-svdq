@@ -125,7 +125,10 @@ public:
         if (!HasCompleteTilingContract()) {
             return;
         }
-        // Tiling fails closed before launch. The real BF16/W4A8 stage math is added after this contract is wired.
+        if (!RunBF16LowRankStages()) {
+            return;
+        }
+        // The real W4A8 residual stages, mixed epilogues, and final combine are added after the BF16 branch.
     }
 
     __aicore__ inline bool HasCompleteTilingContract() const
@@ -189,6 +192,30 @@ public:
             runtime_.expertTokenNums,
             invocation,
         };
+    }
+
+    __aicore__ inline bool LowRankInvocationReady(uint32_t invocationId) const
+    {
+        SVDQFusedDownUp lowRankOp;
+        lowRankOp.Init(BuildLowRankArgs(invocationId));
+        return lowRankOp.HasCompleteContract() && lowRankOp.IsImplemented();
+    }
+
+    __aicore__ inline bool ExecuteLowRankInvocation(uint32_t invocationId) const
+    {
+        SVDQFusedDownUp lowRankOp;
+        lowRankOp.Init(BuildLowRankArgs(invocationId));
+        if (!lowRankOp.HasCompleteContract() || !lowRankOp.IsImplemented()) {
+            return false;
+        }
+        lowRankOp.Process();
+        return true;
+    }
+
+    __aicore__ inline bool RunBF16LowRankStages() const
+    {
+        return ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_GATE_UP) &&
+               ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_DOWN);
     }
 
     __aicore__ inline SVDQBF16StageContract BF16StageContract(uint32_t stageId) const
