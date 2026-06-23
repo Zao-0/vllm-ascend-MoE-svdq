@@ -1132,3 +1132,23 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert gate_up_invocation["second_input_column_offset"] == "info.upRankOffset"
     assert gate_up_invocation["second_output_column_offset"] == "info.intermediateSize"
     assert down_invocation["second_up_factor"] == "SVDQ_INVALID_ID"
+
+
+def test_svdq_bf16_routing_stage_probe_cpu_golden_uses_official_count_layout():
+    from tools.svdq_bf16_routing_stage_probe import _cpu_routing_golden
+
+    x = torch.arange(24, dtype=torch.bfloat16).reshape(6, 4)
+    expert_idx = torch.tensor([[0], [1], [0], [1], [0], [1]], dtype=torch.int32)
+
+    golden = _cpu_routing_golden(x, expert_idx, expert_num=2, active_expert_range=(0, 2))
+
+    assert golden["expanded_x"].tolist() == [
+        [0.0, 1.0, 2.0, 3.0],
+        [8.0, 9.0, 10.0, 11.0],
+        [16.0, 17.0, 18.0, 19.0],
+        [4.0, 5.0, 6.0, 7.0],
+        [12.0, 13.0, 14.0, 15.0],
+        [20.0, 21.0, 22.0, 23.0],
+    ]
+    assert golden["expanded_row_idx"].tolist() == [0, 2, 4, 1, 3, 5]
+    assert golden["expert_tokens"].tolist() == [3, 3]
