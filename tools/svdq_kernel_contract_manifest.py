@@ -432,6 +432,16 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         in sources["lowrank_header"],
         "host_tiling_fail_closed": "AscendC kernel is not implemented yet" in sources["host_tiling"]
         and "return ge::GRAPH_FAILED;" in sources["host_tiling"],
+        "lowrank_mmad_debug_readback_macro": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK"
+        in sources["lowrank_header"],
+        "lowrank_mmad_debug_readback_uses_fp32_l0c_to_gm": (
+            "l0c_to_gm<ArchType::ASCEND_V220, DataFormatT::ND, float, float>"
+            in sources["lowrank_header"]
+        ),
+        "lowrank_mmad_debug_readback_targets_accumulator_gm": (
+            "accumulatorGm, l0C, tile.mActual, tile.nActual, tile.nRound"
+            in sources["lowrank_header"]
+        ),
     }
 
 
@@ -489,6 +499,11 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
             if token in source:
                 raise ValueError(f"forbidden token {token!r} found in {source_name}.")
 
+    readback = manifest["debug_readback_contract"]
+    for proof_name in readback["source_proof"]:
+        if not manifest["source_proof"].get(proof_name):
+            raise ValueError(f"debug readback source proof failed: {proof_name}.")
+
 
 def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
     sources = _read_sources(repo_root)
@@ -507,6 +522,21 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
         "bf16_stages": _bf16_stage_records(),
         "lowrank_invocations": LOWRANK_INVOCATIONS,
         "lowrank_tile_shape": {"m": 16, "n": 64, "k": 64},
+        "debug_readback_contract": {
+            "compile_macro": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK",
+            "default_enabled": False,
+            "production_abi_changed": False,
+            "readback_region": "lowRankAccumulator region selected by invocation.accumulatorRegionId",
+            "readback_dtype": "FP32",
+            "readback_source": "L0C accumulator after each MMAD K tile",
+            "final_tile_semantics": "final full-K FP32 accumulator is mirrored before BF16 output conversion",
+            "partial_tile_semantics": "non-final K-tile partial sums are mirrored for host-readable debug validation",
+            "source_proof": [
+                "lowrank_mmad_debug_readback_macro",
+                "lowrank_mmad_debug_readback_uses_fp32_l0c_to_gm",
+                "lowrank_mmad_debug_readback_targets_accumulator_gm",
+            ],
+        },
         "rank_split_contract": {
             "gate_rank_offset": 0,
             "up_rank_offset": "gateRank",

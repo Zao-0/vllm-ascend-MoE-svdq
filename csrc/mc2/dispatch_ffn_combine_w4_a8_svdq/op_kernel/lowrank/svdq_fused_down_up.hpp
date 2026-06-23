@@ -729,11 +729,16 @@ public:
             l0C, l0A, l0B, tile.mActual, tile.nActual, tile.kActual, initC);
         AscendC::PipeBarrier<PIPE_M>();
 
+#ifdef SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK
+        (void)l0c_to_gm<ArchType::ASCEND_V220, DataFormatT::ND, float, float>(
+            accumulatorGm, l0C, tile.mActual, tile.nActual, tile.nRound,
+            tensorPlan.accumulatorStrideColumns);
+#endif
         if (!pipelinePlan.storesOutput) {
             (void)accumulatorGm;
-            // The cube path keeps partial K-loop sums resident in L0C. The
-            // scalar fallback uses the GM accumulator path for host-readable
-            // validation and non-CUBE builds.
+            // Production cube execution keeps partial K-loop sums resident in
+            // L0C. Defining SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK mirrors the
+            // current FP32 accumulator to GM for host-readable validation.
             return true;
         }
         (void)l0c_to_gm<ArchType::ASCEND_V220, DataFormatT::ND, bfloat16_t, float>(

@@ -869,8 +869,13 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "l1_to_l0_a<ArchType::ASCEND_V220, bfloat16_t, false, DataFormatT::NZ, DataFormatT::ZZ>" in lowrank_header
     assert "l1_to_l0_b<ArchType::ASCEND_V220, bfloat16_t, true, DataFormatT::ZN, DataFormatT::NZ>" in lowrank_header
     assert "mmad<ArchType::ASCEND_V220, bfloat16_t, bfloat16_t, float, false>" in lowrank_header
+    assert "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK" in lowrank_header
+    assert "l0c_to_gm<ArchType::ASCEND_V220, DataFormatT::ND, float, float>" in lowrank_header
+    assert "accumulatorGm, l0C, tile.mActual, tile.nActual, tile.nRound" in lowrank_header
     assert "l0c_to_gm<ArchType::ASCEND_V220, DataFormatT::ND, bfloat16_t, float>" in lowrank_header
-    assert "The cube path keeps partial K-loop sums resident in L0C" in lowrank_header
+    assert "Production cube execution keeps partial K-loop sums resident in" in lowrank_header
+    assert "mirrors the" in lowrank_header
+    assert "current FP32 accumulator to GM for host-readable validation" in lowrank_header
     assert "if (!pipelinePlan.storesOutput)" in lowrank_header
     assert "return true" in lowrank_header
     assert "AscendC::PipeBarrier<PIPE_MTE2>()" in lowrank_header
@@ -1115,6 +1120,21 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["lowrank_is_implemented_returns_false"]
     assert not loaded["production_fail_closed"]["w4a8_residual_unblocked"]
     assert all(loaded["source_proof"].values())
+    assert loaded["debug_readback_contract"] == {
+        "compile_macro": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK",
+        "default_enabled": False,
+        "production_abi_changed": False,
+        "readback_region": "lowRankAccumulator region selected by invocation.accumulatorRegionId",
+        "readback_dtype": "FP32",
+        "readback_source": "L0C accumulator after each MMAD K tile",
+        "final_tile_semantics": "final full-K FP32 accumulator is mirrored before BF16 output conversion",
+        "partial_tile_semantics": "non-final K-tile partial sums are mirrored for host-readable debug validation",
+        "source_proof": [
+            "lowrank_mmad_debug_readback_macro",
+            "lowrank_mmad_debug_readback_uses_fp32_l0c_to_gm",
+            "lowrank_mmad_debug_readback_targets_accumulator_gm",
+        ],
+    }
 
     stage_names = [stage["name"] for stage in loaded["bf16_stages"]]
     assert stage_names == [
