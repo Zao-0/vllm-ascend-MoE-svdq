@@ -14,6 +14,10 @@ from vllm.forward_context import get_forward_context
 from vllm.utils.torch_utils import direct_register_custom_op
 
 from vllm_ascend.ascend_forward_context import _EXTRA_CTX, MoECommType
+from vllm_ascend.ops.fused_moe.svdq_abi import (
+    make_svdq_weights_from_operator_args,
+    validate_svdq_operator_abi,
+)
 from vllm_ascend.ops.rotary_embedding import rope_forward_oot
 from vllm_ascend.ops.triton.muls_add import muls_add_triton
 from vllm_ascend.ops.weight_prefetch import maybe_npu_prefetch
@@ -217,6 +221,96 @@ def _muls_add_impl_fake(
     return torch.empty_like(x)
 
 
+def _dispatch_ffn_combine_w4a8_svdq_impl(
+    x: torch.Tensor,
+    weight1: list[torch.Tensor],
+    weight2: list[torch.Tensor],
+    expert_idx: torch.Tensor,
+    scale1: list[torch.Tensor],
+    scale2: list[torch.Tensor],
+    bias1: list[torch.Tensor],
+    bias2: list[torch.Tensor],
+    probs: torch.Tensor,
+    gate_up_svdq_l1: torch.Tensor,
+    gate_svdq_l2: torch.Tensor,
+    up_svdq_l2: torch.Tensor,
+    down_svdq_l1: torch.Tensor,
+    down_svdq_l2: torch.Tensor,
+    gate_rank: int,
+    up_rank: int,
+    down_rank: int,
+    gate_rank_offset: int,
+    up_rank_offset: int,
+    group: str,
+    max_output_size: int,
+    swiglu_limit: int,
+    x_active_mask: torch.Tensor | None,
+    out: torch.Tensor,
+    expert_token_nums: torch.Tensor,
+) -> None:
+    svdq = make_svdq_weights_from_operator_args(
+        gate_up_svdq_l1=gate_up_svdq_l1,
+        gate_svdq_l2=gate_svdq_l2,
+        up_svdq_l2=up_svdq_l2,
+        down_svdq_l1=down_svdq_l1,
+        down_svdq_l2=down_svdq_l2,
+        gate_rank=gate_rank,
+        up_rank=up_rank,
+        down_rank=down_rank,
+        gate_rank_offset=gate_rank_offset,
+        up_rank_offset=up_rank_offset,
+    )
+    validate_svdq_operator_abi(
+        x=x,
+        weight1=weight1,
+        weight2=weight2,
+        expert_idx=expert_idx,
+        scale1=scale1,
+        scale2=scale2,
+        bias1=bias1,
+        bias2=bias2,
+        probs=probs,
+        svdq=svdq,
+        group=group,
+        max_output_size=max_output_size,
+        swiglu_limit=swiglu_limit,
+        x_active_mask=x_active_mask,
+        out=out,
+        expert_token_nums=expert_token_nums,
+    )
+    raise NotImplementedError("dispatch_ffn_combine_w4a8_svdq host/kernel implementation is not available yet.")
+
+
+def _dispatch_ffn_combine_w4a8_svdq_fake(
+    x: torch.Tensor,
+    weight1: list[torch.Tensor],
+    weight2: list[torch.Tensor],
+    expert_idx: torch.Tensor,
+    scale1: list[torch.Tensor],
+    scale2: list[torch.Tensor],
+    bias1: list[torch.Tensor],
+    bias2: list[torch.Tensor],
+    probs: torch.Tensor,
+    gate_up_svdq_l1: torch.Tensor,
+    gate_svdq_l2: torch.Tensor,
+    up_svdq_l2: torch.Tensor,
+    down_svdq_l1: torch.Tensor,
+    down_svdq_l2: torch.Tensor,
+    gate_rank: int,
+    up_rank: int,
+    down_rank: int,
+    gate_rank_offset: int,
+    up_rank_offset: int,
+    group: str,
+    max_output_size: int,
+    swiglu_limit: int,
+    x_active_mask: torch.Tensor | None,
+    out: torch.Tensor,
+    expert_token_nums: torch.Tensor,
+) -> None:
+    return None
+
+
 direct_register_custom_op(
     op_name="maybe_chunk_residual",
     op_func=_maybe_chunk_residual_impl,
@@ -294,5 +388,13 @@ direct_register_custom_op(
     op_func=muls_add_triton,
     fake_impl=_muls_add_impl_fake,
     mutates_args=[],
+    dispatch_key="PrivateUse1",
+)
+
+direct_register_custom_op(
+    op_name="dispatch_ffn_combine_w4a8_svdq",
+    op_func=_dispatch_ffn_combine_w4a8_svdq_impl,
+    fake_impl=_dispatch_ffn_combine_w4a8_svdq_fake,
+    mutates_args=["out", "expert_token_nums"],
     dispatch_key="PrivateUse1",
 )

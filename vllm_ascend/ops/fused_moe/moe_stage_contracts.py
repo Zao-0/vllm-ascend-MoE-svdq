@@ -40,6 +40,22 @@ class MoEPrepareOutput:
 
 
 @dataclass(frozen=True, slots=True)
+class MoESVDQWeights:
+    """Operator-facing low-rank factor payload for W4A8-SVDQ MoE."""
+
+    gate_up_svdq_l1: torch.Tensor
+    gate_svdq_l2: torch.Tensor
+    up_svdq_l2: torch.Tensor
+    down_svdq_l1: torch.Tensor
+    down_svdq_l2: torch.Tensor
+    gate_rank: int
+    up_rank: int
+    down_rank: int
+    gate_rank_offset: int
+    up_rank_offset: int
+
+
+@dataclass(frozen=True, slots=True)
 class MoEWeights:
     """Dense and quantized weight payloads consumed by MoE execution."""
 
@@ -53,6 +69,7 @@ class MoEWeights:
     w2_scale_bias: torch.Tensor | list[torch.Tensor] | None = None
     w1_offset: torch.Tensor | None = None
     w2_offset: torch.Tensor | None = None
+    svdq: MoESVDQWeights | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +162,7 @@ class MoEMlpComputeInput:
 
 __all__ = [
     "MoEPrepareOutput",
+    "MoESVDQWeights",
     "MoEWeights",
     "MoEFusedExpertsInput",
     "MoETokenDispatchInput",

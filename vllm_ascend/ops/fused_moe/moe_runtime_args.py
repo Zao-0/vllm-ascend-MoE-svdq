@@ -67,6 +67,7 @@ from vllm_ascend.ops.fused_moe.moe_stage_contracts import (
     MoEMC2CombineMetadata,
     MoEMlpComputeInput,
     MoEPrepareOutput,
+    MoESVDQWeights,
     MoETokenDispatchInput,
     MoETokenDispatchOutput,
     MoEWeights,
@@ -145,8 +146,46 @@ def build_fused_experts_input(
     w2_scale_bias: list[torch.Tensor] | torch.Tensor | None = None,
     w1_offset: torch.Tensor | None = None,
     w2_offset: torch.Tensor | None = None,
+    gate_up_svdq_l1: torch.Tensor | None = None,
+    gate_svdq_l2: torch.Tensor | None = None,
+    up_svdq_l2: torch.Tensor | None = None,
+    down_svdq_l1: torch.Tensor | None = None,
+    down_svdq_l2: torch.Tensor | None = None,
+    gate_rank: int | None = None,
+    up_rank: int | None = None,
+    down_rank: int | None = None,
+    gate_rank_offset: int | None = None,
+    up_rank_offset: int | None = None,
     swiglu_limit: int = 0,
 ) -> MoEFusedExpertsInput:
+    svdq_values = (
+        gate_up_svdq_l1,
+        gate_svdq_l2,
+        up_svdq_l2,
+        down_svdq_l1,
+        down_svdq_l2,
+        gate_rank,
+        up_rank,
+        down_rank,
+        gate_rank_offset,
+        up_rank_offset,
+    )
+    svdq = None
+    if any(value is not None for value in svdq_values):
+        if any(value is None for value in svdq_values):
+            raise ValueError("all SVDQ factor tensors and rank metadata are required for an SVDQ MoE payload.")
+        svdq = MoESVDQWeights(
+            gate_up_svdq_l1=gate_up_svdq_l1,
+            gate_svdq_l2=gate_svdq_l2,
+            up_svdq_l2=up_svdq_l2,
+            down_svdq_l1=down_svdq_l1,
+            down_svdq_l2=down_svdq_l2,
+            gate_rank=gate_rank,
+            up_rank=up_rank,
+            down_rank=down_rank,
+            gate_rank_offset=gate_rank_offset,
+            up_rank_offset=up_rank_offset,
+        )
     return MoEFusedExpertsInput(
         hidden_states=hidden_states,
         topk_weights=topk_weights,
@@ -162,6 +201,7 @@ def build_fused_experts_input(
             w2_scale_bias=w2_scale_bias,
             w1_offset=w1_offset,
             w2_offset=w2_offset,
+            svdq=svdq,
         ),
         routing=MoERoutingParams(
             expert_map=expert_map,
@@ -237,6 +277,7 @@ __all__ = [
     "MoEMC2CombineMetadata",
     "MoEMlpComputeInput",
     "MoEPrepareOutput",
+    "MoESVDQWeights",
     "MoEQuantParams",
     "MoERoutingParams",
     "MoETokenDispatchInput",

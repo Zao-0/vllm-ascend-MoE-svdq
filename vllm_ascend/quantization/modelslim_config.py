@@ -44,6 +44,7 @@ from vllm.model_executor.models.utils import WeightsMapper
 from vllm_ascend.utils import ASCEND_QUANTIZATION_METHOD, AscendDeviceType, calc_split_factor, get_ascend_device_type
 
 from .methods import get_scheme_class
+from .svdq_spec import build_svdq_moe_layer_spec, detect_svdq_moe_layer
 
 # The config filename that ModelSlim generates after quantizing a model.
 MODELSLIM_CONFIG_FILENAME = "quant_model_description.json"
@@ -368,6 +369,7 @@ def create_scheme_for_layer(
     prefix: str,
     layer_type: str,
     packed_modules_mapping: dict[str, Any] | None = None,
+    layer: torch.nn.Module | None = None,
 ):
     """Create a quantization scheme instance for a layer.
 
@@ -387,6 +389,28 @@ def create_scheme_for_layer(
         err_msg = f"Could not determine quantization type for layer {prefix} (layer_type={layer_type})."
         logger.error(err_msg)
         raise ValueError(err_msg)
+
+    if layer_type == "moe" and quant_type == "W4A8_DYNAMIC" and layer is not None:
+        num_experts = getattr(layer, "global_num_experts", None) or getattr(layer, "num_experts", None)
+        if num_experts is None:
+            moe_config = getattr(layer, "moe_config", None)
+            num_experts = getattr(moe_config, "num_experts", None)
+        if num_experts is not None and detect_svdq_moe_layer(quant_description, prefix, int(num_experts)):
+            from .methods.w4a8_svdq import AscendW4A8SVDQFusedMoEMethod
+
+            vllm_config = get_current_vllm_config()
+            model_path = vllm_config.model_config.model
+            spec = build_svdq_moe_layer_spec(
+                quant_description=quant_description,
+                prefix=prefix,
+                model_path=model_path,
+                num_experts=int(num_experts),
+                hidden_size=layer.moe_config.hidden_dim,
+                intermediate_size=layer.moe_config.intermediate_size_per_partition
+                * (1 if vllm_config.parallel_config.enable_expert_parallel else layer.moe_config.tp_size),
+            )
+            logger.info_once("Using dedicated W4A8-SVDQ MoE quantization for ModelSlim SVDQ checkpoint.")
+            return AscendW4A8SVDQFusedMoEMethod(spec)
 
     # Use registry to get scheme class
     scheme_cls = get_scheme_class(quant_type, layer_type)
@@ -540,13 +564,13 @@ class AscendModelSlimConfig(QuantizationConfig):
 
                 logger.debug("Select AscendUnquantizedLinearMethod for %s (layer=%s)", prefix, "LinearBase")
                 return AscendUnquantizedLinearMethod()
-            scheme = create_scheme_for_layer(self.quant_description, prefix, "linear", self.packed_modules_mapping)
+            scheme = create_scheme_for_layer(self.quant_description, prefix, "linear", self.packed_modules_mapping, layer)
             logger.debug("Select AscendLinearMethod for %s (layer=%s)", prefix, "LinearBase")
             return AscendLinearMethod(scheme)
         elif isinstance(layer, AttentionLayerBase) and (
             self.is_fa_quant_layer(prefix) or self.is_indexer_quant_layer(prefix)
         ):
-            scheme = create_scheme_for_layer(self.quant_description, prefix, "attention", self.packed_modules_mapping)
+            scheme = create_scheme_for_layer(self.quant_description, prefix, "attention", self.packed_modules_mapping, layer)
             logger.debug("Select AscendKVCacheMethod for %s (layer=%s)", prefix, "AttentionLayerBase[fa/indexer]")
             return AscendKVCacheMethod(scheme)
         elif isinstance(layer, AttentionLayerBase) and self.quant_description.get("kv_cache_type") == "C8":
@@ -561,14 +585,14 @@ class AscendModelSlimConfig(QuantizationConfig):
 
                 logger.debug("Select AscendUnquantizedFusedMoEMethod for %s (layer=%s)", prefix, "FusedMoE")
                 return AscendUnquantizedFusedMoEMethod(layer.moe_config)
-            scheme = create_scheme_for_layer(self.quant_description, prefix, "moe", self.packed_modules_mapping)
+            scheme = create_scheme_for_layer(self.quant_description, prefix, "moe", self.packed_modules_mapping, layer)
             logger.debug("Select AscendFusedMoEMethod for %s (layer=%s)", prefix, "FusedMoE")
             return AscendFusedMoEMethod(scheme, layer.moe_config, tid2eid)
         elif isinstance(layer, VocabParallelEmbedding):
             if self.is_layer_skipped_ascend(prefix, self.packed_modules_mapping):
                 logger.debug("Select UnquantizedEmbeddingMethod for %s (layer=%s)", prefix, "VocabParallelEmbedding")
                 return UnquantizedEmbeddingMethod()
-            scheme = create_scheme_for_layer(self.quant_description, prefix, "linear", self.packed_modules_mapping)
+            scheme = create_scheme_for_layer(self.quant_description, prefix, "linear", self.packed_modules_mapping, layer)
             logger.debug("Select AscendEmbeddingMethod for %s (layer=%s)", prefix, "VocabParallelEmbedding")
             return AscendEmbeddingMethod(scheme)
         logger.debug("No quant method matched for %s, falling back to base", prefix)

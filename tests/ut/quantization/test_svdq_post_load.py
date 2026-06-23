@@ -1,0 +1,178 @@
+#
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# This file is a part of the vllm-ascend project.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+#
+
+import pytest
+import torch
+from types import SimpleNamespace
+
+import vllm_ascend.quantization.methods.w4a8_svdq as w4a8_svdq
+from vllm_ascend.ops.fused_moe.moe_runtime_args import build_fused_experts_input
+from vllm_ascend.quantization.methods.w4a8_svdq import AscendW4A8SVDQFusedMoEMethod
+from vllm_ascend.quantization.methods.svdq_post_load import (
+    FINAL_SVDQ_FACTOR_NAMES,
+    audit_svdq_operator_factors,
+    build_svdq_operator_factors,
+)
+from vllm_ascend.quantization.quant_type import QuantType
+
+
+def _bf16_arange(shape, offset=0):
+    total = 1
+    for dim in shape:
+        total *= dim
+    return (torch.arange(offset, offset + total, dtype=torch.float32).reshape(shape) / 32).to(torch.bfloat16)
+
+
+def _make_raw_factor_layer():
+    layer = torch.nn.Module()
+    layer.layer_name = "model.language_model.layers.0.mlp.experts"
+    layer.local_num_experts = 2
+    raw = {
+        "gate_svd_l1_raw": _bf16_arange((2, 2, 4), 0),
+        "gate_svd_l2_raw": _bf16_arange((2, 3, 2), 100),
+        "up_svd_l1_raw": _bf16_arange((2, 1, 4), 200),
+        "up_svd_l2_raw": _bf16_arange((2, 3, 1), 300),
+        "down_svd_l1_raw": _bf16_arange((2, 2, 3), 400),
+        "down_svd_l2_raw": _bf16_arange((2, 4, 2), 500),
+    }
+    for name, tensor in raw.items():
+        layer.register_parameter(name, torch.nn.Parameter(tensor, requires_grad=False))
+    return layer
+
+
+def test_svdq_post_load_builds_five_operator_factors_and_audits_branches():
+    layer = _make_raw_factor_layer()
+
+    factors = build_svdq_operator_factors(layer)
+
+    assert set(factors) == set(FINAL_SVDQ_FACTOR_NAMES)
+    assert tuple(layer.gate_up_svdq_l1.shape) == (2, 3, 4)
+    assert torch.equal(layer.gate_up_svdq_l1[:, :2], layer.gate_svd_l1_raw)
+    assert torch.equal(layer.gate_up_svdq_l1[:, 2:3], layer.up_svd_l1_raw)
+    assert tuple(layer.gate_svdq_l2.shape) == (2, 3, 2)
+    assert tuple(layer.up_svdq_l2.shape) == (2, 3, 1)
+    assert tuple(layer.down_svdq_l1.shape) == (2, 2, 3)
+    assert tuple(layer.down_svdq_l2.shape) == (2, 4, 2)
+    assert layer.svdq_gate_rank == 2
+    assert layer.svdq_up_rank == 1
+    assert layer.svdq_down_rank == 2
+    assert layer.svdq_gate_rank_offset == 0
+    assert layer.svdq_up_rank_offset == 2
+
+    audit = audit_svdq_operator_factors(layer, max_experts=2, num_tokens=2)
+    assert audit["passed"]
+    assert audit["max_abs"] == 0.0
+    assert audit["rank_metadata"] == {
+        "gate_rank": 2,
+        "up_rank": 1,
+        "down_rank": 2,
+        "gate_rank_offset": 0,
+        "up_rank_offset": 2,
+    }
+
+
+def test_svdq_runtime_payload_requires_complete_factor_contract():
+    hidden_states = torch.empty(1, 4)
+    topk_weights = torch.empty(1, 1)
+    topk_ids = torch.empty(1, 1, dtype=torch.int32)
+    w1 = torch.empty(2, 4, 1, dtype=torch.int32)
+    w2 = torch.empty(2, 3, 1, dtype=torch.int32)
+    gate_up_l1 = torch.empty(2, 3, 4, dtype=torch.bfloat16)
+    gate_l2 = torch.empty(2, 3, 2, dtype=torch.bfloat16)
+    up_l2 = torch.empty(2, 3, 1, dtype=torch.bfloat16)
+    down_l1 = torch.empty(2, 2, 3, dtype=torch.bfloat16)
+    down_l2 = torch.empty(2, 4, 2, dtype=torch.bfloat16)
+
+    with pytest.raises(ValueError, match="all SVDQ factor tensors"):
+        build_fused_experts_input(
+            hidden_states=hidden_states,
+            topk_weights=topk_weights,
+            topk_ids=topk_ids,
+            w1=w1,
+            w2=w2,
+            quant_type=QuantType.W4A8_SVDQ,
+            dynamic_eplb=False,
+            gate_up_svdq_l1=gate_up_l1,
+        )
+
+    payload = build_fused_experts_input(
+        hidden_states=hidden_states,
+        topk_weights=topk_weights,
+        topk_ids=topk_ids,
+        w1=w1,
+        w2=w2,
+        quant_type=QuantType.W4A8_SVDQ,
+        dynamic_eplb=False,
+        gate_up_svdq_l1=gate_up_l1,
+        gate_svdq_l2=gate_l2,
+        up_svdq_l2=up_l2,
+        down_svdq_l1=down_l1,
+        down_svdq_l2=down_l2,
+        gate_rank=2,
+        up_rank=1,
+        down_rank=2,
+        gate_rank_offset=0,
+        up_rank_offset=2,
+    )
+
+    assert payload.weights.svdq is not None
+    assert payload.weights.svdq.gate_up_svdq_l1 is gate_up_l1
+    assert payload.weights.svdq.gate_rank == 2
+    assert payload.weights.svdq.up_rank_offset == 2
+
+
+def test_svdq_apply_builds_runtime_payload(monkeypatch):
+    layer = _make_raw_factor_layer()
+    build_svdq_operator_factors(layer)
+    layer.swiglu_limit = 0
+    layer.n_shared_experts = 0
+    layer.w13_weight = torch.nn.Parameter(torch.empty(2, 4, 1, dtype=torch.int32), requires_grad=False)
+    layer.w2_weight = torch.nn.Parameter(torch.empty(2, 3, 1, dtype=torch.int32), requires_grad=False)
+    layer.w13_weight_scale = torch.nn.Parameter(torch.empty(2, 4, dtype=torch.int64), requires_grad=False)
+    layer.w2_weight_scale = torch.nn.Parameter(torch.empty(2, 4, dtype=torch.int64), requires_grad=False)
+    layer.w13_scale_bias = torch.nn.Parameter(torch.empty(2, 4, dtype=torch.float32), requires_grad=False)
+    layer.w2_scale_bias = torch.nn.Parameter(torch.empty(2, 4, dtype=torch.float32), requires_grad=False)
+
+    method = AscendW4A8SVDQFusedMoEMethod.__new__(AscendW4A8SVDQFusedMoEMethod)
+    method.dynamic_eplb = False
+    method.is_per_channel_weight = True
+
+    captured = {}
+
+    class FakeComm:
+        def fused_experts(self, fused_experts_input):
+            captured["payload"] = fused_experts_input
+            return torch.full_like(fused_experts_input.hidden_states, 7)
+
+    monkeypatch.setattr(w4a8_svdq, "_EXTRA_CTX", SimpleNamespace(moe_comm_method=FakeComm()))
+    monkeypatch.setattr(
+        w4a8_svdq,
+        "select_experts",
+        lambda **_: (
+            torch.ones(2, 1, dtype=torch.float32),
+            torch.zeros(2, 1, dtype=torch.int32),
+        ),
+    )
+
+    out = method.apply(
+        layer=layer,
+        x=torch.empty(2, 4, dtype=torch.bfloat16),
+        router_logits=torch.empty(2, 2, dtype=torch.float32),
+        top_k=1,
+        renormalize=True,
+        num_experts=2,
+    )
+
+    assert torch.equal(out, torch.full((2, 4), 7, dtype=torch.bfloat16))
+    payload = captured["payload"]
+    assert payload.quant.quant_type is QuantType.W4A8_SVDQ
+    assert payload.weights.svdq is not None
+    assert payload.weights.svdq.gate_up_svdq_l1 is layer.gate_up_svdq_l1
+    assert payload.weights.svdq.gate_svdq_l2 is layer.gate_svdq_l2
+    assert payload.weights.svdq.up_svdq_l2 is layer.up_svdq_l2
+    assert payload.weights.svdq.gate_rank_offset == 0
+    assert payload.weights.svdq.up_rank_offset == layer.svdq_gate_rank

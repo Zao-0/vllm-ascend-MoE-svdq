@@ -241,6 +241,68 @@ std::tuple<at::Tensor&, at::Tensor&> dispatch_ffn_combine_meta(
     return {out, expert_token_nums};
 }
 
+std::tuple<at::Tensor&, at::Tensor&> dispatch_ffn_combine_w4a8_svdq_meta(
+    const at::Tensor& x,
+    const at::TensorList& weight1,
+    const at::TensorList& weight2,
+    const at::Tensor& expert_idx,
+    const at::TensorList& scale1,
+    const at::TensorList& scale2,
+    const at::TensorList& bias1,
+    const at::TensorList& bias2,
+    const at::Tensor& probs,
+    const at::Tensor& gate_up_svdq_l1,
+    const at::Tensor& gate_svdq_l2,
+    const at::Tensor& up_svdq_l2,
+    const at::Tensor& down_svdq_l1,
+    const at::Tensor& down_svdq_l2,
+    int64_t gate_rank,
+    int64_t up_rank,
+    int64_t down_rank,
+    int64_t gate_rank_offset,
+    int64_t up_rank_offset,
+    c10::string_view group,
+    int64_t max_output_size,
+    at::Tensor& out,
+    at::Tensor& expert_token_nums,
+    const c10::optional<at::Tensor> &x_active_mask,
+    double swiglu_limit
+) {
+    TORCH_CHECK(x.dim() == 2, "x must be rank-2.");
+    TORCH_CHECK(expert_idx.dim() == 2, "expert_idx must be rank-2.");
+    TORCH_CHECK(probs.dim() == 2, "probs must be rank-2.");
+    TORCH_CHECK(out.dim() == 2, "out must be rank-2.");
+    TORCH_CHECK(x.sizes() == out.sizes(), "out shape must match x shape.");
+    TORCH_CHECK(expert_idx.sizes() == probs.sizes(), "expert_idx shape must match probs shape.");
+    TORCH_CHECK(gate_up_svdq_l1.scalar_type() == at::kBFloat16, "gate_up_svdq_l1 must be BF16.");
+    TORCH_CHECK(gate_svdq_l2.scalar_type() == at::kBFloat16, "gate_svdq_l2 must be BF16.");
+    TORCH_CHECK(up_svdq_l2.scalar_type() == at::kBFloat16, "up_svdq_l2 must be BF16.");
+    TORCH_CHECK(down_svdq_l1.scalar_type() == at::kBFloat16, "down_svdq_l1 must be BF16.");
+    TORCH_CHECK(down_svdq_l2.scalar_type() == at::kBFloat16, "down_svdq_l2 must be BF16.");
+    TORCH_CHECK(gate_up_svdq_l1.dim() == 3, "gate_up_svdq_l1 must be rank-3.");
+    TORCH_CHECK(gate_svdq_l2.dim() == 3, "gate_svdq_l2 must be rank-3.");
+    TORCH_CHECK(up_svdq_l2.dim() == 3, "up_svdq_l2 must be rank-3.");
+    TORCH_CHECK(down_svdq_l1.dim() == 3, "down_svdq_l1 must be rank-3.");
+    TORCH_CHECK(down_svdq_l2.dim() == 3, "down_svdq_l2 must be rank-3.");
+    TORCH_CHECK(gate_rank > 0 && up_rank > 0 && down_rank > 0, "SVDQ ranks must be positive.");
+    TORCH_CHECK(gate_rank_offset == 0, "gate_rank_offset must be 0.");
+    TORCH_CHECK(up_rank_offset == gate_rank, "up_rank_offset must equal gate_rank.");
+    TORCH_CHECK(gate_up_svdq_l1.size(1) == gate_rank + up_rank,
+                "gate_up_svdq_l1 rank dim must equal gate_rank + up_rank.");
+    TORCH_CHECK(max_output_size > 0, "max_output_size must be positive.");
+    (void)weight1;
+    (void)weight2;
+    (void)scale1;
+    (void)scale2;
+    (void)bias1;
+    (void)bias2;
+    (void)group;
+    (void)expert_token_nums;
+    (void)x_active_mask;
+    (void)swiglu_limit;
+    return {out, expert_token_nums};
+}
+
 at::Tensor npu_lightning_indexer_meta(
     const at::Tensor &query, const at::Tensor &key, const at::Tensor &weights,
     const c10::optional<at::Tensor> &actual_seq_lengths_query,
@@ -1593,6 +1655,8 @@ TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
     ops.impl("npu_sparse_flash_attention", &vllm_ascend::meta::npu_sparse_flash_attention_meta);
     // MoE dispatch-ffn-combine
     ops.impl("dispatch_ffn_combine", &vllm_ascend::meta::dispatch_ffn_combine_meta);
+    // MoE dispatch-ffn-combine W4A8-SVDQ
+    ops.impl("dispatch_ffn_combine_w4a8_svdq", &vllm_ascend::meta::dispatch_ffn_combine_w4a8_svdq_meta);
     // matmul allreduce add rmsnorm
     ops.impl("matmul_allreduce_add_rmsnorm", &vllm_ascend::meta::matmul_allreduce_add_rmsnorm_meta);
     // moe_init_routing_custom

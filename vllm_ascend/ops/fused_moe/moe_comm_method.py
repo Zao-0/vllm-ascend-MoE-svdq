@@ -306,23 +306,53 @@ class FusedMC2CommImpl(MoECommMethod):
         expert_tokens = None
         if get_ascend_config().enable_fused_mc2 == 1:
             out = torch.empty_like(fused_experts_input.hidden_states)
-            torch.ops._C_ascend.dispatch_ffn_combine(  # type: ignore
-                x=fused_experts_input.hidden_states,
-                weight1=fused_experts_input.weights.w1,
-                weight2=fused_experts_input.weights.w2,
-                expert_idx=topk_ids,
-                scale1=fused_experts_input.weights.w1_scale,
-                scale2=fused_experts_input.weights.w2_scale,
-                bias1=fused_experts_input.weights.w1_scale_bias,
-                bias2=fused_experts_input.weights.w2_scale_bias,
-                probs=fused_experts_input.topk_weights.to(torch.float32),
-                group=self.token_dispatcher.moe_all_to_all_group_name,
-                max_output_size=131072,
-                swiglu_limit=fused_experts_input.swiglu_limit,
-                x_active_mask=fused_experts_input.routing.mc2_mask,
-                out=out,
-                expert_token_nums=self.expert_token_nums,
-            )
+            svdq = fused_experts_input.weights.svdq
+            if svdq is None:
+                torch.ops._C_ascend.dispatch_ffn_combine(  # type: ignore
+                    x=fused_experts_input.hidden_states,
+                    weight1=fused_experts_input.weights.w1,
+                    weight2=fused_experts_input.weights.w2,
+                    expert_idx=topk_ids,
+                    scale1=fused_experts_input.weights.w1_scale,
+                    scale2=fused_experts_input.weights.w2_scale,
+                    bias1=fused_experts_input.weights.w1_scale_bias,
+                    bias2=fused_experts_input.weights.w2_scale_bias,
+                    probs=fused_experts_input.topk_weights.to(torch.float32),
+                    group=self.token_dispatcher.moe_all_to_all_group_name,
+                    max_output_size=131072,
+                    swiglu_limit=fused_experts_input.swiglu_limit,
+                    x_active_mask=fused_experts_input.routing.mc2_mask,
+                    out=out,
+                    expert_token_nums=self.expert_token_nums,
+                )
+            else:
+                torch.ops._C_ascend.dispatch_ffn_combine_w4a8_svdq(  # type: ignore
+                    x=fused_experts_input.hidden_states,
+                    weight1=fused_experts_input.weights.w1,
+                    weight2=fused_experts_input.weights.w2,
+                    expert_idx=topk_ids,
+                    scale1=fused_experts_input.weights.w1_scale,
+                    scale2=fused_experts_input.weights.w2_scale,
+                    bias1=fused_experts_input.weights.w1_scale_bias,
+                    bias2=fused_experts_input.weights.w2_scale_bias,
+                    probs=fused_experts_input.topk_weights.to(torch.float32),
+                    gate_up_svdq_l1=svdq.gate_up_svdq_l1,
+                    gate_svdq_l2=svdq.gate_svdq_l2,
+                    up_svdq_l2=svdq.up_svdq_l2,
+                    down_svdq_l1=svdq.down_svdq_l1,
+                    down_svdq_l2=svdq.down_svdq_l2,
+                    gate_rank=svdq.gate_rank,
+                    up_rank=svdq.up_rank,
+                    down_rank=svdq.down_rank,
+                    gate_rank_offset=svdq.gate_rank_offset,
+                    up_rank_offset=svdq.up_rank_offset,
+                    group=self.token_dispatcher.moe_all_to_all_group_name,
+                    max_output_size=131072,
+                    swiglu_limit=fused_experts_input.swiglu_limit,
+                    x_active_mask=fused_experts_input.routing.mc2_mask,
+                    out=out,
+                    expert_token_nums=self.expert_token_nums,
+                )
             expert_tokens = self.expert_token_nums
         elif get_ascend_config().enable_fused_mc2 == 2:
             assert fused_experts_input.routing.expert_map is not None, "expert_map cannot be None."
