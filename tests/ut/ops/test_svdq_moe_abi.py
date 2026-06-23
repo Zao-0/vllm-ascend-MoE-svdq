@@ -628,6 +628,61 @@ def test_svdq_cann_tiling_records_bf16_stage_shapes_and_factor_bindings():
     assert "FactorAddress(uint32_t factorId)" in contract
 
 
+def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
+    op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
+    tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
+    tiling_header = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h").read_text()
+    contract = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq.h").read_text()
+    lowrank_tiling = (op_root / "op_kernel/lowrank/svdq_fused_down_up_tiling.h").read_text()
+    lowrank_header = (op_root / "op_kernel/lowrank/svdq_fused_down_up.hpp").read_text()
+    lowrank_cpp = (op_root / "op_kernel/lowrank/svdq_fused_down_up.cpp").read_text()
+
+    assert '#include "lowrank/svdq_fused_down_up_tiling.h"' in tiling_header
+    assert '#include "lowrank/svdq_fused_down_up.hpp"' in contract
+    assert '#include "svdq_fused_down_up.hpp"' in lowrank_cpp
+    assert "SVDQ_LOWRANK_INVOCATION_COUNT = 2" in lowrank_tiling
+    assert "SVDQ_LOWRANK_INVOCATION_GATE_UP" in lowrank_tiling
+    assert "SVDQ_LOWRANK_INVOCATION_DOWN" in lowrank_tiling
+    assert "SVDQFusedDownUpTiling" in lowrank_tiling
+    assert "secondUpFactorId" in lowrank_tiling
+    assert "secondRankColumns" in lowrank_tiling
+    assert "secondInputColumnOffset" in lowrank_tiling
+    assert "secondOutputColumnOffset" in lowrank_tiling
+    assert "SVDQFusedDownUpArgs" in lowrank_header
+    assert "SVDQFusedDownUp" in lowrank_header
+    assert "HasIndependentSecondUp" in lowrank_header
+    assert "IsImplemented() const" in lowrank_header
+    assert "return false" in lowrank_header
+    assert "input BF16 -> down factor GEMM -> rank tile -> up factor GEMM -> projection BF16 GM" in lowrank_header
+
+    assert "SVDQFusedDownUpTiling" in tiling_header
+    assert "lowRankInvocations[DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_COUNT]" in tiling_header
+    assert "SetLowRankInvocation" in tiling
+    assert "BuildLowRankInvocationTable" in tiling
+    assert "BuildLowRankInvocationTable(tilingData)" in tiling
+    assert "LowRankInvocation(uint32_t invocationId)" in contract
+    assert "BuildLowRankArgs(uint32_t invocationId)" in contract
+    assert "FactorAddress(invocation.secondUpFactorId)" in contract
+
+    gate_up_call = (
+        "SetLowRankInvocation(tilingData, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_GATE_UP,\n"
+        "        SVDQ_REGION_ROUTED_X, SVDQ_REGION_PROJECTION_1, SVDQ_FACTOR_GATE_UP_L1, SVDQ_FACTOR_GATE_L2,\n"
+        "        SVDQ_FACTOR_UP_L2, routedRows, info.hiddenSize, info.gateRank, info.upRank,\n"
+        "        info.intermediateSize * 2, info.gateRankOffset, 0, info.upRankOffset, info.intermediateSize)"
+    )
+    down_call = (
+        "SetLowRankInvocation(tilingData, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_DOWN,\n"
+        "        SVDQ_REGION_HIDDEN, SVDQ_REGION_PROJECTION_2, SVDQ_FACTOR_DOWN_L1, SVDQ_FACTOR_DOWN_L2,\n"
+        "        SVDQ_INVALID_ID, routedRows, info.intermediateSize, info.downRank, 0, info.hiddenSize, 0, 0, 0, 0)"
+    )
+    assert gate_up_call in tiling
+    assert down_call in tiling
+    assert "gateUpSvdqL2" not in lowrank_header
+    assert "gate_up_svdq_l2" not in lowrank_header
+    assert "gateUpSvdqL2" not in lowrank_tiling
+    assert "gate_up_svdq_l2" not in lowrank_tiling
+
+
 def test_svdq_cann_kernel_contract_resolves_factors_workspace_and_bf16_stages():
     op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
     kernel = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq.cpp").read_text()

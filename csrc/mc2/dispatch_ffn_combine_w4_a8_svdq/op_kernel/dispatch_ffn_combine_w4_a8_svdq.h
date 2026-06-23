@@ -13,6 +13,7 @@
 
 #include "kernel_operator.h"
 #include "dispatch_ffn_combine_w4_a8_svdq_tiling.h"
+#include "lowrank/svdq_fused_down_up.hpp"
 
 namespace DispatchFFNCombineW4A8SVDQImpl {
 
@@ -169,6 +170,25 @@ public:
             default:
                 return nullptr;
         }
+    }
+
+    __aicore__ inline SVDQFusedDownUpTiling LowRankInvocation(uint32_t invocationId) const
+    {
+        return tilingData_.lowRankInvocations[invocationId];
+    }
+
+    __aicore__ inline SVDQFusedDownUpArgs BuildLowRankArgs(uint32_t invocationId) const
+    {
+        SVDQFusedDownUpTiling invocation = LowRankInvocation(invocationId);
+        return {
+            WorkspaceAddress(invocation.inputRegionId),
+            FactorAddress(invocation.downFactorId),
+            FactorAddress(invocation.upFactorId),
+            FactorAddress(invocation.secondUpFactorId),
+            WorkspaceAddress(invocation.outputRegionId),
+            runtime_.expertTokenNums,
+            invocation,
+        };
     }
 
     __aicore__ inline SVDQBF16StageContract BF16StageContract(uint32_t stageId) const

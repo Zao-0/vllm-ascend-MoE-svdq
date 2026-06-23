@@ -206,6 +206,45 @@ static void BuildBF16StageShapeTable(DispatchFFNCombineW4A8SVDQTilingData* tilin
         SVDQ_REGION_PROJECTION_2, SVDQ_REGION_PROJECTION_2, routedRows, info.downRank, info.hiddenSize, 0, 0, 0);
 }
 
+static void SetLowRankInvocation(
+    DispatchFFNCombineW4A8SVDQTilingData* tilingData, uint32_t invocationId, uint32_t inputRegionId,
+    uint32_t outputRegionId, uint32_t downFactorId, uint32_t upFactorId, uint32_t secondUpFactorId,
+    uint32_t m, uint32_t inputColumns, uint32_t rankColumns, uint32_t secondRankColumns,
+    uint32_t outputColumns, uint32_t inputColumnOffset, uint32_t outputColumnOffset,
+    uint32_t secondInputColumnOffset, uint32_t secondOutputColumnOffset)
+{
+    auto& invocation = tilingData->lowRankInvocations[invocationId];
+    invocation.invocationId = invocationId;
+    invocation.inputRegionId = inputRegionId;
+    invocation.outputRegionId = outputRegionId;
+    invocation.downFactorId = downFactorId;
+    invocation.upFactorId = upFactorId;
+    invocation.secondUpFactorId = secondUpFactorId;
+    invocation.m = m;
+    invocation.inputColumns = inputColumns;
+    invocation.rankColumns = rankColumns;
+    invocation.secondRankColumns = secondRankColumns;
+    invocation.outputColumns = outputColumns;
+    invocation.inputColumnOffset = inputColumnOffset;
+    invocation.outputColumnOffset = outputColumnOffset;
+    invocation.secondInputColumnOffset = secondInputColumnOffset;
+    invocation.secondOutputColumnOffset = secondOutputColumnOffset;
+}
+
+static void BuildLowRankInvocationTable(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
+{
+    auto& info = tilingData->info;
+    const uint32_t routedRows = info.maxOutputSize;
+
+    SetLowRankInvocation(tilingData, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_GATE_UP,
+        SVDQ_REGION_ROUTED_X, SVDQ_REGION_PROJECTION_1, SVDQ_FACTOR_GATE_UP_L1, SVDQ_FACTOR_GATE_L2,
+        SVDQ_FACTOR_UP_L2, routedRows, info.hiddenSize, info.gateRank, info.upRank,
+        info.intermediateSize * 2, info.gateRankOffset, 0, info.upRankOffset, info.intermediateSize);
+    SetLowRankInvocation(tilingData, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_DOWN,
+        SVDQ_REGION_HIDDEN, SVDQ_REGION_PROJECTION_2, SVDQ_FACTOR_DOWN_L1, SVDQ_FACTOR_DOWN_L2,
+        SVDQ_INVALID_ID, routedRows, info.intermediateSize, info.downRank, 0, info.hiddenSize, 0, 0, 0, 0);
+}
+
 static ge::graphStatus DispatchFFNCombineW4A8SVDQCheckAttrAndSetTiling(
     gert::TilingContext* context, DispatchFFNCombineW4A8SVDQInfo& info)
 {
@@ -439,6 +478,7 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
     BuildWorkspaceMap(tilingData);
     BuildSyncFlagTable(tilingData);
     BuildBF16StageShapeTable(tilingData);
+    BuildLowRankInvocationTable(tilingData);
     size_t* workSpaces = context->GetWorkspaceSizes(1);
     OP_TILING_CHECK(workSpaces == nullptr,
         OP_LOGE(nodeName, "workSpaces is nullptr."), return ge::GRAPH_FAILED);

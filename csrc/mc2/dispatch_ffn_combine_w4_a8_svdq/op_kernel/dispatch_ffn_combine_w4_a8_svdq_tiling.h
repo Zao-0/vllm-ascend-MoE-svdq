@@ -13,6 +13,8 @@
 
 #include <cstdint>
 
+#include "lowrank/svdq_fused_down_up_tiling.h"
+
 constexpr uint32_t SVDQ_WORKSPACE_REGION_COUNT = 12;
 constexpr uint32_t SVDQ_SYNC_FLAG_COUNT = 14;
 constexpr uint32_t SVDQ_BF16_STAGE_COUNT = 7;
@@ -142,6 +144,8 @@ struct DispatchFFNCombineW4A8SVDQTilingData {
     SVDQWorkspaceRegion workspaceRegions[SVDQ_WORKSPACE_REGION_COUNT];
     SVDQSyncFlag syncFlags[SVDQ_SYNC_FLAG_COUNT];
     SVDQBF16StageShape bf16StageShapes[SVDQ_BF16_STAGE_COUNT];
+    DispatchFFNCombineW4A8SVDQImpl::SVDQFusedDownUpTiling
+        lowRankInvocations[DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_COUNT];
 };
 
 #endif  // ASCENDC_DISPATCH_FFN_COMBINE_W4A8_SVDQ_TILING_H
