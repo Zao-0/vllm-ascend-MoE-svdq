@@ -293,7 +293,7 @@ def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
     tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
     tiling_header = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h").read_text()
 
-    assert "SVDQ_WORKSPACE_REGION_COUNT = 12" in tiling_header
+    assert "SVDQ_WORKSPACE_REGION_COUNT = 14" in tiling_header
     assert "SVDQWorkspaceRegion workspaceRegions[SVDQ_WORKSPACE_REGION_COUNT]" in tiling_header
     assert "workspaceBytes" in tiling_header
     assert "BuildWorkspaceMap" in tiling
@@ -311,6 +311,8 @@ def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
         "SVDQ_REGION_HIDDEN_SCALE",
         "SVDQ_REGION_PROJECTION_2",
         "SVDQ_REGION_ACCUMULATOR_2",
+        "SVDQ_REGION_LOWRANK_ACCUMULATOR_1",
+        "SVDQ_REGION_LOWRANK_ACCUMULATOR_2",
         "SVDQ_REGION_PEER_OUTPUT",
     ):
         assert region in tiling_header
@@ -337,8 +339,10 @@ def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
     assert "SVDQ_DTYPE_FP32" in tiling_header
     assert "SVDQ_WORKSPACE_ALIGNMENT = 512" in tiling
     assert "routedRows * gateUpSize * BF16_BYTES" in tiling
+    assert "routedRows * gateUpSize * FP32_BYTES" in tiling
     assert "routedRows * gateUpSize * INT32_BYTES" in tiling
     assert "routedRows * hiddenSize * BF16_BYTES" in tiling
+    assert "routedRows * hiddenSize * FP32_BYTES" in tiling
     assert "AscendC kernel is not implemented yet" in tiling
 
 
@@ -652,6 +656,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "outputColumnTile" in lowrank_tiling
     assert "kTile" in lowrank_tiling
     assert "coreCount" in lowrank_tiling
+    assert "accumulatorRegionId" in lowrank_tiling
     assert "SVDQFusedDownUpArgs" in lowrank_header
     assert "SVDQFusedDownUp" in lowrank_header
     assert "SVDQ_LOWRANK_BF16_BYTES = 2" in lowrank_header
@@ -689,7 +694,9 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "LoadInputBF16(" in lowrank_header
     assert "LoadFactorBF16(" in lowrank_header
     assert "LoadOutputBF16(" in lowrank_header
+    assert "LoadAccumulatorFP32(" in lowrank_header
     assert "StoreOutputBF16(" in lowrank_header
+    assert "StoreAccumulatorFP32(" in lowrank_header
     assert "AccumulateScalarBF16(" in lowrank_header
     assert "BuildDownStagePlan() const" in lowrank_header
     assert "BuildPrimaryUpStagePlan() const" in lowrank_header
@@ -698,6 +705,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "Min(uint32_t lhs, uint32_t rhs)" in lowrank_header
     assert "MatrixAddress(" in lowrank_header
     assert "FactorAddress(const SVDQLowRankStagePlan& stage, uint32_t expertId)" in lowrank_header
+    assert "AccumulatorAddress(" in lowrank_header
     assert "FactorTileAddress(" in lowrank_header
     assert "GM_ADDR inputBase = args_.input" in lowrank_header
     assert "if (stageIndex != 0)" in lowrank_header
@@ -710,6 +718,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "args_.tiling.outputColumnTile > 0" in lowrank_header
     assert "args_.tiling.kTile > 0" in lowrank_header
     assert "args_.tiling.coreCount > 0" in lowrank_header
+    assert "args_.accumulator != nullptr" in lowrank_header
     assert "args_.tiling.secondInputColumnOffset + args_.tiling.secondRankColumns <= TotalRankColumns()" in lowrank_header
     assert "args_.tiling.outputColumnOffset < args_.tiling.secondOutputColumnOffset" in lowrank_header
     assert "for (uint32_t stageIndex = 0; stageIndex < StageCount(); ++stageIndex)" in lowrank_header
@@ -723,10 +732,15 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "MatrixAddress(expert.input, rowOffset, stage.inputStrideColumns, tilePlan.kColumnOffset)" in lowrank_header
     assert "FactorTileAddress(expert, tilePlan.outputColumnOffset, tilePlan.kColumnOffset)" in lowrank_header
     assert "MatrixAddress(expert.output, rowOffset, stage.outputStrideColumns, tilePlan.outputColumnOffset)" in lowrank_header
+    assert "AccumulatorAddress(expert, rowOffset, tilePlan.outputColumnOffset)" in lowrank_header
     assert "input.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tilePlan.input))" in lowrank_header
     assert "factor.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tilePlan.factor))" in lowrank_header
     assert "output.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tilePlan.output))" in lowrank_header
+    assert "accumulator.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(tilePlan.accumulator))" in lowrank_header
     assert "output.SetValue(OutputElementOffset(tilePlan, rowOffset, outputOffset), value)" in lowrank_header
+    assert "accumulator.SetValue(AccumulatorElementOffset(tilePlan, rowOffset, outputOffset), value)" in lowrank_header
+    assert "tilePlan.accumulatesFirstKTile ? 0.0F" in lowrank_header
+    assert "LoadAccumulatorFP32(tilePlan, rowOffset, outputOffset)" in lowrank_header
     assert "static_cast<float>(LoadInputBF16(tilePlan, rowOffset, kOffset))" in lowrank_header
     assert "static_cast<float>(LoadFactorBF16(tilePlan, outputOffset, kOffset))" in lowrank_header
     assert "const uint32_t coreIdx = AscendC::GetBlockIdx()" in lowrank_header
@@ -754,6 +768,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "invocation.outputColumnTile = SVDQ_LOWRANK_OUTPUT_COLUMN_TILE" in tiling
     assert "invocation.kTile = SVDQ_LOWRANK_K_TILE" in tiling
     assert "invocation.coreCount = coreCount" in tiling
+    assert "invocation.accumulatorRegionId = accumulatorRegionId" in tiling
     assert "SVDQFusedDownUpTiling" in tiling_header
     assert "lowRankInvocations[DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_COUNT]" in tiling_header
     assert "SetLowRankInvocation" in tiling
@@ -761,6 +776,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "BuildLowRankInvocationTable(tilingData)" in tiling
     assert "LowRankInvocation(uint32_t invocationId)" in contract
     assert "BuildLowRankArgs(uint32_t invocationId)" in contract
+    assert "WorkspaceAddress(invocation.accumulatorRegionId)" in contract
     assert "FactorAddress(invocation.secondUpFactorId)" in contract
     assert "tilingData_.info.expertPerRank" in contract
     assert "LowRankInvocationReady(uint32_t invocationId)" in contract
@@ -779,13 +795,13 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
         "        SVDQ_REGION_ROUTED_X, SVDQ_REGION_PROJECTION_1, SVDQ_FACTOR_GATE_UP_L1, SVDQ_FACTOR_GATE_L2,\n"
         "        SVDQ_FACTOR_UP_L2, routedRows, info.hiddenSize, info.gateRank, info.upRank,\n"
         "        info.intermediateSize * 2, info.gateRankOffset, 0, info.upRankOffset, info.intermediateSize,\n"
-        "        info.lowRankCoreCount)"
+        "        info.lowRankCoreCount, SVDQ_REGION_LOWRANK_ACCUMULATOR_1)"
     )
     down_call = (
         "SetLowRankInvocation(tilingData, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_DOWN,\n"
         "        SVDQ_REGION_HIDDEN, SVDQ_REGION_PROJECTION_2, SVDQ_FACTOR_DOWN_L1, SVDQ_FACTOR_DOWN_L2,\n"
         "        SVDQ_INVALID_ID, routedRows, info.intermediateSize, info.downRank, 0, info.hiddenSize, 0, 0, 0, 0,\n"
-        "        info.lowRankCoreCount)"
+        "        info.lowRankCoreCount, SVDQ_REGION_LOWRANK_ACCUMULATOR_2)"
     )
     assert gate_up_call in tiling
     assert down_call in tiling
@@ -842,6 +858,8 @@ def test_svdq_cann_kernel_contract_resolves_factors_workspace_and_bf16_stages():
         ("hiddenScale", "SVDQ_REGION_HIDDEN_SCALE"),
         ("projection2", "SVDQ_REGION_PROJECTION_2"),
         ("accumulator2", "SVDQ_REGION_ACCUMULATOR_2"),
+        ("lowRankAccumulator1", "SVDQ_REGION_LOWRANK_ACCUMULATOR_1"),
+        ("lowRankAccumulator2", "SVDQ_REGION_LOWRANK_ACCUMULATOR_2"),
         ("peerOutput", "SVDQ_REGION_PEER_OUTPUT"),
     ):
         assert f"workspace_.{region_field} = WorkspaceAddress({region_id})" in contract

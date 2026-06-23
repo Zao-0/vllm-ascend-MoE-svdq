@@ -112,8 +112,12 @@ static void BuildWorkspaceMap(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
         SVDQ_DTYPE_BF16, SVDQ_STAGE_LOWRANK_2, SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, 10);
     SetWorkspaceRegion(tilingData, SVDQ_REGION_ACCUMULATOR_2, offset, routedRows * hiddenSize * INT32_BYTES,
         SVDQ_DTYPE_INT32, SVDQ_STAGE_W4A8_GEMM_2, SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, 11);
+    SetWorkspaceRegion(tilingData, SVDQ_REGION_LOWRANK_ACCUMULATOR_1, offset, routedRows * gateUpSize * FP32_BYTES,
+        SVDQ_DTYPE_FP32, SVDQ_STAGE_LOWRANK_1, SVDQ_STAGE_LOWRANK_1, 12);
+    SetWorkspaceRegion(tilingData, SVDQ_REGION_LOWRANK_ACCUMULATOR_2, offset, routedRows * hiddenSize * FP32_BYTES,
+        SVDQ_DTYPE_FP32, SVDQ_STAGE_LOWRANK_2, SVDQ_STAGE_LOWRANK_2, 13);
     SetWorkspaceRegion(tilingData, SVDQ_REGION_PEER_OUTPUT, offset, routedRows * hiddenSize * BF16_BYTES,
-        SVDQ_DTYPE_BF16, SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, SVDQ_STAGE_UNPERMUTE_COMBINE, 12);
+        SVDQ_DTYPE_BF16, SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, SVDQ_STAGE_UNPERMUTE_COMBINE, 14);
 
     info.workspaceBytes = offset;
 }
@@ -214,7 +218,8 @@ static void SetLowRankInvocation(
     uint32_t outputRegionId, uint32_t downFactorId, uint32_t upFactorId, uint32_t secondUpFactorId,
     uint32_t m, uint32_t inputColumns, uint32_t rankColumns, uint32_t secondRankColumns,
     uint32_t outputColumns, uint32_t inputColumnOffset, uint32_t outputColumnOffset,
-    uint32_t secondInputColumnOffset, uint32_t secondOutputColumnOffset, uint32_t coreCount)
+    uint32_t secondInputColumnOffset, uint32_t secondOutputColumnOffset, uint32_t coreCount,
+    uint32_t accumulatorRegionId)
 {
     auto& invocation = tilingData->lowRankInvocations[invocationId];
     invocation.invocationId = invocationId;
@@ -236,6 +241,7 @@ static void SetLowRankInvocation(
     invocation.outputColumnTile = SVDQ_LOWRANK_OUTPUT_COLUMN_TILE;
     invocation.kTile = SVDQ_LOWRANK_K_TILE;
     invocation.coreCount = coreCount;
+    invocation.accumulatorRegionId = accumulatorRegionId;
 }
 
 static void BuildLowRankInvocationTable(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
@@ -247,11 +253,11 @@ static void BuildLowRankInvocationTable(DispatchFFNCombineW4A8SVDQTilingData* ti
         SVDQ_REGION_ROUTED_X, SVDQ_REGION_PROJECTION_1, SVDQ_FACTOR_GATE_UP_L1, SVDQ_FACTOR_GATE_L2,
         SVDQ_FACTOR_UP_L2, routedRows, info.hiddenSize, info.gateRank, info.upRank,
         info.intermediateSize * 2, info.gateRankOffset, 0, info.upRankOffset, info.intermediateSize,
-        info.lowRankCoreCount);
+        info.lowRankCoreCount, SVDQ_REGION_LOWRANK_ACCUMULATOR_1);
     SetLowRankInvocation(tilingData, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_DOWN,
         SVDQ_REGION_HIDDEN, SVDQ_REGION_PROJECTION_2, SVDQ_FACTOR_DOWN_L1, SVDQ_FACTOR_DOWN_L2,
         SVDQ_INVALID_ID, routedRows, info.intermediateSize, info.downRank, 0, info.hiddenSize, 0, 0, 0, 0,
-        info.lowRankCoreCount);
+        info.lowRankCoreCount, SVDQ_REGION_LOWRANK_ACCUMULATOR_2);
 }
 
 static ge::graphStatus DispatchFFNCombineW4A8SVDQGetPlatformInfoAndSetTiling(

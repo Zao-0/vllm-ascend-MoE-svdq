@@ -91,16 +91,19 @@ struct SVDQLowRankTileTensorPlan {
     GM_ADDR input;
     GM_ADDR factor;
     GM_ADDR output;
+    GM_ADDR accumulator;
     uint32_t inputStrideColumns;
     uint32_t factorStrideColumns;
     uint32_t outputStrideColumns;
+    uint32_t accumulatorStrideColumns;
     bool accumulatesFirstKTile;
     bool accumulatesLastKTile;
 
     __aicore__ inline bool HasWork() const
     {
         return tile.HasWork() && input != nullptr && factor != nullptr && output != nullptr &&
-               inputStrideColumns > 0 && factorStrideColumns > 0 && outputStrideColumns > 0;
+               accumulator != nullptr && inputStrideColumns > 0 && factorStrideColumns > 0 &&
+               outputStrideColumns > 0 && accumulatorStrideColumns > 0;
     }
 };
 
@@ -110,6 +113,7 @@ struct SVDQFusedDownUpArgs {
     GM_ADDR upFactor;
     GM_ADDR secondUpFactor;
     GM_ADDR output;
+    GM_ADDR accumulator;
     GM_ADDR expertTokenNums;
     uint32_t expertPerRank;
     SVDQFusedDownUpTiling tiling;
@@ -127,8 +131,8 @@ public:
     __aicore__ inline bool HasCompleteContract() const
     {
         return args_.input != nullptr && args_.downFactor != nullptr && args_.upFactor != nullptr &&
-               args_.output != nullptr && args_.expertTokenNums != nullptr && args_.tiling.m > 0 &&
-               args_.tiling.inputColumns > 0 && args_.tiling.rankColumns > 0 &&
+               args_.output != nullptr && args_.accumulator != nullptr && args_.expertTokenNums != nullptr &&
+               args_.tiling.m > 0 && args_.tiling.inputColumns > 0 && args_.tiling.rankColumns > 0 &&
                args_.tiling.outputColumns > 0 && args_.tiling.downFactorId != SVDQ_INVALID_ID &&
                args_.tiling.upFactorId != SVDQ_INVALID_ID &&
                args_.tiling.invocationId < SVDQ_LOWRANK_INVOCATION_COUNT &&
@@ -321,8 +325,10 @@ public:
             MatrixAddress(expert.input, rowOffset, stage.inputStrideColumns, tilePlan.kColumnOffset),
             FactorTileAddress(expert, tilePlan.outputColumnOffset, tilePlan.kColumnOffset),
             MatrixAddress(expert.output, rowOffset, stage.outputStrideColumns, tilePlan.outputColumnOffset),
+            AccumulatorAddress(expert, rowOffset, tilePlan.outputColumnOffset),
             stage.inputStrideColumns,
             stage.inputColumns,
+            stage.outputStrideColumns,
             stage.outputStrideColumns,
             tilePlan.kColumnOffset == 0,
             tilePlan.kColumnOffset + tilePlan.kColumnCount >= stage.inputColumns,
@@ -345,6 +351,12 @@ public:
         const SVDQLowRankTileTensorPlan& tilePlan, uint32_t rowOffset, uint32_t outputOffset) const
     {
         return static_cast<uint64_t>(rowOffset) * tilePlan.outputStrideColumns + outputOffset;
+    }
+
+    __aicore__ inline uint64_t AccumulatorElementOffset(
+        const SVDQLowRankTileTensorPlan& tilePlan, uint32_t rowOffset, uint32_t outputOffset) const
+    {
+        return static_cast<uint64_t>(rowOffset) * tilePlan.accumulatorStrideColumns + outputOffset;
     }
 
     __aicore__ inline bfloat16_t LoadInputBF16(
@@ -371,6 +383,14 @@ public:
         return output.GetValue(OutputElementOffset(tilePlan, rowOffset, outputOffset));
     }
 
+    __aicore__ inline float LoadAccumulatorFP32(
+        const SVDQLowRankTileTensorPlan& tilePlan, uint32_t rowOffset, uint32_t outputOffset) const
+    {
+        AscendC::GlobalTensor<float> accumulator;
+        accumulator.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(tilePlan.accumulator));
+        return accumulator.GetValue(AccumulatorElementOffset(tilePlan, rowOffset, outputOffset));
+    }
+
     __aicore__ inline void StoreOutputBF16(
         const SVDQLowRankTileTensorPlan& tilePlan, uint32_t rowOffset, uint32_t outputOffset,
         bfloat16_t value) const
@@ -380,10 +400,19 @@ public:
         output.SetValue(OutputElementOffset(tilePlan, rowOffset, outputOffset), value);
     }
 
+    __aicore__ inline void StoreAccumulatorFP32(
+        const SVDQLowRankTileTensorPlan& tilePlan, uint32_t rowOffset, uint32_t outputOffset, float value) const
+    {
+        AscendC::GlobalTensor<float> accumulator;
+        accumulator.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(tilePlan.accumulator));
+        accumulator.SetValue(AccumulatorElementOffset(tilePlan, rowOffset, outputOffset), value);
+    }
+
     __aicore__ inline float AccumulateScalarBF16(
         const SVDQLowRankTileTensorPlan& tilePlan, uint32_t rowOffset, uint32_t outputOffset) const
     {
-        float accumulator = 0.0F;
+        float accumulator = tilePlan.accumulatesFirstKTile ? 0.0F :
+            LoadAccumulatorFP32(tilePlan, rowOffset, outputOffset);
         for (uint32_t kOffset = 0; kOffset < tilePlan.tile.kColumnCount; ++kOffset) {
             accumulator += static_cast<float>(LoadInputBF16(tilePlan, rowOffset, kOffset)) *
                            static_cast<float>(LoadFactorBF16(tilePlan, outputOffset, kOffset));
@@ -512,6 +541,14 @@ private:
         const uint64_t expertOffset =
             static_cast<uint64_t>(expertId) * stage.inputColumns * stage.outputColumns + stage.factorColumnOffset;
         return stage.factor + expertOffset * SVDQ_LOWRANK_BF16_BYTES;
+    }
+
+    __aicore__ inline GM_ADDR AccumulatorAddress(
+        const SVDQLowRankExpertPlan& expert, uint32_t row, uint32_t columnOffset) const
+    {
+        return args_.accumulator +
+               (static_cast<uint64_t>(expert.tokenStart + row) * expert.stage.outputStrideColumns + columnOffset) *
+                   sizeof(float);
     }
 
     __aicore__ inline GM_ADDR FactorTileAddress(

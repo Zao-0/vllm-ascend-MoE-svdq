@@ -72,6 +72,8 @@ struct SVDQWorkspaceGM {
     GM_ADDR hiddenScale;
     GM_ADDR projection2;
     GM_ADDR accumulator2;
+    GM_ADDR lowRankAccumulator1;
+    GM_ADDR lowRankAccumulator2;
     GM_ADDR peerOutput;
 };
 
@@ -189,6 +191,7 @@ public:
             FactorAddress(invocation.upFactorId),
             FactorAddress(invocation.secondUpFactorId),
             WorkspaceAddress(invocation.outputRegionId),
+            WorkspaceAddress(invocation.accumulatorRegionId),
             runtime_.expertTokenNums,
             tilingData_.info.expertPerRank,
             invocation,
@@ -263,6 +266,8 @@ private:
         workspace_.hiddenScale = WorkspaceAddress(SVDQ_REGION_HIDDEN_SCALE);
         workspace_.projection2 = WorkspaceAddress(SVDQ_REGION_PROJECTION_2);
         workspace_.accumulator2 = WorkspaceAddress(SVDQ_REGION_ACCUMULATOR_2);
+        workspace_.lowRankAccumulator1 = WorkspaceAddress(SVDQ_REGION_LOWRANK_ACCUMULATOR_1);
+        workspace_.lowRankAccumulator2 = WorkspaceAddress(SVDQ_REGION_LOWRANK_ACCUMULATOR_2);
         workspace_.peerOutput = WorkspaceAddress(SVDQ_REGION_PEER_OUTPUT);
     }
 

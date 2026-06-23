@@ -42,6 +42,7 @@ struct SVDQFusedDownUpTiling {
     uint32_t outputColumnTile;
     uint32_t kTile;
     uint32_t coreCount;
+    uint32_t accumulatorRegionId;
 };
 
 }  // namespace DispatchFFNCombineW4A8SVDQImpl
