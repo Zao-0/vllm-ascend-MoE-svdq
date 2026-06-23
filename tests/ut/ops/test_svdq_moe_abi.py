@@ -5,8 +5,9 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 #
 
-from dataclasses import replace
 import inspect
+import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -116,14 +117,13 @@ def test_svdq_csrc_torch_schema_meta_and_adapter_are_registered():
     binding = (REPO_ROOT / "csrc/torch_binding.cpp").read_text()
     meta = (REPO_ROOT / "csrc/torch_binding_meta.cpp").read_text()
     adapter = (
-        REPO_ROOT
-        / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/dispatch_ffn_combine_w4_a8_svdq_torch_adpt.h"
+        REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/dispatch_ffn_combine_w4_a8_svdq_torch_adpt.h"
     ).read_text()
 
     assert "dispatch_ffn_combine_w4a8_svdq(Tensor x" in binding
-    assert "ops.impl(\"dispatch_ffn_combine_w4a8_svdq\", torch::kPrivateUse1" in binding
+    assert 'ops.impl("dispatch_ffn_combine_w4a8_svdq", torch::kPrivateUse1' in binding
     assert "dispatch_ffn_combine_w4a8_svdq_meta" in meta
-    assert "ops.impl(\"dispatch_ffn_combine_w4a8_svdq\"" in meta
+    assert 'ops.impl("dispatch_ffn_combine_w4a8_svdq"' in meta
     assert "dispatch_ffn_combine_w4a8_svdq(" in adapter
     assert "EXEC_NPU_CMD(" in adapter
     assert "aclnnDispatchFFNCombineW4A8SVDQ" in adapter
@@ -150,31 +150,31 @@ def test_svdq_csrc_torch_schema_meta_and_adapter_are_registered():
     assert "gate_up_svdq_l2" not in adapter
 
     for meta_check in (
-        'x.scalar_type() == at::kBFloat16',
-        'expert_idx.scalar_type() == at::kInt',
-        'probs.scalar_type() == at::kFloat',
-        'out.scalar_type() == at::kBFloat16',
-        'expert_token_nums.scalar_type() == at::kInt',
-        '!weight1.empty()',
-        '!weight2.empty()',
-        '!scale1.empty()',
-        '!scale2.empty()',
-        '!bias1.empty()',
-        '!bias2.empty()',
-        'weight1[0].scalar_type() == at::kInt',
-        'weight2[0].scalar_type() == at::kInt',
-        'scale1[0].scalar_type() == at::kLong',
-        'scale2[0].scalar_type() == at::kLong',
-        'bias1[0].scalar_type() == at::kFloat',
-        'bias2[0].scalar_type() == at::kFloat',
-        'hidden_size == x.size(1)',
-        'gate_svdq_l2.size(0) == num_experts && gate_svdq_l2.size(2) == gate_rank',
-        'up_svdq_l2.size(0) == num_experts && up_svdq_l2.size(1) == intermediate_size',
-        'down_svdq_l1.size(0) == num_experts && down_svdq_l1.size(1) == down_rank',
-        'down_svdq_l2.size(0) == num_experts && down_svdq_l2.size(1) == hidden_size',
-        'weight1[0].size(0) == num_experts && weight2[0].size(0) == num_experts',
-        'expert_token_nums.size(0) == num_experts',
-        'x_active_mask.value().scalar_type() == at::kBool',
+        "x.scalar_type() == at::kBFloat16",
+        "expert_idx.scalar_type() == at::kInt",
+        "probs.scalar_type() == at::kFloat",
+        "out.scalar_type() == at::kBFloat16",
+        "expert_token_nums.scalar_type() == at::kInt",
+        "!weight1.empty()",
+        "!weight2.empty()",
+        "!scale1.empty()",
+        "!scale2.empty()",
+        "!bias1.empty()",
+        "!bias2.empty()",
+        "weight1[0].scalar_type() == at::kInt",
+        "weight2[0].scalar_type() == at::kInt",
+        "scale1[0].scalar_type() == at::kLong",
+        "scale2[0].scalar_type() == at::kLong",
+        "bias1[0].scalar_type() == at::kFloat",
+        "bias2[0].scalar_type() == at::kFloat",
+        "hidden_size == x.size(1)",
+        "gate_svdq_l2.size(0) == num_experts && gate_svdq_l2.size(2) == gate_rank",
+        "up_svdq_l2.size(0) == num_experts && up_svdq_l2.size(1) == intermediate_size",
+        "down_svdq_l1.size(0) == num_experts && down_svdq_l1.size(1) == down_rank",
+        "down_svdq_l2.size(0) == num_experts && down_svdq_l2.size(1) == hidden_size",
+        "weight1[0].size(0) == num_experts && weight2[0].size(0) == num_experts",
+        "expert_token_nums.size(0) == num_experts",
+        "x_active_mask.value().scalar_type() == at::kBool",
     ):
         assert meta_check in meta
 
@@ -220,7 +220,6 @@ def test_svdq_cann_op_host_surface_uses_canonical_five_factor_abi():
     wrapper = (op_root / "op_host/op_api/aclnn_dispatch_ffn_combine_w4_a8_svdq.cpp").read_text()
     op_def = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_def.cpp").read_text()
     tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
-    tiling_header = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h").read_text()
 
     assert "DispatchFFNCombineW4A8SVDQ" in cmake
     assert "dispatch_ffn_combine_w4_a8_svdq" in cmake
@@ -615,7 +614,18 @@ def test_svdq_cann_tiling_records_bf16_stage_shapes_and_factor_bindings():
             "0",
         ),
     )
-    for stage, factor, input_region, output_region, m, k, n, input_offset, output_offset, factor_offset in expected_stage_shapes:
+    for (
+        stage,
+        factor,
+        input_region,
+        output_region,
+        m,
+        k,
+        n,
+        input_offset,
+        output_offset,
+        factor_offset,
+    ) in expected_stage_shapes:
         assert stage in tiling
         assert factor in tiling
         assert input_region in tiling
@@ -753,7 +763,9 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "args_.tiling.kTile > 0" in lowrank_header
     assert "args_.tiling.coreCount > 0" in lowrank_header
     assert "args_.accumulator != nullptr" in lowrank_header
-    assert "args_.tiling.secondInputColumnOffset + args_.tiling.secondRankColumns <= TotalRankColumns()" in lowrank_header
+    assert (
+        "args_.tiling.secondInputColumnOffset + args_.tiling.secondRankColumns <= TotalRankColumns()" in lowrank_header
+    )
     assert "args_.tiling.outputColumnOffset < args_.tiling.secondOutputColumnOffset" in lowrank_header
     assert "for (uint32_t stageIndex = 0; stageIndex < StageCount(); ++stageIndex)" in lowrank_header
     assert "for (uint32_t expertId = 0; expertId < ExpertCount(); ++expertId)" in lowrank_header
@@ -765,7 +777,10 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "static_cast<uint64_t>(outputColumnOffset) * expert.stage.inputColumns + kColumnOffset" in lowrank_header
     assert "MatrixAddress(expert.input, rowOffset, stage.inputStrideColumns, tilePlan.kColumnOffset)" in lowrank_header
     assert "FactorTileAddress(expert, tilePlan.outputColumnOffset, tilePlan.kColumnOffset)" in lowrank_header
-    assert "MatrixAddress(expert.output, rowOffset, stage.outputStrideColumns, tilePlan.outputColumnOffset)" in lowrank_header
+    assert (
+        "MatrixAddress(expert.output, rowOffset, stage.outputStrideColumns, tilePlan.outputColumnOffset)"
+        in lowrank_header
+    )
     assert "AccumulatorAddress(expert, rowOffset, tilePlan.outputColumnOffset)" in lowrank_header
     assert "const uint32_t mActual = tilePlan.tile.rowCount" in lowrank_header
     assert "const uint32_t nActual = tilePlan.tile.outputColumnCount" in lowrank_header
@@ -830,7 +845,10 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "static_cast<float>(LoadInputBF16(tilePlan, rowOffset, kOffset))" in lowrank_header
     assert "static_cast<float>(LoadFactorBF16(tilePlan, outputOffset, kOffset))" in lowrank_header
     assert "for (uint32_t rowOffset = 0; rowOffset < tilePlan.tile.rowCount; ++rowOffset)" in lowrank_header
-    assert "for (uint32_t outputOffset = 0; outputOffset < tilePlan.tile.outputColumnCount; ++outputOffset)" in lowrank_header
+    assert (
+        "for (uint32_t outputOffset = 0; outputOffset < tilePlan.tile.outputColumnCount; ++outputOffset)"
+        in lowrank_header
+    )
     assert "const float accumulator = AccumulateScalarBF16(tilePlan, rowOffset, outputOffset)" in lowrank_header
     assert "if (tilePlan.accumulatesLastKTile)" in lowrank_header
     assert "StoreOutputBF16(tilePlan, rowOffset, outputOffset, static_cast<bfloat16_t>(accumulator))" in lowrank_header
@@ -864,7 +882,10 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "const uint32_t coreIdx = AscendC::GetBlockIdx()" in lowrank_header
     assert "const uint32_t runtimeCoreCount = AscendC::GetBlockNum()" in lowrank_header
     assert "const SVDQLowRankCoreTileRange tileRange = CoreTileRange(coreIdx, scheduledCoreCount)" in lowrank_header
-    assert "const SVDQLowRankOutputTilePlan outputTilePlan = OutputTilePlan(tileRange.tileStart + tileOffset)" in lowrank_header
+    assert (
+        "const SVDQLowRankOutputTilePlan outputTilePlan = OutputTilePlan(tileRange.tileStart + tileOffset)"
+        in lowrank_header
+    )
     assert "const uint32_t kTileCount = OutputTileKTileCount(outputTilePlan)" in lowrank_header
     assert "for (uint32_t kTileIndex = 0; kTileIndex < kTileCount; ++kTileIndex)" in lowrank_header
     assert "const SVDQLowRankTilePlan tilePlan = KTilePlan(outputTilePlan, kTileIndex)" in lowrank_header
@@ -1062,3 +1083,52 @@ def test_svdq_cann_kernel_contract_resolves_factors_workspace_and_bf16_stages():
 
     assert "gateUpSvdqL2" not in contract
     assert "gate_up_svdq_l2" not in contract
+
+
+def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tmp_path):
+    from tools.svdq_kernel_contract_manifest import build_manifest
+
+    manifest = build_manifest(REPO_ROOT)
+    output = tmp_path / "manifest.json"
+    output.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    loaded = json.loads(output.read_text(encoding="utf-8"))
+
+    assert loaded["operator"] == "DispatchFFNCombineW4A8SVDQ"
+    assert loaded["counts"] == {
+        "factor_abi": 5,
+        "workspace_regions": 14,
+        "sync_flags": 14,
+        "bf16_stages": 7,
+        "lowrank_invocations": 2,
+    }
+    assert [factor["operator_tensor"] for factor in loaded["factor_abi"]] == [
+        "gate_up_svdq_l1",
+        "gate_svdq_l2",
+        "up_svdq_l2",
+        "down_svdq_l1",
+        "down_svdq_l2",
+    ]
+    assert "gate_up_svdq_l2" not in json.dumps(loaded)
+    assert loaded["rank_split_contract"]["split_source"] == "explicit gateRank/upRank offsets"
+    assert loaded["rank_split_contract"]["up_rank_offset"] == "gateRank"
+    assert loaded["production_fail_closed"]["host_tiling_returns_graph_failed"]
+    assert loaded["production_fail_closed"]["lowrank_is_implemented_returns_false"]
+    assert not loaded["production_fail_closed"]["w4a8_residual_unblocked"]
+    assert all(loaded["source_proof"].values())
+
+    stage_names = [stage["name"] for stage in loaded["bf16_stages"]]
+    assert stage_names == [
+        "SVDQ_BF16_STAGE_ROUTING",
+        "SVDQ_BF16_STAGE_GATE_UP_L1_GEMM",
+        "SVDQ_BF16_STAGE_GATE_UP_RANK_SPLIT",
+        "SVDQ_BF16_STAGE_GATE_L2_GEMM",
+        "SVDQ_BF16_STAGE_UP_L2_GEMM",
+        "SVDQ_BF16_STAGE_DOWN_L1_GEMM",
+        "SVDQ_BF16_STAGE_DOWN_L2_GEMM",
+    ]
+
+    gate_up_invocation, down_invocation = loaded["lowrank_invocations"]
+    assert gate_up_invocation["second_up_factor"] == "SVDQ_FACTOR_UP_L2"
+    assert gate_up_invocation["second_input_column_offset"] == "info.upRankOffset"
+    assert gate_up_invocation["second_output_column_offset"] == "info.intermediateSize"
+    assert down_invocation["second_up_factor"] == "SVDQ_INVALID_ID"
