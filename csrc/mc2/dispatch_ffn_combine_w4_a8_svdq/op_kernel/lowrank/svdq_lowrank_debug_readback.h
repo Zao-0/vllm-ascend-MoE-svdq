@@ -14,14 +14,9 @@
 #include "kernel_operator.h"
 #include "../dispatch_ffn_combine_w4_a8_svdq_tiling.h"
 #include "svdq_fused_down_up.hpp"
+#include "svdq_lowrank_debug_readback_tiling.h"
 
 namespace DispatchFFNCombineW4A8SVDQImpl {
-
-struct SVDQLowRankDebugTilingData {
-    uint32_t expertPerRank;
-    SVDQFusedDownUpTiling gateUpInvocation;
-    SVDQFusedDownUpTiling downInvocation;
-};
 
 struct SVDQLowRankDebugRuntimeGM {
     GM_ADDR routedX;

@@ -64,4 +64,43 @@ class DispatchFFNCombineW4A8SVDQ : public OpDef {
 };
 
 OP_ADD(DispatchFFNCombineW4A8SVDQ);
+
+class SVDQLowRankDebugReadback : public OpDef {
+ public:
+  explicit SVDQLowRankDebugReadback(const char *name) : OpDef(name) {
+    this->Input("routedX").ParamType(REQUIRED).DataType({ge::DT_BF16}).Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+    this->Input("hidden").ParamType(REQUIRED).DataType({ge::DT_BF16}).Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+    this->Input("gateUpSvdqL1").ParamType(REQUIRED).DataType({ge::DT_BF16}).Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+    this->Input("gateSvdqL2").ParamType(REQUIRED).DataType({ge::DT_BF16}).Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+    this->Input("upSvdqL2").ParamType(REQUIRED).DataType({ge::DT_BF16}).Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+    this->Input("downSvdqL1").ParamType(REQUIRED).DataType({ge::DT_BF16}).Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+    this->Input("downSvdqL2").ParamType(REQUIRED).DataType({ge::DT_BF16}).Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+    this->Input("expertTokenNums").ParamType(REQUIRED).DataType({ge::DT_INT32}).Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+
+    this->Output("gateUpOutput").ParamType(REQUIRED).DataType({ge::DT_BF16}).Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+    this->Output("downOutput").ParamType(REQUIRED).DataType({ge::DT_BF16}).Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+    this->Output("gateUpAccumulator").ParamType(REQUIRED).DataType({ge::DT_FLOAT}).Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+    this->Output("downAccumulator").ParamType(REQUIRED).DataType({ge::DT_FLOAT}).Format({ge::FORMAT_ND}).UnknownShapeFormat({ge::FORMAT_ND});
+
+    this->Attr("gateRank").AttrType(REQUIRED).Int();
+    this->Attr("upRank").AttrType(REQUIRED).Int();
+    this->Attr("downRank").AttrType(REQUIRED).Int();
+    this->Attr("gateRankOffset").AttrType(REQUIRED).Int();
+    this->Attr("upRankOffset").AttrType(REQUIRED).Int();
+
+    OpAICoreConfig aicore_config;
+    aicore_config.DynamicCompileStaticFlag(true)
+        .DynamicFormatFlag(true)
+        .DynamicRankSupportFlag(true)
+        .DynamicShapeSupportFlag(true)
+        .NeedCheckSupportFlag(false)
+        .PrecisionReduceFlag(true)
+        .ExtendCfgInfo("aclnnSupport.value", "support_aclnn")
+        .ExtendCfgInfo("jitCompile.flag", "static_false")
+        .ExtendCfgInfo("multiKernelSupportDynamicGraph.value", "multi_kernel");
+    this->AICore().AddConfig("ascend910_93", aicore_config);
+  }
+};
+
+OP_ADD(SVDQLowRankDebugReadback);
 }  // namespace ops

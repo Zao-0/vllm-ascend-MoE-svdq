@@ -37,6 +37,17 @@ add_ops_compile_options(
         ${_DISPATCH_FFN_SVDQ_DEBUG_OPTS}
 )
 
+add_ops_compile_options(
+    OP_NAME SVDQLowRankDebugReadback
+    OPTIONS
+        --cce-auto-sync=on
+        -Wno-deprecated-declarations
+        -Werror
+        -DCATLASS_ARCH=2201
+        ${_DISPATCH_FFN_SVDQ_INC_OPTS}
+        ${_DISPATCH_FFN_SVDQ_DEBUG_OPTS}
+)
+
 if (NOT BUILD_OPS_RTY_KERNEL)
     add_modules_sources(OPTYPE dispatch_ffn_combine_w4_a8_svdq ACLNNTYPE aclnn_inner)
     target_include_directories(${OPHOST_NAME}_tiling_obj PRIVATE

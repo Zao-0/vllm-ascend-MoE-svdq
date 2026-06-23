@@ -8,7 +8,11 @@
  * See LICENSE in the root of the software repository for the full text of the License.
  */
 
-#include "svdq_lowrank_debug_readback.h"
+#if __has_include("../dispatch_ffn_combine_w4_a8_svdq/op_kernel/lowrank/svdq_lowrank_debug_readback.h")
+#include "../dispatch_ffn_combine_w4_a8_svdq/op_kernel/lowrank/svdq_lowrank_debug_readback.h"
+#else
+#include "../../../../mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/lowrank/svdq_lowrank_debug_readback.h"
+#endif
 
 using namespace AscendC;
 using namespace DispatchFFNCombineW4A8SVDQImpl;

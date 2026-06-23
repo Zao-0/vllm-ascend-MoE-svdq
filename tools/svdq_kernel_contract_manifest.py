@@ -19,12 +19,20 @@ DEFAULT_EVIDENCE_DIR = Path("/root/workspace/lza/svdq_clean_evidence")
 
 OP_ROOT = Path("csrc/mc2/dispatch_ffn_combine_w4_a8_svdq")
 OP_CMAKE = OP_ROOT / "op_host/CMakeLists.txt"
+OP_DEF = OP_ROOT / "op_host/dispatch_ffn_combine_w4_a8_svdq_def.cpp"
+OP_PROTO = OP_ROOT / "op_host/dispatch_ffn_combine_w4_a8_svdq_proto.cpp"
+DEBUG_OP_API_HEADER = OP_ROOT / "op_host/op_api/aclnn_svdq_lowrank_debug_readback.h"
+DEBUG_OP_API_WRAPPER = OP_ROOT / "op_host/op_api/aclnn_svdq_lowrank_debug_readback.cpp"
 HOST_TILING = OP_ROOT / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp"
 KERNEL_CONTRACT = OP_ROOT / "op_kernel/dispatch_ffn_combine_w4_a8_svdq.h"
 KERNEL_TILING = OP_ROOT / "op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h"
 LOWRANK_HEADER = OP_ROOT / "op_kernel/lowrank/svdq_fused_down_up.hpp"
+LOWRANK_DEBUG_TILING = OP_ROOT / "op_kernel/lowrank/svdq_lowrank_debug_readback_tiling.h"
 LOWRANK_DEBUG_HEADER = OP_ROOT / "op_kernel/lowrank/svdq_lowrank_debug_readback.h"
 LOWRANK_DEBUG_KERNEL = OP_ROOT / "op_kernel/lowrank/svdq_lowrank_debug_readback.cpp"
+LOWRANK_DEBUG_ALIAS_ROOT = Path("csrc/mc2/svdq_low_rank_debug_readback")
+LOWRANK_DEBUG_ALIAS_CMAKE = LOWRANK_DEBUG_ALIAS_ROOT / "op_host/CMakeLists.txt"
+LOWRANK_DEBUG_ALIAS_KERNEL = LOWRANK_DEBUG_ALIAS_ROOT / "svdq_low_rank_debug_readback.cpp"
 
 FACTOR_ABI = [
     {"id": 0, "name": "SVDQ_FACTOR_GATE_UP_L1", "operator_tensor": "gate_up_svdq_l1"},
@@ -384,12 +392,19 @@ LOWRANK_INVOCATIONS = [
 def _read_sources(repo_root: Path) -> dict[str, str]:
     return {
         "op_cmake": (repo_root / OP_CMAKE).read_text(encoding="utf-8"),
+        "op_def": (repo_root / OP_DEF).read_text(encoding="utf-8"),
+        "op_proto": (repo_root / OP_PROTO).read_text(encoding="utf-8"),
+        "debug_op_api_header": (repo_root / DEBUG_OP_API_HEADER).read_text(encoding="utf-8"),
+        "debug_op_api_wrapper": (repo_root / DEBUG_OP_API_WRAPPER).read_text(encoding="utf-8"),
         "host_tiling": (repo_root / HOST_TILING).read_text(encoding="utf-8"),
         "kernel_contract": (repo_root / KERNEL_CONTRACT).read_text(encoding="utf-8"),
         "kernel_tiling": (repo_root / KERNEL_TILING).read_text(encoding="utf-8"),
         "lowrank_header": (repo_root / LOWRANK_HEADER).read_text(encoding="utf-8"),
+        "lowrank_debug_tiling": (repo_root / LOWRANK_DEBUG_TILING).read_text(encoding="utf-8"),
         "lowrank_debug_header": (repo_root / LOWRANK_DEBUG_HEADER).read_text(encoding="utf-8"),
         "lowrank_debug_kernel": (repo_root / LOWRANK_DEBUG_KERNEL).read_text(encoding="utf-8"),
+        "lowrank_debug_alias_cmake": (repo_root / LOWRANK_DEBUG_ALIAS_CMAKE).read_text(encoding="utf-8"),
+        "lowrank_debug_alias_kernel": (repo_root / LOWRANK_DEBUG_ALIAS_KERNEL).read_text(encoding="utf-8"),
     }
 
 
@@ -468,7 +483,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             "lowRankOp.Process();" in sources["lowrank_header"]
             and "lowRankOp.HasCompleteContract()" in sources["lowrank_header"]
         ),
-        "lowrank_debug_kernel_exists": "svdq_lowrank_debug_readback(" in sources["lowrank_debug_kernel"],
+        "lowrank_debug_kernel_exists": "svdq_low_rank_debug_readback(" in sources["lowrank_debug_kernel"],
         "lowrank_debug_kernel_uses_debug_runner": (
             "SVDQLowRankDebugReadbackKernel op" in sources["lowrank_debug_kernel"]
             and "op.Process();" in sources["lowrank_debug_kernel"]
@@ -480,15 +495,45 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "GM_ADDR downAccumulator" in sources["lowrank_debug_kernel"]
         ),
         "lowrank_debug_kernel_uses_separate_tiling_contract": (
-            "struct SVDQLowRankDebugTilingData" in sources["lowrank_debug_header"]
-            and "SVDQFusedDownUpTiling gateUpInvocation" in sources["lowrank_debug_header"]
-            and "SVDQFusedDownUpTiling downInvocation" in sources["lowrank_debug_header"]
+            "struct SVDQLowRankDebugTilingData" in sources["lowrank_debug_tiling"]
+            and "SVDQFusedDownUpTiling gateUpInvocation" in sources["lowrank_debug_tiling"]
+            and "SVDQFusedDownUpTiling downInvocation" in sources["lowrank_debug_tiling"]
         ),
         "lowrank_debug_kernel_preserves_branch_separation": (
             "BuildGateUpArgs() const" in sources["lowrank_debug_header"]
             and "BuildDownArgs() const" in sources["lowrank_debug_header"]
             and "runtime_.gateSvdqL2" in sources["lowrank_debug_header"]
             and "runtime_.upSvdqL2" in sources["lowrank_debug_header"]
+        ),
+        "lowrank_debug_op_has_compile_options": (
+            "OP_NAME SVDQLowRankDebugReadback" in sources["op_cmake"]
+            and "${_DISPATCH_FFN_SVDQ_DEBUG_OPTS}" in sources["op_cmake"]
+        ),
+        "lowrank_debug_op_registered": (
+            "class SVDQLowRankDebugReadback" in sources["op_def"]
+            and "OP_ADD(SVDQLowRankDebugReadback)" in sources["op_def"]
+            and "IMPL_OP_INFERSHAPE(SVDQLowRankDebugReadback)" in sources["op_proto"]
+        ),
+        "lowrank_debug_op_tiling_registered": (
+            "SVDQLowRankDebugReadbackTilingFunc" in sources["host_tiling"]
+            and "IMPL_OP_OPTILING(SVDQLowRankDebugReadback)" in sources["host_tiling"]
+            and "return ge::GRAPH_SUCCESS;" in sources["host_tiling"]
+        ),
+        "lowrank_debug_op_public_aclnn_wrapper": (
+            "aclnnSVDQLowRankDebugReadbackGetWorkspaceSize" in sources["debug_op_api_header"]
+            and "aclnnInnerSVDQLowRankDebugReadbackGetWorkspaceSize" in sources["debug_op_api_wrapper"]
+            and "aclnnSVDQLowRankDebugReadback(" in sources["debug_op_api_wrapper"]
+        ),
+        "lowrank_debug_op_exposes_same_readback_outputs": (
+            'this->Output("gateUpOutput")' in sources["op_def"]
+            and 'this->Output("downOutput")' in sources["op_def"]
+            and 'this->Output("gateUpAccumulator")' in sources["op_def"]
+            and 'this->Output("downAccumulator")' in sources["op_def"]
+        ),
+        "lowrank_debug_alias_source_root": (
+            "add_op_to_compiled_list()" in sources["lowrank_debug_alias_cmake"]
+            and "svdq_low_rank_debug_readback(" in sources["lowrank_debug_alias_kernel"]
+            and "svdq_lowrank_debug_readback.h" in sources["lowrank_debug_alias_kernel"]
         ),
     }
 
@@ -565,12 +610,19 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
         "operator": "DispatchFFNCombineW4A8SVDQ",
         "source_files": {
             "op_cmake": str(OP_CMAKE),
+            "op_def": str(OP_DEF),
+            "op_proto": str(OP_PROTO),
+            "debug_op_api_header": str(DEBUG_OP_API_HEADER),
+            "debug_op_api_wrapper": str(DEBUG_OP_API_WRAPPER),
             "host_tiling": str(HOST_TILING),
             "kernel_contract": str(KERNEL_CONTRACT),
             "kernel_tiling": str(KERNEL_TILING),
             "lowrank_header": str(LOWRANK_HEADER),
+            "lowrank_debug_tiling": str(LOWRANK_DEBUG_TILING),
             "lowrank_debug_header": str(LOWRANK_DEBUG_HEADER),
             "lowrank_debug_kernel": str(LOWRANK_DEBUG_KERNEL),
+            "lowrank_debug_alias_cmake": str(LOWRANK_DEBUG_ALIAS_CMAKE),
+            "lowrank_debug_alias_kernel": str(LOWRANK_DEBUG_ALIAS_KERNEL),
         },
         "factor_abi": FACTOR_ABI,
         "workspace_regions": WORKSPACE_REGIONS,
@@ -601,7 +653,10 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             ],
         },
         "debug_launch_contract": {
-            "kernel_symbol": "svdq_lowrank_debug_readback",
+            "op_name": "SVDQLowRankDebugReadback",
+            "aclnn_get_workspace": "aclnnSVDQLowRankDebugReadbackGetWorkspaceSize",
+            "aclnn_launch": "aclnnSVDQLowRankDebugReadback",
+            "kernel_symbol": "svdq_low_rank_debug_readback",
             "production_abi_changed": False,
             "input_tensors": [
                 "routed_x",
@@ -626,6 +681,12 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "lowrank_debug_kernel_exposes_readback_buffers",
                 "lowrank_debug_kernel_uses_separate_tiling_contract",
                 "lowrank_debug_kernel_preserves_branch_separation",
+                "lowrank_debug_op_has_compile_options",
+                "lowrank_debug_op_registered",
+                "lowrank_debug_op_tiling_registered",
+                "lowrank_debug_op_public_aclnn_wrapper",
+                "lowrank_debug_op_exposes_same_readback_outputs",
+                "lowrank_debug_alias_source_root",
             ],
         },
         "rank_split_contract": {

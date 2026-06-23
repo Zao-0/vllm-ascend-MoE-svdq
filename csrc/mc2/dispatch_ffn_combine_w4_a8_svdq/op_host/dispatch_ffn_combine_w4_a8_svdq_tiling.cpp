@@ -11,12 +11,14 @@
 #include <cstring>
 
 #include "dispatch_ffn_combine_w4_a8_svdq_tiling.h"
+#include "lowrank/svdq_lowrank_debug_readback_tiling.h"
 #include "register/op_def_registry.h"
 #include "register/tilingdata_base.h"
 #include "tiling/tiling_api.h"
 #include "tiling_base/error_log.h"
 
 using namespace ge;
+using DispatchFFNCombineW4A8SVDQImpl::SVDQLowRankDebugTilingData;
 
 namespace {
 constexpr const char* K_INNER_DEBUG = "DispatchFFNCombineW4A8SVDQ Tiling";
@@ -47,6 +49,19 @@ constexpr uint32_t DOWN_SVDQ_L2_INDEX = 13;
 constexpr uint32_t X_ACTIVE_MASK_INDEX = 14;
 constexpr uint32_t OUT_INDEX = 0;
 constexpr uint32_t EXPERT_TOKEN_NUMS_INDEX = 1;
+
+constexpr uint32_t DEBUG_ROUTED_X_INDEX = 0;
+constexpr uint32_t DEBUG_HIDDEN_INDEX = 1;
+constexpr uint32_t DEBUG_GATE_UP_SVDQ_L1_INDEX = 2;
+constexpr uint32_t DEBUG_GATE_SVDQ_L2_INDEX = 3;
+constexpr uint32_t DEBUG_UP_SVDQ_L2_INDEX = 4;
+constexpr uint32_t DEBUG_DOWN_SVDQ_L1_INDEX = 5;
+constexpr uint32_t DEBUG_DOWN_SVDQ_L2_INDEX = 6;
+constexpr uint32_t DEBUG_EXPERT_TOKEN_NUMS_INDEX = 7;
+constexpr uint32_t DEBUG_GATE_UP_OUTPUT_INDEX = 0;
+constexpr uint32_t DEBUG_DOWN_OUTPUT_INDEX = 1;
+constexpr uint32_t DEBUG_GATE_UP_ACCUMULATOR_INDEX = 2;
+constexpr uint32_t DEBUG_DOWN_ACCUMULATOR_INDEX = 3;
 
 constexpr uint64_t SVDQ_WORKSPACE_ALIGNMENT = 512;
 constexpr uint64_t SVDQ_SYSTEM_WORKSPACE = 16UL * 1024UL * 1024UL;
@@ -529,4 +544,241 @@ ge::graphStatus TilingParseForDispatchFFNCombineW4A8SVDQ(gert::TilingParseContex
 IMPL_OP_OPTILING(DispatchFFNCombineW4A8SVDQ)
     .Tiling(DispatchFFNCombineW4A8SVDQTilingFunc)
     .TilingParse<DispatchFFNCombineW4A8SVDQCompileInfo>(TilingParseForDispatchFFNCombineW4A8SVDQ);
+
+static ge::graphStatus SVDQLowRankDebugReadbackCheckAttr(
+    gert::TilingContext* context, SVDQLowRankDebugTilingData* tilingData)
+{
+    auto attrs = context->GetAttrs();
+    OP_TILING_CHECK(attrs == nullptr, OP_LOGE(K_INNER_DEBUG, "debug attrs is null."), return ge::GRAPH_FAILED);
+
+    auto gateRank = attrs->GetAttrPointer<int>(0);
+    auto upRank = attrs->GetAttrPointer<int>(1);
+    auto downRank = attrs->GetAttrPointer<int>(2);
+    auto gateRankOffset = attrs->GetAttrPointer<int>(3);
+    auto upRankOffset = attrs->GetAttrPointer<int>(4);
+
+    OP_TILING_CHECK(gateRank == nullptr || upRank == nullptr || downRank == nullptr,
+        OP_LOGE(K_INNER_DEBUG, "debug rank attrs are invalid."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(gateRankOffset == nullptr || upRankOffset == nullptr,
+        OP_LOGE(K_INNER_DEBUG, "debug rank offset attrs are invalid."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(*gateRank <= 0 || *upRank <= 0 || *downRank <= 0,
+        OP_LOGE(K_INNER_DEBUG, "debug ranks must be positive."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(*gateRankOffset != 0,
+        OP_LOGE(K_INNER_DEBUG, "debug gateRankOffset must be 0."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(*upRankOffset != *gateRank,
+        OP_LOGE(K_INNER_DEBUG, "debug upRankOffset must equal gateRank."), return ge::GRAPH_FAILED);
+
+    tilingData->gateUpInvocation.rankColumns = static_cast<uint32_t>(*gateRank);
+    tilingData->gateUpInvocation.secondRankColumns = static_cast<uint32_t>(*upRank);
+    tilingData->downInvocation.rankColumns = static_cast<uint32_t>(*downRank);
+    tilingData->gateUpInvocation.inputColumnOffset = static_cast<uint32_t>(*gateRankOffset);
+    tilingData->gateUpInvocation.secondInputColumnOffset = static_cast<uint32_t>(*upRankOffset);
+    return ge::GRAPH_SUCCESS;
+}
+
+static ge::graphStatus SVDQLowRankDebugReadbackCheckDType(gert::TilingContext* context)
+{
+    OP_TILING_CHECK(CheckRequiredInputDType(context, DEBUG_ROUTED_X_INDEX, "debug routedX", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug routedX dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, DEBUG_HIDDEN_INDEX, "debug hidden", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug hidden dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, DEBUG_GATE_UP_SVDQ_L1_INDEX, "debug gateUpSvdqL1", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug gateUpSvdqL1 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, DEBUG_GATE_SVDQ_L2_INDEX, "debug gateSvdqL2", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug gateSvdqL2 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, DEBUG_UP_SVDQ_L2_INDEX, "debug upSvdqL2", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug upSvdqL2 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, DEBUG_DOWN_SVDQ_L1_INDEX, "debug downSvdqL1", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug downSvdqL1 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, DEBUG_DOWN_SVDQ_L2_INDEX, "debug downSvdqL2", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug downSvdqL2 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, DEBUG_EXPERT_TOKEN_NUMS_INDEX, "debug expertTokenNums", ge::DT_INT32) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug expertTokenNums dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckOutputDType(context, DEBUG_GATE_UP_OUTPUT_INDEX, "debug gateUpOutput", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug gateUpOutput dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckOutputDType(context, DEBUG_DOWN_OUTPUT_INDEX, "debug downOutput", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug downOutput dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckOutputDType(context, DEBUG_GATE_UP_ACCUMULATOR_INDEX, "debug gateUpAccumulator", ge::DT_FLOAT) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug gateUpAccumulator dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckOutputDType(context, DEBUG_DOWN_ACCUMULATOR_INDEX, "debug downAccumulator", ge::DT_FLOAT) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug downAccumulator dtype check failed."), return ge::GRAPH_FAILED);
+    return ge::GRAPH_SUCCESS;
+}
+
+static ge::graphStatus CheckDebugOutputRank2Shape(
+    gert::TilingContext* context, uint32_t index, const char* name, int64_t expectedDim0, int64_t expectedDim1)
+{
+    const gert::StorageShape* shape = context->GetOutputShape(index);
+    OP_TILING_CHECK(shape == nullptr, OP_LOGE(K_INNER_DEBUG, "%s shape is null.", name), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(shape->GetStorageShape().GetDimNum() != 2,
+        OP_LOGE(K_INNER_DEBUG, "%s must be rank-2.", name), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(expectedDim0 >= 0 && shape->GetStorageShape().GetDim(0) != expectedDim0,
+        OP_LOGE(K_INNER_DEBUG, "%s dim0 mismatch.", name), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(expectedDim1 >= 0 && shape->GetStorageShape().GetDim(1) != expectedDim1,
+        OP_LOGE(K_INNER_DEBUG, "%s dim1 mismatch.", name), return ge::GRAPH_FAILED);
+    return ge::GRAPH_SUCCESS;
+}
+
+static void SetDebugLowRankInvocation(DispatchFFNCombineW4A8SVDQImpl::SVDQFusedDownUpTiling& invocation,
+    uint32_t invocationId, uint32_t downFactorId, uint32_t upFactorId, uint32_t secondUpFactorId,
+    uint32_t m, uint32_t inputColumns, uint32_t rankColumns, uint32_t secondRankColumns, uint32_t outputColumns,
+    uint32_t inputColumnOffset, uint32_t outputColumnOffset, uint32_t secondInputColumnOffset,
+    uint32_t secondOutputColumnOffset, uint32_t coreCount, uint32_t accumulatorRegionId)
+{
+    invocation.invocationId = invocationId;
+    invocation.inputRegionId = SVDQ_INVALID_ID;
+    invocation.outputRegionId = SVDQ_INVALID_ID;
+    invocation.downFactorId = downFactorId;
+    invocation.upFactorId = upFactorId;
+    invocation.secondUpFactorId = secondUpFactorId;
+    invocation.m = m;
+    invocation.inputColumns = inputColumns;
+    invocation.rankColumns = rankColumns;
+    invocation.secondRankColumns = secondRankColumns;
+    invocation.outputColumns = outputColumns;
+    invocation.inputColumnOffset = inputColumnOffset;
+    invocation.outputColumnOffset = outputColumnOffset;
+    invocation.secondInputColumnOffset = secondInputColumnOffset;
+    invocation.secondOutputColumnOffset = secondOutputColumnOffset;
+    invocation.rowTile = SVDQ_LOWRANK_ROW_TILE;
+    invocation.outputColumnTile = SVDQ_LOWRANK_OUTPUT_COLUMN_TILE;
+    invocation.kTile = SVDQ_LOWRANK_K_TILE;
+    invocation.coreCount = coreCount;
+    invocation.accumulatorRegionId = accumulatorRegionId;
+}
+
+static ge::graphStatus SVDQLowRankDebugReadbackCheckShapeAndSetTiling(
+    gert::TilingContext* context, SVDQLowRankDebugTilingData* tilingData)
+{
+    const gert::StorageShape* routedXShape = context->GetInputShape(DEBUG_ROUTED_X_INDEX);
+    const gert::StorageShape* hiddenShape = context->GetInputShape(DEBUG_HIDDEN_INDEX);
+    const gert::StorageShape* gateUpL1Shape = context->GetInputShape(DEBUG_GATE_UP_SVDQ_L1_INDEX);
+    const gert::StorageShape* gateL2Shape = context->GetInputShape(DEBUG_GATE_SVDQ_L2_INDEX);
+    const gert::StorageShape* upL2Shape = context->GetInputShape(DEBUG_UP_SVDQ_L2_INDEX);
+    const gert::StorageShape* downL1Shape = context->GetInputShape(DEBUG_DOWN_SVDQ_L1_INDEX);
+    const gert::StorageShape* downL2Shape = context->GetInputShape(DEBUG_DOWN_SVDQ_L2_INDEX);
+
+    OP_TILING_CHECK(routedXShape == nullptr || hiddenShape == nullptr || gateUpL1Shape == nullptr ||
+        gateL2Shape == nullptr || upL2Shape == nullptr || downL1Shape == nullptr || downL2Shape == nullptr,
+        OP_LOGE(K_INNER_DEBUG, "debug shapes must be non-null."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(routedXShape->GetStorageShape().GetDimNum() != 2 ||
+        hiddenShape->GetStorageShape().GetDimNum() != 2,
+        OP_LOGE(K_INNER_DEBUG, "debug routedX and hidden must be rank-2."), return ge::GRAPH_FAILED);
+
+    const int64_t routedRowsDim = routedXShape->GetStorageShape().GetDim(0);
+    const int64_t hiddenSizeDim = routedXShape->GetStorageShape().GetDim(1);
+    const int64_t hiddenRowsDim = hiddenShape->GetStorageShape().GetDim(0);
+    const int64_t intermediateSizeDim = hiddenShape->GetStorageShape().GetDim(1);
+    OP_TILING_CHECK(routedRowsDim <= 0 || hiddenSizeDim <= 0 || hiddenRowsDim <= 0 || intermediateSizeDim <= 0,
+        OP_LOGE(K_INNER_DEBUG, "debug routed shape is invalid."), return ge::GRAPH_FAILED);
+
+    const uint32_t routedRows = static_cast<uint32_t>(routedRowsDim);
+    const uint32_t hiddenSize = static_cast<uint32_t>(hiddenSizeDim);
+    const uint32_t intermediateSize = static_cast<uint32_t>(intermediateSizeDim);
+    const uint32_t gateRank = tilingData->gateUpInvocation.rankColumns;
+    const uint32_t upRank = tilingData->gateUpInvocation.secondRankColumns;
+    const uint32_t downRank = tilingData->downInvocation.rankColumns;
+
+    OP_TILING_CHECK(hiddenRowsDim != static_cast<int64_t>(routedRows),
+        OP_LOGE(K_INNER_DEBUG, "debug hidden row dim mismatch."), return ge::GRAPH_FAILED);
+
+    OP_TILING_CHECK(CheckRank3Shape(context, DEBUG_GATE_UP_SVDQ_L1_INDEX, "debug gateUpSvdqL1", -1) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug gateUpSvdqL1 shape check failed."), return ge::GRAPH_FAILED);
+    tilingData->expertPerRank = static_cast<uint32_t>(gateUpL1Shape->GetStorageShape().GetDim(0));
+    OP_TILING_CHECK(tilingData->expertPerRank == 0,
+        OP_LOGE(K_INNER_DEBUG, "debug expertPerRank must be positive."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRank3Shape(context, DEBUG_GATE_SVDQ_L2_INDEX, "debug gateSvdqL2", tilingData->expertPerRank) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug gateSvdqL2 shape check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRank3Shape(context, DEBUG_UP_SVDQ_L2_INDEX, "debug upSvdqL2", tilingData->expertPerRank) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug upSvdqL2 shape check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRank3Shape(context, DEBUG_DOWN_SVDQ_L1_INDEX, "debug downSvdqL1", tilingData->expertPerRank) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug downSvdqL1 shape check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRank3Shape(context, DEBUG_DOWN_SVDQ_L2_INDEX, "debug downSvdqL2", tilingData->expertPerRank) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug downSvdqL2 shape check failed."), return ge::GRAPH_FAILED);
+
+    OP_TILING_CHECK(gateUpL1Shape->GetStorageShape().GetDim(1) != static_cast<int64_t>(gateRank + upRank) ||
+        gateUpL1Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(hiddenSize),
+        OP_LOGE(K_INNER_DEBUG, "debug gateUpSvdqL1 shape mismatch."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(gateL2Shape->GetStorageShape().GetDim(1) != static_cast<int64_t>(intermediateSize) ||
+        gateL2Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(gateRank),
+        OP_LOGE(K_INNER_DEBUG, "debug gateSvdqL2 shape mismatch."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(upL2Shape->GetStorageShape().GetDim(1) != static_cast<int64_t>(intermediateSize) ||
+        upL2Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(upRank),
+        OP_LOGE(K_INNER_DEBUG, "debug upSvdqL2 shape mismatch."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(downL1Shape->GetStorageShape().GetDim(1) != static_cast<int64_t>(downRank) ||
+        downL1Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(intermediateSize),
+        OP_LOGE(K_INNER_DEBUG, "debug downSvdqL1 shape mismatch."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(downL2Shape->GetStorageShape().GetDim(1) != static_cast<int64_t>(hiddenSize) ||
+        downL2Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(downRank),
+        OP_LOGE(K_INNER_DEBUG, "debug downSvdqL2 shape mismatch."), return ge::GRAPH_FAILED);
+
+    const gert::StorageShape* expertTokenNumsShape = context->GetInputShape(DEBUG_EXPERT_TOKEN_NUMS_INDEX);
+    OP_TILING_CHECK(expertTokenNumsShape == nullptr || expertTokenNumsShape->GetStorageShape().GetDimNum() != 1 ||
+        expertTokenNumsShape->GetStorageShape().GetDim(0) != static_cast<int64_t>(tilingData->expertPerRank),
+        OP_LOGE(K_INNER_DEBUG, "debug expertTokenNums shape mismatch."), return ge::GRAPH_FAILED);
+
+    const uint32_t gateUpOutputColumns = intermediateSize * 2;
+    OP_TILING_CHECK(CheckDebugOutputRank2Shape(context, DEBUG_GATE_UP_OUTPUT_INDEX, "debug gateUpOutput",
+        routedRows, gateUpOutputColumns) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug gateUpOutput shape check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckDebugOutputRank2Shape(context, DEBUG_DOWN_OUTPUT_INDEX, "debug downOutput",
+        routedRows, hiddenSize) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug downOutput shape check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckDebugOutputRank2Shape(context, DEBUG_GATE_UP_ACCUMULATOR_INDEX, "debug gateUpAccumulator",
+        routedRows, gateUpOutputColumns) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug gateUpAccumulator shape check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckDebugOutputRank2Shape(context, DEBUG_DOWN_ACCUMULATOR_INDEX, "debug downAccumulator",
+        routedRows, hiddenSize) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "debug downAccumulator shape check failed."), return ge::GRAPH_FAILED);
+
+    auto ascendcPlatform = platform_ascendc::PlatformAscendC(context->GetPlatformInfo());
+    const uint32_t aicNum = ascendcPlatform.GetCoreNumAic();
+    const uint32_t aivNum = ascendcPlatform.GetCoreNumAiv();
+    const uint32_t blockDim = ascendcPlatform.CalcTschBlockDim(aivNum, aicNum, aivNum);
+    context->SetBlockDim(blockDim);
+    context->SetTilingKey(2000000);
+
+    SetDebugLowRankInvocation(tilingData->gateUpInvocation, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_GATE_UP,
+        SVDQ_FACTOR_GATE_UP_L1, SVDQ_FACTOR_GATE_L2, SVDQ_FACTOR_UP_L2, routedRows, hiddenSize, gateRank, upRank,
+        gateUpOutputColumns, tilingData->gateUpInvocation.inputColumnOffset, 0,
+        tilingData->gateUpInvocation.secondInputColumnOffset, intermediateSize, blockDim,
+        SVDQ_REGION_LOWRANK_ACCUMULATOR_1);
+    SetDebugLowRankInvocation(tilingData->downInvocation, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_DOWN,
+        SVDQ_FACTOR_DOWN_L1, SVDQ_FACTOR_DOWN_L2, SVDQ_INVALID_ID, routedRows, intermediateSize, downRank, 0,
+        hiddenSize, 0, 0, 0, 0, blockDim, SVDQ_REGION_LOWRANK_ACCUMULATOR_2);
+    return ge::GRAPH_SUCCESS;
+}
+
+static ge::graphStatus SVDQLowRankDebugReadbackTilingFunc(gert::TilingContext* context)
+{
+    const char* nodeName = context->GetNodeName();
+    SVDQLowRankDebugTilingData* tilingData = context->GetTilingData<SVDQLowRankDebugTilingData>();
+    OP_TILING_CHECK(tilingData == nullptr,
+        OP_LOGE(nodeName, "debug tilingData is nullptr."), return ge::GRAPH_FAILED);
+
+    OP_TILING_CHECK(SVDQLowRankDebugReadbackCheckAttr(context, tilingData) != ge::GRAPH_SUCCESS,
+        OP_LOGE(nodeName, "debug CheckAttr failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(SVDQLowRankDebugReadbackCheckDType(context) != ge::GRAPH_SUCCESS,
+        OP_LOGE(nodeName, "debug CheckDType failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(SVDQLowRankDebugReadbackCheckShapeAndSetTiling(context, tilingData) != ge::GRAPH_SUCCESS,
+        OP_LOGE(nodeName, "debug CheckShapeAndSetTiling failed."), return ge::GRAPH_FAILED);
+
+    size_t* workSpaces = context->GetWorkspaceSizes(1);
+    OP_TILING_CHECK(workSpaces == nullptr,
+        OP_LOGE(nodeName, "debug workSpaces is nullptr."), return ge::GRAPH_FAILED);
+    workSpaces[0] = SVDQ_SYSTEM_WORKSPACE;
+    return ge::GRAPH_SUCCESS;
+}
+
+struct SVDQLowRankDebugReadbackCompileInfo {};
+
+ge::graphStatus TilingParseForSVDQLowRankDebugReadback(gert::TilingParseContext* context)
+{
+    (void)context;
+    return ge::GRAPH_SUCCESS;
+}
+
+IMPL_OP_OPTILING(SVDQLowRankDebugReadback)
+    .Tiling(SVDQLowRankDebugReadbackTilingFunc)
+    .TilingParse<SVDQLowRankDebugReadbackCompileInfo>(TilingParseForSVDQLowRankDebugReadback);
 }  // namespace optiling

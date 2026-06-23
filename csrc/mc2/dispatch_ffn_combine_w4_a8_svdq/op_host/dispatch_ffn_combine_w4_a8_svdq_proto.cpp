@@ -29,4 +29,20 @@ static ge::graphStatus InferDataTypeDispatchFFNCombineW4A8SVDQ(gert::InferDataTy
 IMPL_OP_INFERSHAPE(DispatchFFNCombineW4A8SVDQ)
     .InferShape(InferShapeDispatchFFNCombineW4A8SVDQ)
     .InferDataType(InferDataTypeDispatchFFNCombineW4A8SVDQ);
+
+static ge::graphStatus InferShapeSVDQLowRankDebugReadback(gert::InferShapeContext* context)
+{
+    (void)context;
+    return ge::GRAPH_SUCCESS;
+}
+
+static ge::graphStatus InferDataTypeSVDQLowRankDebugReadback(gert::InferDataTypeContext* context)
+{
+    (void)context;
+    return ge::GRAPH_SUCCESS;
+}
+
+IMPL_OP_INFERSHAPE(SVDQLowRankDebugReadback)
+    .InferShape(InferShapeSVDQLowRankDebugReadback)
+    .InferDataType(InferDataTypeSVDQLowRankDebugReadback);
 }  // namespace ops
