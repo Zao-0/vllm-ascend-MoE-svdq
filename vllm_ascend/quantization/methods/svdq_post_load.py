@@ -212,6 +212,51 @@ def _branch_error(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, flo
     }
 
 
+def _stage_error(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, float | bool | int]:
+    actual_finite = bool(torch.isfinite(actual).all().item()) if actual.numel() else True
+    expected_finite = bool(torch.isfinite(expected).all().item()) if expected.numel() else True
+    diff = (actual - expected).abs()
+    diff_finite = bool(torch.isfinite(diff).all().item()) if diff.numel() else True
+    if diff.numel() and diff_finite:
+        max_abs = float(diff.max().item())
+        mean_abs = float(diff.mean().item())
+    elif diff.numel():
+        max_abs = float("inf")
+        mean_abs = float("inf")
+    else:
+        max_abs = 0.0
+        mean_abs = 0.0
+
+    if expected.numel() and expected_finite:
+        signal = float(expected.abs().max().item())
+    else:
+        signal = 0.0
+    if signal > 0.0:
+        max_signal_relative = max_abs / signal
+        mean_signal_relative = mean_abs / signal
+    else:
+        max_signal_relative = 0.0 if max_abs == 0.0 else float("inf")
+        mean_signal_relative = 0.0 if mean_abs == 0.0 else float("inf")
+
+    return {
+        "max_abs": max_abs,
+        "mean_abs": mean_abs,
+        "max_signal_relative": max_signal_relative,
+        "mean_signal_relative": mean_signal_relative,
+        "actual_finite": actual_finite,
+        "expected_finite": expected_finite,
+        "diff_finite": diff_finite,
+        "numel": int(actual.numel()),
+    }
+
+
+def _stage_error_metadata(
+    stages: dict[str, torch.Tensor],
+    references: dict[str, torch.Tensor],
+) -> dict[str, dict[str, float | bool | int]]:
+    return {name: _stage_error(stages[name], references[name]) for name in SVDQ_BF16_DEBUG_STAGE_NAMES}
+
+
 def _evaluate_svdq_bf16_debug_stages(
     *,
     x: torch.Tensor,
@@ -357,9 +402,22 @@ def audit_svdq_operator_factors(
             up_offset=up_offset,
         )
 
-        gate_ref = (x @ raw_gate_l1.T) @ raw_gate_l2.T
-        up_ref = (x @ raw_up_l1.T) @ raw_up_l2.T
-        down_ref = (hidden @ raw_down_l1.T) @ raw_down_l2.T
+        gate_rank_ref = x @ raw_gate_l1.T
+        up_rank_ref = x @ raw_up_l1.T
+        down_rank_ref = hidden @ raw_down_l1.T
+        gate_ref = gate_rank_ref @ raw_gate_l2.T
+        up_ref = up_rank_ref @ raw_up_l2.T
+        down_ref = down_rank_ref @ raw_down_l2.T
+        stage_references = {
+            "routing_input": x,
+            "gate_up_l1_rank": torch.cat((gate_rank_ref, up_rank_ref), dim=1),
+            "gate_rank_split": gate_rank_ref,
+            "up_rank_split": up_rank_ref,
+            "gate_l2_output": gate_ref,
+            "up_l2_output": up_ref,
+            "down_l1_rank": down_rank_ref,
+            "down_l2_output": down_ref,
+        }
 
         branch_errors.append(
             {
@@ -368,6 +426,7 @@ def audit_svdq_operator_factors(
                 "up": _branch_error(stages["up_l2_output"], up_ref),
                 "down": _branch_error(stages["down_l2_output"], down_ref),
                 "stage_shapes": _stage_shape_metadata(stages),
+                "stage_errors": _stage_error_metadata(stages, stage_references),
                 "branch_isolation": _branch_isolation_errors(
                     fused_rank=stages["gate_up_l1_rank"],
                     gate_l2=final_gate_l2,
@@ -381,8 +440,14 @@ def audit_svdq_operator_factors(
         )
 
     max_abs = 0.0
+    all_finite = True
     for entry in branch_errors:
         max_abs = max(max_abs, entry["gate"]["max_abs"], entry["up"]["max_abs"], entry["down"]["max_abs"])
+        for stage_error in entry["stage_errors"].values():
+            max_abs = max(max_abs, float(stage_error["max_abs"]))
+            all_finite = all_finite and bool(stage_error["actual_finite"])
+            all_finite = all_finite and bool(stage_error["expected_finite"])
+            all_finite = all_finite and bool(stage_error["diff_finite"])
         for isolation_error in entry["branch_isolation"].values():
             max_abs = max(max_abs, isolation_error["max_abs"])
 
@@ -396,8 +461,9 @@ def audit_svdq_operator_factors(
     )
 
     return {
-        "passed": max_abs == 0.0,
+        "passed": max_abs == 0.0 and all_finite,
         "max_abs": max_abs,
+        "all_finite": all_finite,
         "sampled_experts": sampled_experts,
         "branch_errors": branch_errors,
         "factor_metadata": {

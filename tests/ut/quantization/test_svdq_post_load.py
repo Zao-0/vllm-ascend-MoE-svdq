@@ -67,6 +67,7 @@ def test_svdq_post_load_builds_five_operator_factors_and_audits_branches():
     audit = audit_svdq_operator_factors(layer, max_experts=2, num_tokens=2)
     assert audit["passed"]
     assert audit["max_abs"] == 0.0
+    assert audit["all_finite"]
     assert len(audit["branch_errors"]) == 2
     for entry in audit["branch_errors"]:
         assert set(entry["stage_shapes"]) == set(SVDQ_BF16_DEBUG_STAGE_NAMES)
@@ -78,6 +79,16 @@ def test_svdq_post_load_builds_five_operator_factors_and_audits_branches():
         assert entry["stage_shapes"]["up_l2_output"] == [2, 3]
         assert entry["stage_shapes"]["down_l1_rank"] == [2, 2]
         assert entry["stage_shapes"]["down_l2_output"] == [2, 4]
+        assert set(entry["stage_errors"]) == set(SVDQ_BF16_DEBUG_STAGE_NAMES)
+        for stage_name, stage_error in entry["stage_errors"].items():
+            assert stage_error["max_abs"] == 0.0
+            assert stage_error["mean_abs"] == 0.0
+            assert stage_error["max_signal_relative"] == 0.0
+            assert stage_error["mean_signal_relative"] == 0.0
+            assert stage_error["actual_finite"]
+            assert stage_error["expected_finite"]
+            assert stage_error["diff_finite"]
+            assert stage_error["numel"] == torch.tensor(entry["stage_shapes"][stage_name]).prod().item()
         assert entry["branch_isolation"] == {
             "gate_rank_perturb_does_not_change_up_l2": {
                 "max_abs": 0.0,
