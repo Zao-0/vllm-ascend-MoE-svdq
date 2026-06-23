@@ -95,6 +95,49 @@ def test_svdq_post_load_builds_five_operator_factors_and_audits_branches():
         "gate_rank_offset": 0,
         "up_rank_offset": 2,
     }
+    factor_metadata = audit["factor_metadata"]
+    assert set(factor_metadata) == set(FINAL_SVDQ_FACTOR_NAMES)
+    gate_up_metadata = factor_metadata["gate_up_svdq_l1"]
+    assert gate_up_metadata["name"] == "gate_up_svdq_l1"
+    assert gate_up_metadata["dtype"] == "torch.bfloat16"
+    assert gate_up_metadata["device"] == "cpu"
+    assert gate_up_metadata["logical_shape"] == [2, 3, 4]
+    assert gate_up_metadata["physical_shape"] == [2, 3, 4]
+    assert gate_up_metadata["stride"] == [12, 4, 1]
+    assert gate_up_metadata["storage_size_bytes"] >= gate_up_metadata["numel"] * gate_up_metadata["element_size_bytes"]
+    assert gate_up_metadata["storage_offset"] == 0
+    assert gate_up_metadata["element_size_bytes"] == 2
+    assert gate_up_metadata["numel"] == 24
+    assert gate_up_metadata["npu_format"] == "not_npu"
+    assert gate_up_metadata["expert_dimension"] == 0
+    assert gate_up_metadata["tp_local_dimensions"] == {
+        "expert": 2,
+        "rank": 3,
+        "hidden": 4,
+    }
+    assert isinstance(gate_up_metadata["sample_checksum"], str)
+    assert len(gate_up_metadata["sample_checksum"]) == 64
+
+    assert factor_metadata["gate_svdq_l2"]["tp_local_dimensions"] == {
+        "expert": 2,
+        "intermediate": 3,
+        "rank": 2,
+    }
+    assert factor_metadata["up_svdq_l2"]["tp_local_dimensions"] == {
+        "expert": 2,
+        "intermediate": 3,
+        "rank": 1,
+    }
+    assert factor_metadata["down_svdq_l1"]["tp_local_dimensions"] == {
+        "expert": 2,
+        "rank": 2,
+        "intermediate": 3,
+    }
+    assert factor_metadata["down_svdq_l2"]["tp_local_dimensions"] == {
+        "expert": 2,
+        "hidden": 4,
+        "rank": 2,
+    }
 
 
 def test_svdq_runtime_payload_requires_complete_factor_contract():

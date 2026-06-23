@@ -120,6 +120,90 @@ def _sample_checksum(tensor: torch.Tensor) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _storage_nbytes(tensor: torch.Tensor) -> int:
+    try:
+        return int(tensor.untyped_storage().nbytes())
+    except Exception:
+        try:
+            return int(tensor.storage().nbytes())
+        except Exception:
+            return int(tensor.numel() * tensor.element_size())
+
+
+def _tensor_npu_format(tensor: torch.Tensor) -> str:
+    if tensor.device.type != "npu":
+        return "not_npu"
+    try:
+        import torch_npu  # type: ignore[import-untyped]
+
+        return str(torch_npu.get_npu_format(tensor))
+    except Exception as exc:
+        return f"unavailable:{type(exc).__name__}"
+
+
+def _factor_tp_local_dimensions(
+    *,
+    local_experts: int,
+    hidden_size: int,
+    intermediate_size: int,
+    gate_rank: int,
+    up_rank: int,
+    down_rank: int,
+) -> dict[str, dict[str, int]]:
+    return {
+        "gate_up_svdq_l1": {
+            "expert": local_experts,
+            "rank": gate_rank + up_rank,
+            "hidden": hidden_size,
+        },
+        "gate_svdq_l2": {
+            "expert": local_experts,
+            "intermediate": intermediate_size,
+            "rank": gate_rank,
+        },
+        "up_svdq_l2": {
+            "expert": local_experts,
+            "intermediate": intermediate_size,
+            "rank": up_rank,
+        },
+        "down_svdq_l1": {
+            "expert": local_experts,
+            "rank": down_rank,
+            "intermediate": intermediate_size,
+        },
+        "down_svdq_l2": {
+            "expert": local_experts,
+            "hidden": hidden_size,
+            "rank": down_rank,
+        },
+    }
+
+
+def _tensor_metadata(
+    name: str,
+    tensor: torch.Tensor,
+    *,
+    expert_dimension: int,
+    tp_local_dimensions: dict[str, int],
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "dtype": str(tensor.dtype),
+        "device": str(tensor.device),
+        "logical_shape": list(tensor.shape),
+        "physical_shape": list(tensor.shape),
+        "stride": list(tensor.stride()),
+        "storage_size_bytes": _storage_nbytes(tensor),
+        "storage_offset": int(tensor.storage_offset()),
+        "element_size_bytes": int(tensor.element_size()),
+        "numel": int(tensor.numel()),
+        "npu_format": _tensor_npu_format(tensor),
+        "expert_dimension": expert_dimension,
+        "tp_local_dimensions": tp_local_dimensions,
+        "sample_checksum": _sample_checksum(tensor[0]) if tensor.shape[0] > 0 else None,
+    }
+
+
 def _branch_error(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, float]:
     diff = (actual - expected).abs()
     return {
@@ -302,17 +386,27 @@ def audit_svdq_operator_factors(
         for isolation_error in entry["branch_isolation"].values():
             max_abs = max(max_abs, isolation_error["max_abs"])
 
+    tp_local_dimensions = _factor_tp_local_dimensions(
+        local_experts=local_experts,
+        hidden_size=hidden_size,
+        intermediate_size=intermediate_size,
+        gate_rank=gate_rank,
+        up_rank=up_rank,
+        down_rank=down_rank,
+    )
+
     return {
         "passed": max_abs == 0.0,
         "max_abs": max_abs,
         "sampled_experts": sampled_experts,
         "branch_errors": branch_errors,
         "factor_metadata": {
-            name: {
-                "shape": list(tensor.shape),
-                "dtype": str(tensor.dtype),
-                "sample_checksum": _sample_checksum(tensor[0]) if tensor.shape[0] > 0 else None,
-            }
+            name: _tensor_metadata(
+                name,
+                tensor,
+                expert_dimension=0,
+                tp_local_dimensions=tp_local_dimensions[name],
+            )
             for name, tensor in final_tensors.items()
         },
         "rank_metadata": {
