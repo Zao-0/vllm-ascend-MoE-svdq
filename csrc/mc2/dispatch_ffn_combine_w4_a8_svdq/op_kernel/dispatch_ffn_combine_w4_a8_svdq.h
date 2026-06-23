@@ -190,6 +190,7 @@ public:
             FactorAddress(invocation.secondUpFactorId),
             WorkspaceAddress(invocation.outputRegionId),
             runtime_.expertTokenNums,
+            tilingData_.info.expertPerRank,
             invocation,
         };
     }

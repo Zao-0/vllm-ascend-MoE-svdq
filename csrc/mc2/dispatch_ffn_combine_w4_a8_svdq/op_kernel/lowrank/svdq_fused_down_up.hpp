@@ -17,6 +17,8 @@
 
 namespace DispatchFFNCombineW4A8SVDQImpl {
 
+constexpr uint32_t SVDQ_LOWRANK_BF16_BYTES = 2;
+
 enum SVDQLowRankStageKind : uint32_t {
     SVDQ_LOWRANK_STAGE_DOWN_PROJECT = 0,
     SVDQ_LOWRANK_STAGE_UP_PROJECT = 1,
@@ -29,6 +31,8 @@ struct SVDQLowRankStagePlan {
     GM_ADDR factor;
     uint32_t inputColumns;
     uint32_t outputColumns;
+    uint32_t inputStrideColumns;
+    uint32_t outputStrideColumns;
     uint32_t inputColumnOffset;
     uint32_t outputColumnOffset;
     uint32_t factorColumnOffset;
@@ -40,6 +44,22 @@ struct SVDQLowRankStagePlan {
     }
 };
 
+struct SVDQLowRankExpertPlan {
+    SVDQLowRankStagePlan stage;
+    uint32_t expertId;
+    uint32_t tokenStart;
+    uint32_t tokenCount;
+    GM_ADDR input;
+    GM_ADDR factor;
+    GM_ADDR output;
+
+    __aicore__ inline bool HasWork() const
+    {
+        return tokenCount > 0 && input != nullptr && factor != nullptr && output != nullptr &&
+               stage.HasCompleteContract();
+    }
+};
+
 struct SVDQFusedDownUpArgs {
     GM_ADDR input;
     GM_ADDR downFactor;
@@ -47,6 +67,7 @@ struct SVDQFusedDownUpArgs {
     GM_ADDR secondUpFactor;
     GM_ADDR output;
     GM_ADDR expertTokenNums;
+    uint32_t expertPerRank;
     SVDQFusedDownUpTiling tiling;
 };
 
@@ -67,6 +88,7 @@ public:
                args_.tiling.outputColumns > 0 && args_.tiling.downFactorId != SVDQ_INVALID_ID &&
                args_.tiling.upFactorId != SVDQ_INVALID_ID &&
                args_.tiling.invocationId < SVDQ_LOWRANK_INVOCATION_COUNT &&
+               args_.expertPerRank > 0 &&
                (args_.tiling.secondUpFactorId == SVDQ_INVALID_ID || HasCompleteSecondUpContract());
     }
 
@@ -94,6 +116,28 @@ public:
         return HasIndependentSecondUp() ? 3 : 2;
     }
 
+    __aicore__ inline uint32_t ExpertCount() const
+    {
+        return args_.expertPerRank;
+    }
+
+    __aicore__ inline uint32_t ExpertTokenCount(uint32_t expertId) const
+    {
+        AscendC::GlobalTensor<int32_t> expertTokenNums;
+        expertTokenNums.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(args_.expertTokenNums));
+        const int32_t tokenCount = expertTokenNums(expertId);
+        return tokenCount > 0 ? static_cast<uint32_t>(tokenCount) : 0;
+    }
+
+    __aicore__ inline uint32_t ExpertTokenStart(uint32_t expertId) const
+    {
+        uint32_t tokenStart = 0;
+        for (uint32_t currentExpertId = 0; currentExpertId < expertId; ++currentExpertId) {
+            tokenStart += ExpertTokenCount(currentExpertId);
+        }
+        return tokenStart;
+    }
+
     __aicore__ inline SVDQLowRankStagePlan StagePlan(uint32_t stageIndex) const
     {
         if (stageIndex == 0) {
@@ -103,6 +147,26 @@ public:
             return BuildPrimaryUpStagePlan();
         }
         return BuildSecondUpStagePlan();
+    }
+
+    __aicore__ inline SVDQLowRankExpertPlan ExpertStagePlan(uint32_t stageIndex, uint32_t expertId) const
+    {
+        const SVDQLowRankStagePlan stage = StagePlan(stageIndex);
+        const uint32_t tokenStart = ExpertTokenStart(expertId);
+        const uint32_t tokenCount = ExpertTokenCount(expertId);
+        GM_ADDR inputBase = args_.input;
+        if (stageIndex != 0) {
+            inputBase = args_.output;
+        }
+        return SVDQLowRankExpertPlan{
+            stage,
+            expertId,
+            tokenStart,
+            tokenCount,
+            MatrixAddress(inputBase, tokenStart, stage.inputStrideColumns, stage.inputColumnOffset),
+            FactorAddress(stage, expertId),
+            MatrixAddress(args_.output, tokenStart, stage.outputStrideColumns, stage.outputColumnOffset),
+        };
     }
 
     __aicore__ inline bool IsImplemented() const
@@ -119,6 +183,12 @@ public:
             const SVDQLowRankStagePlan stage = StagePlan(stageIndex);
             if (!stage.HasCompleteContract()) {
                 return;
+            }
+            for (uint32_t expertId = 0; expertId < ExpertCount(); ++expertId) {
+                const SVDQLowRankExpertPlan expertPlan = ExpertStagePlan(stageIndex, expertId);
+                if (expertPlan.tokenCount > 0 && !expertPlan.HasWork()) {
+                    return;
+                }
             }
         }
         // The fused AIC math body will keep the low-rank bottleneck on-chip:
@@ -142,6 +212,8 @@ private:
             args_.downFactor,
             args_.tiling.inputColumns,
             TotalRankColumns(),
+            args_.tiling.inputColumns,
+            args_.tiling.outputColumns,
             args_.tiling.inputColumnOffset,
             0,
             0,
@@ -157,6 +229,8 @@ private:
             args_.upFactor,
             args_.tiling.rankColumns,
             PrimaryOutputColumns(),
+            args_.tiling.outputColumns,
+            args_.tiling.outputColumns,
             args_.tiling.inputColumnOffset,
             args_.tiling.outputColumnOffset,
             0,
@@ -172,11 +246,26 @@ private:
             args_.secondUpFactor,
             args_.tiling.secondRankColumns,
             args_.tiling.outputColumns - args_.tiling.secondOutputColumnOffset,
+            args_.tiling.outputColumns,
+            args_.tiling.outputColumns,
             args_.tiling.secondInputColumnOffset,
             args_.tiling.secondOutputColumnOffset,
             0,
             true,
         };
+    }
+
+    __aicore__ inline GM_ADDR MatrixAddress(
+        GM_ADDR base, uint32_t row, uint32_t strideColumns, uint32_t columnOffset) const
+    {
+        return base + (static_cast<uint64_t>(row) * strideColumns + columnOffset) * SVDQ_LOWRANK_BF16_BYTES;
+    }
+
+    __aicore__ inline GM_ADDR FactorAddress(const SVDQLowRankStagePlan& stage, uint32_t expertId) const
+    {
+        const uint64_t expertOffset =
+            static_cast<uint64_t>(expertId) * stage.inputColumns * stage.outputColumns + stage.factorColumnOffset;
+        return stage.factor + expertOffset * SVDQ_LOWRANK_BF16_BYTES;
     }
 
     SVDQFusedDownUpArgs args_{};

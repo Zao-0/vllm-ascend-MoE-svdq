@@ -650,26 +650,44 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "secondOutputColumnOffset" in lowrank_tiling
     assert "SVDQFusedDownUpArgs" in lowrank_header
     assert "SVDQFusedDownUp" in lowrank_header
+    assert "SVDQ_LOWRANK_BF16_BYTES = 2" in lowrank_header
+    assert "expertPerRank" in lowrank_header
     assert "HasIndependentSecondUp" in lowrank_header
     assert "SVDQLowRankStageKind" in lowrank_header
     assert "SVDQ_LOWRANK_STAGE_DOWN_PROJECT" in lowrank_header
     assert "SVDQ_LOWRANK_STAGE_UP_PROJECT" in lowrank_header
     assert "SVDQ_LOWRANK_STAGE_SECOND_UP_PROJECT" in lowrank_header
     assert "SVDQLowRankStagePlan" in lowrank_header
+    assert "SVDQLowRankExpertPlan" in lowrank_header
     assert "TotalRankColumns() const" in lowrank_header
     assert "PrimaryOutputColumns() const" in lowrank_header
     assert "StageCount() const" in lowrank_header
+    assert "ExpertCount() const" in lowrank_header
+    assert "ExpertTokenCount(uint32_t expertId)" in lowrank_header
+    assert "ExpertTokenStart(uint32_t expertId)" in lowrank_header
     assert "StagePlan(uint32_t stageIndex)" in lowrank_header
+    assert "ExpertStagePlan(uint32_t stageIndex, uint32_t expertId)" in lowrank_header
     assert "BuildDownStagePlan() const" in lowrank_header
     assert "BuildPrimaryUpStagePlan() const" in lowrank_header
     assert "BuildSecondUpStagePlan() const" in lowrank_header
+    assert "MatrixAddress(" in lowrank_header
+    assert "FactorAddress(const SVDQLowRankStagePlan& stage, uint32_t expertId)" in lowrank_header
+    assert "GM_ADDR inputBase = args_.input" in lowrank_header
+    assert "if (stageIndex != 0)" in lowrank_header
+    assert "inputBase = args_.output" in lowrank_header
     assert "IsImplemented() const" in lowrank_header
     assert "return false" in lowrank_header
     assert "args_.tiling.invocationId < SVDQ_LOWRANK_INVOCATION_COUNT" in lowrank_header
+    assert "args_.expertPerRank > 0" in lowrank_header
     assert "args_.tiling.secondInputColumnOffset + args_.tiling.secondRankColumns <= TotalRankColumns()" in lowrank_header
     assert "args_.tiling.outputColumnOffset < args_.tiling.secondOutputColumnOffset" in lowrank_header
     assert "for (uint32_t stageIndex = 0; stageIndex < StageCount(); ++stageIndex)" in lowrank_header
+    assert "for (uint32_t expertId = 0; expertId < ExpertCount(); ++expertId)" in lowrank_header
     assert "stage.HasCompleteContract()" in lowrank_header
+    assert "expertPlan.tokenCount > 0 && !expertPlan.HasWork()" in lowrank_header
+    assert "expertTokenNums.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(args_.expertTokenNums))" in lowrank_header
+    assert "static_cast<uint64_t>(row) * strideColumns + columnOffset" in lowrank_header
+    assert "static_cast<uint64_t>(expertId) * stage.inputColumns * stage.outputColumns" in lowrank_header
     assert "input BF16 -> down factor GEMM -> rank tile -> up factor GEMM -> projection BF16 GM" in lowrank_header
     assert " / 2" not in lowrank_header
     assert "total_rank" not in lowrank_header
@@ -682,6 +700,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "LowRankInvocation(uint32_t invocationId)" in contract
     assert "BuildLowRankArgs(uint32_t invocationId)" in contract
     assert "FactorAddress(invocation.secondUpFactorId)" in contract
+    assert "tilingData_.info.expertPerRank" in contract
     assert "LowRankInvocationReady(uint32_t invocationId)" in contract
     assert "ExecuteLowRankInvocation(uint32_t invocationId)" in contract
     assert "RunBF16LowRankStages()" in contract
