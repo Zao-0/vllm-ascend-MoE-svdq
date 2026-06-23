@@ -644,6 +644,15 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert '#include "lowrank/svdq_fused_down_up_tiling.h"' in tiling_header
     assert '#include "lowrank/svdq_fused_down_up.hpp"' in contract
     assert '#include "svdq_fused_down_up.hpp"' in lowrank_cpp
+    for helper_include in (
+        '#include "layout.h"',
+        '#include "mem.h"',
+        '#include "gm_to_l1_iterator.h"',
+        '#include "l1_to_l0_iterator.h"',
+        '#include "l0c_to_gm_iterator.h"',
+        '#include "mma.h"',
+    ):
+        assert helper_include in lowrank_header
     assert "SVDQ_LOWRANK_INVOCATION_COUNT = 2" in lowrank_tiling
     assert "SVDQ_LOWRANK_INVOCATION_GATE_UP" in lowrank_tiling
     assert "SVDQ_LOWRANK_INVOCATION_DOWN" in lowrank_tiling
@@ -717,6 +726,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "StoreAccumulatorFP32(" in lowrank_header
     assert "AccumulateScalarBF16(" in lowrank_header
     assert "RunScalarTileBF16(" in lowrank_header
+    assert "RunMmadTileBF16(" in lowrank_header
     assert "RunPlannedTileBF16(" in lowrank_header
     assert "BuildDownStagePlan() const" in lowrank_header
     assert "BuildPrimaryUpStagePlan() const" in lowrank_header
@@ -822,6 +832,30 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "if (tilePlan.accumulatesLastKTile)" in lowrank_header
     assert "StoreOutputBF16(tilePlan, rowOffset, outputOffset, static_cast<bfloat16_t>(accumulator))" in lowrank_header
     assert "StoreAccumulatorFP32(tilePlan, rowOffset, outputOffset, accumulator)" in lowrank_header
+    assert "#ifdef __DAV_C220_CUBE__" in lowrank_header
+    assert "AsdopsBuffer<ArchType::ASCEND_V220> buffers" in lowrank_header
+    assert "inputGm.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tensorPlan.input))" in lowrank_header
+    assert "factorGm.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tensorPlan.factor))" in lowrank_header
+    assert "outputGm.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tensorPlan.output))" in lowrank_header
+    assert "accumulatorGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(tensorPlan.accumulator))" in lowrank_header
+    assert "buffers.GetBuffer<BufferType::ASCEND_CB, bfloat16_t>(pipelinePlan.l1InputOffset)" in lowrank_header
+    assert "buffers.GetBuffer<BufferType::ASCEND_CB, bfloat16_t>(pipelinePlan.l1FactorOffset)" in lowrank_header
+    assert "buffers.GetBuffer<BufferType::ASCEND_L0A, bfloat16_t>(pipelinePlan.l0AOffset)" in lowrank_header
+    assert "buffers.GetBuffer<BufferType::ASCEND_L0B, bfloat16_t>(pipelinePlan.l0BOffset)" in lowrank_header
+    assert "buffers.GetBuffer<BufferType::ASCEND_L0C, float>(pipelinePlan.l0COffset)" in lowrank_header
+    assert "gm_to_l1<ArchType::ASCEND_V220, bfloat16_t, DataFormatT::ND, DataFormatT::NZ>" in lowrank_header
+    assert "gm_to_l1<ArchType::ASCEND_V220, bfloat16_t, DataFormatT::ND, DataFormatT::ZN>" in lowrank_header
+    assert "l1_to_l0_a<ArchType::ASCEND_V220, bfloat16_t, false, DataFormatT::NZ, DataFormatT::ZZ>" in lowrank_header
+    assert "l1_to_l0_b<ArchType::ASCEND_V220, bfloat16_t, true, DataFormatT::ZN, DataFormatT::NZ>" in lowrank_header
+    assert "mmad<ArchType::ASCEND_V220, bfloat16_t, bfloat16_t, float, false>" in lowrank_header
+    assert "l0c_to_gm<ArchType::ASCEND_V220, DataFormatT::ND, bfloat16_t, float>" in lowrank_header
+    assert "l0c_to_gm<ArchType::ASCEND_V220, DataFormatT::ND, float, float>" in lowrank_header
+    assert "AscendC::PipeBarrier<PIPE_MTE2>()" in lowrank_header
+    assert "AscendC::PipeBarrier<PIPE_MTE1>()" in lowrank_header
+    assert "AscendC::PipeBarrier<PIPE_M>()" in lowrank_header
+    assert "const bool initC = pipelinePlan.initAccumulator" in lowrank_header
+    assert "return RunMmadTileBF16(pipelinePlan)" in lowrank_header
+    assert "return false" in lowrank_header
     assert "const uint32_t coreIdx = AscendC::GetBlockIdx()" in lowrank_header
     assert "const uint32_t runtimeCoreCount = AscendC::GetBlockNum()" in lowrank_header
     assert "const SVDQLowRankCoreTileRange tileRange = CoreTileRange(coreIdx, scheduledCoreCount)" in lowrank_header

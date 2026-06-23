@@ -14,6 +14,12 @@
 #include "kernel_operator.h"
 #include "../dispatch_ffn_combine_w4_a8_svdq_tiling.h"
 #include "svdq_fused_down_up_tiling.h"
+#include "layout.h"
+#include "mem.h"
+#include "gm_to_l1_iterator.h"
+#include "l1_to_l0_iterator.h"
+#include "l0c_to_gm_iterator.h"
+#include "mma.h"
 
 namespace DispatchFFNCombineW4A8SVDQImpl {
 
@@ -639,12 +645,74 @@ public:
         return true;
     }
 
+    __aicore__ inline bool RunMmadTileBF16(const SVDQLowRankMmadPipelinePlan& pipelinePlan) const
+    {
+        if (!pipelinePlan.HasCompletePipeline()) {
+            return false;
+        }
+#ifdef __DAV_C220_CUBE__
+        const SVDQLowRankMmadTilePlan& tile = pipelinePlan.buffer.tile;
+        const SVDQLowRankTileTensorPlan& tensorPlan = tile.tile;
+
+        AsdopsBuffer<ArchType::ASCEND_V220> buffers;
+        AscendC::GlobalTensor<bfloat16_t> inputGm;
+        AscendC::GlobalTensor<bfloat16_t> factorGm;
+        AscendC::GlobalTensor<bfloat16_t> outputGm;
+        AscendC::GlobalTensor<float> accumulatorGm;
+        inputGm.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tensorPlan.input));
+        factorGm.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tensorPlan.factor));
+        outputGm.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(tensorPlan.output));
+        accumulatorGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(tensorPlan.accumulator));
+
+        auto l1Input = buffers.GetBuffer<BufferType::ASCEND_CB, bfloat16_t>(pipelinePlan.l1InputOffset);
+        auto l1Factor = buffers.GetBuffer<BufferType::ASCEND_CB, bfloat16_t>(pipelinePlan.l1FactorOffset);
+        auto l0A = buffers.GetBuffer<BufferType::ASCEND_L0A, bfloat16_t>(pipelinePlan.l0AOffset);
+        auto l0B = buffers.GetBuffer<BufferType::ASCEND_L0B, bfloat16_t>(pipelinePlan.l0BOffset);
+        auto l0C = buffers.GetBuffer<BufferType::ASCEND_L0C, float>(pipelinePlan.l0COffset);
+
+        gm_to_l1<ArchType::ASCEND_V220, bfloat16_t, DataFormatT::ND, DataFormatT::NZ>(
+            l1Input, inputGm, tile.mActual, tile.mRound, tensorPlan.inputStrideColumns,
+            tile.kActual, tile.kRound, tensorPlan.inputStrideColumns);
+        gm_to_l1<ArchType::ASCEND_V220, bfloat16_t, DataFormatT::ND, DataFormatT::ZN>(
+            l1Factor, factorGm, tile.nActual, tile.nRound, tensorPlan.factorStrideColumns,
+            tile.kActual, tile.kRound, tensorPlan.factorStrideColumns);
+        AscendC::PipeBarrier<PIPE_MTE2>();
+
+        l1_to_l0_a<ArchType::ASCEND_V220, bfloat16_t, false, DataFormatT::NZ, DataFormatT::ZZ>(
+            l0A, l1Input, tile.mRound, tile.kRound, tile.mRound, tile.kRound, tile.mRound, tile.kRound);
+        l1_to_l0_b<ArchType::ASCEND_V220, bfloat16_t, true, DataFormatT::ZN, DataFormatT::NZ>(
+            l0B, l1Factor, tile.nRound, tile.kRound, tile.nRound, tile.kRound, tile.nRound, tile.kRound);
+        AscendC::PipeBarrier<PIPE_MTE1>();
+
+        const bool initC = pipelinePlan.initAccumulator;
+        (void)mmad<ArchType::ASCEND_V220, bfloat16_t, bfloat16_t, float, false>(
+            l0C, l0A, l0B, tile.mActual, tile.nActual, tile.kActual, initC);
+        AscendC::PipeBarrier<PIPE_M>();
+
+        if (pipelinePlan.storesOutput) {
+            (void)l0c_to_gm<ArchType::ASCEND_V220, DataFormatT::ND, bfloat16_t, float>(
+                outputGm, l0C, tile.mActual, tile.nActual, tile.nRound, tensorPlan.outputStrideColumns);
+        } else {
+            (void)l0c_to_gm<ArchType::ASCEND_V220, DataFormatT::ND, float, float>(
+                accumulatorGm, l0C, tile.mActual, tile.nActual, tile.nRound,
+                tensorPlan.accumulatorStrideColumns);
+        }
+        return true;
+#else
+        return false;
+#endif
+    }
+
     __aicore__ inline bool RunPlannedTileBF16(const SVDQLowRankMmadPipelinePlan& pipelinePlan) const
     {
         if (!pipelinePlan.HasCompletePipeline()) {
             return false;
         }
+#ifdef __DAV_C220_CUBE__
+        return RunMmadTileBF16(pipelinePlan);
+#else
         return RunScalarTileBF16(pipelinePlan.buffer.tile.tile);
+#endif
     }
 
     __aicore__ inline bool IsImplemented() const
