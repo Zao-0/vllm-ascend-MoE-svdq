@@ -258,6 +258,17 @@ def test_svdq_cann_op_host_surface_uses_canonical_five_factor_abi():
     assert "constexpr uint32_t DOWN_SVDQ_L2_INDEX = 13" in tiling
 
 
+def test_svdq_cann_op_is_selected_by_a3_aclnn_build_script():
+    build_script = (REPO_ROOT / "csrc/build_aclnn.sh").read_text()
+    a3_branch = build_script[build_script.index('elif [[ "$SOC_VERSION" =~ ^ascend910_93 ]];') :]
+    a3_ops = a3_branch[: a3_branch.index('elif [[ "$SOC_VERSION" =~ ^ascend950 ]];')]
+
+    assert '"dispatch_ffn_combine_w4_a8"' in a3_ops
+    assert '"dispatch_ffn_combine_w4_a8_svdq"' in a3_ops
+    assert a3_ops.index('"dispatch_ffn_combine_w4_a8"') < a3_ops.index('"dispatch_ffn_combine_w4_a8_svdq"')
+    assert a3_ops.index('"dispatch_ffn_combine_w4_a8_svdq"') < a3_ops.index('"dispatch_ffn_combine_bf16"')
+
+
 def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
     op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
     tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
