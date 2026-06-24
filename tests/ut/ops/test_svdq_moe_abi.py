@@ -501,6 +501,34 @@ def test_svdq_w4a8_residual_gmm_device_probe_executes_official_stage_shapes():
         assert token in probe
 
 
+def test_svdq_official_w4a8_dispatch_probe_uses_official_aclnn_path():
+    probe = (REPO_ROOT / "tools/svdq_official_w4a8_dispatch_probe.py").read_text()
+
+    for token in (
+        "torch.ops._C_ascend.dispatch_ffn_combine",
+        "aclnnDispatchFFNCombineW4A8",
+        "OFFICIAL_W4A8_OPAPI_SYMBOLS",
+        "official_w4a8_opapi_symbols",
+        "aclnnInnerDispatchFFNCombineW4A8GetWorkspaceSize",
+        "_load_real_residual_layer",
+        "official_dispatch_ffn_combine_w4a8_zero_input_real_checkpoint",
+        "official_aic_aiv_validation",
+        "zero-input full official W4A8 op smoke",
+        "nonzero staged GMM/dequant validation still required",
+        "production_svdq_host_tiling_expected",
+        "fail_closed",
+        "weight1=[layer.w13_weight]",
+        "weight2=[layer.w2_weight]",
+        "scale1=[layer.w13_weight_scale]",
+        "scale2=[layer.w2_weight_scale]",
+        "bias1=[layer.w13_scale_bias]",
+        "bias2=[layer.w2_scale_bias]",
+        "--require-npu",
+        "phase_as_official_w4a8_dispatch_probe_summary.json",
+    ):
+        assert token in probe
+
+
 def test_svdq_final_combine_device_probe_executes_official_token_unpermute_surface():
     probe = (REPO_ROOT / "tools/svdq_final_combine_device_probe.py").read_text()
 
