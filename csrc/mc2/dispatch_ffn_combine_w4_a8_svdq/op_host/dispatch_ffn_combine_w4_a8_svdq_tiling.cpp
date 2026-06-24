@@ -12,6 +12,7 @@
 
 #include "dispatch_ffn_combine_w4_a8_svdq_tiling.h"
 #include "lowrank/svdq_lowrank_debug_readback_tiling.h"
+#include "lowrank/svdq_mixed_epilogue_debug_readback_tiling.h"
 #include "register/op_def_registry.h"
 #include "register/tilingdata_base.h"
 #include "tiling/tiling_api.h"
@@ -19,6 +20,7 @@
 
 using namespace ge;
 using DispatchFFNCombineW4A8SVDQImpl::SVDQLowRankDebugTilingData;
+using DispatchFFNCombineW4A8SVDQImpl::SVDQMixedEpilogueDebugTilingData;
 
 namespace {
 constexpr const char* K_INNER_DEBUG = "DispatchFFNCombineW4A8SVDQ Tiling";
@@ -63,6 +65,17 @@ constexpr uint32_t DEBUG_DOWN_OUTPUT_INDEX = 1;
 constexpr uint32_t DEBUG_GATE_UP_ACCUMULATOR_INDEX = 2;
 constexpr uint32_t DEBUG_DOWN_ACCUMULATOR_INDEX = 3;
 
+constexpr uint32_t MIXED_DEBUG_RESIDUAL_GATE_UP_INDEX = 0;
+constexpr uint32_t MIXED_DEBUG_GATE_UP_LOWRANK_INDEX = 1;
+constexpr uint32_t MIXED_DEBUG_RESIDUAL_DOWN_INDEX = 2;
+constexpr uint32_t MIXED_DEBUG_DOWN_LOWRANK_INDEX = 3;
+constexpr uint32_t MIXED_DEBUG_GATE_UP_TOTAL_INDEX = 0;
+constexpr uint32_t MIXED_DEBUG_HIDDEN_BF16_INDEX = 1;
+constexpr uint32_t MIXED_DEBUG_HIDDEN_INT8_INDEX = 2;
+constexpr uint32_t MIXED_DEBUG_HIDDEN_SCALE_INDEX = 3;
+constexpr uint32_t MIXED_DEBUG_DOWN_TOTAL_INDEX = 4;
+constexpr uint32_t MIXED_DEBUG_OUT_BF16_INDEX = 5;
+
 constexpr uint64_t SVDQ_WORKSPACE_ALIGNMENT = 512;
 constexpr uint64_t SVDQ_SYSTEM_WORKSPACE = 16UL * 1024UL * 1024UL;
 constexpr uint64_t INT8_BYTES = 1;
@@ -72,6 +85,7 @@ constexpr uint64_t FP32_BYTES = 4;
 constexpr uint32_t SVDQ_LOWRANK_ROW_TILE = 16;
 constexpr uint32_t SVDQ_LOWRANK_OUTPUT_COLUMN_TILE = 64;
 constexpr uint32_t SVDQ_LOWRANK_K_TILE = 64;
+constexpr uint32_t SVDQ_MIXED_DEBUG_VECTOR_TILE = 64;
 constexpr uint32_t SVDQ_ROUTING_BLOCK_NUM = 20;
 constexpr uint64_t SVDQ_ROUTING_UB_SIZE = 196352;
 }  // namespace
@@ -1014,4 +1028,157 @@ ge::graphStatus TilingParseForSVDQLowRankDebugReadback(gert::TilingParseContext*
 IMPL_OP_OPTILING(SVDQLowRankDebugReadback)
     .Tiling(SVDQLowRankDebugReadbackTilingFunc)
     .TilingParse<SVDQLowRankDebugReadbackCompileInfo>(TilingParseForSVDQLowRankDebugReadback);
+
+static ge::graphStatus SVDQMixedEpilogueDebugReadbackCheckAttr(
+    gert::TilingContext* context, SVDQMixedEpilogueDebugTilingData* tilingData)
+{
+    auto attrs = context->GetAttrs();
+    OP_TILING_CHECK(attrs == nullptr, OP_LOGE(K_INNER_DEBUG, "mixed debug attrs is null."), return ge::GRAPH_FAILED);
+
+    auto swigluLimit = attrs->GetAttrPointer<float>(0);
+    tilingData->swigluLimit = swigluLimit == nullptr ? 0.0f : *swigluLimit;
+    OP_TILING_CHECK(tilingData->swigluLimit < 0.0f,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug swigluLimit must be non-negative."), return ge::GRAPH_FAILED);
+    return ge::GRAPH_SUCCESS;
+}
+
+static ge::graphStatus SVDQMixedEpilogueDebugReadbackCheckDType(gert::TilingContext* context)
+{
+    OP_TILING_CHECK(CheckRequiredInputDType(context, MIXED_DEBUG_RESIDUAL_GATE_UP_INDEX,
+        "mixed debug residualGateUp", ge::DT_FLOAT) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug residualGateUp dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, MIXED_DEBUG_GATE_UP_LOWRANK_INDEX,
+        "mixed debug gateUpLowRank", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug gateUpLowRank dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, MIXED_DEBUG_RESIDUAL_DOWN_INDEX,
+        "mixed debug residualDown", ge::DT_FLOAT) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug residualDown dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckRequiredInputDType(context, MIXED_DEBUG_DOWN_LOWRANK_INDEX,
+        "mixed debug downLowRank", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug downLowRank dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckOutputDType(context, MIXED_DEBUG_GATE_UP_TOTAL_INDEX,
+        "mixed debug gateUpTotal", ge::DT_FLOAT) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug gateUpTotal dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckOutputDType(context, MIXED_DEBUG_HIDDEN_BF16_INDEX,
+        "mixed debug hiddenBf16", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug hiddenBf16 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckOutputDType(context, MIXED_DEBUG_HIDDEN_INT8_INDEX,
+        "mixed debug hiddenInt8", ge::DT_INT8) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug hiddenInt8 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckOutputDType(context, MIXED_DEBUG_HIDDEN_SCALE_INDEX,
+        "mixed debug hiddenScale", ge::DT_FLOAT) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug hiddenScale dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckOutputDType(context, MIXED_DEBUG_DOWN_TOTAL_INDEX,
+        "mixed debug downTotal", ge::DT_FLOAT) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug downTotal dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckOutputDType(context, MIXED_DEBUG_OUT_BF16_INDEX,
+        "mixed debug outBf16", ge::DT_BF16) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug outBf16 dtype check failed."), return ge::GRAPH_FAILED);
+    return ge::GRAPH_SUCCESS;
+}
+
+static ge::graphStatus SVDQMixedEpilogueDebugReadbackCheckShapeAndSetTiling(
+    gert::TilingContext* context, SVDQMixedEpilogueDebugTilingData* tilingData)
+{
+    const gert::StorageShape* residualGateUpShape = context->GetInputShape(MIXED_DEBUG_RESIDUAL_GATE_UP_INDEX);
+    const gert::StorageShape* gateUpLowRankShape = context->GetInputShape(MIXED_DEBUG_GATE_UP_LOWRANK_INDEX);
+    const gert::StorageShape* residualDownShape = context->GetInputShape(MIXED_DEBUG_RESIDUAL_DOWN_INDEX);
+    const gert::StorageShape* downLowRankShape = context->GetInputShape(MIXED_DEBUG_DOWN_LOWRANK_INDEX);
+    OP_TILING_CHECK(residualGateUpShape == nullptr || gateUpLowRankShape == nullptr ||
+        residualDownShape == nullptr || downLowRankShape == nullptr,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug input shapes must be non-null."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(residualGateUpShape->GetStorageShape().GetDimNum() != 2 ||
+        gateUpLowRankShape->GetStorageShape().GetDimNum() != 2 ||
+        residualDownShape->GetStorageShape().GetDimNum() != 2 ||
+        downLowRankShape->GetStorageShape().GetDimNum() != 2,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug inputs must be rank-2."), return ge::GRAPH_FAILED);
+
+    const int64_t rows = residualGateUpShape->GetStorageShape().GetDim(0);
+    const int64_t gateUpColumns = residualGateUpShape->GetStorageShape().GetDim(1);
+    const int64_t downRows = residualDownShape->GetStorageShape().GetDim(0);
+    const int64_t hiddenSize = residualDownShape->GetStorageShape().GetDim(1);
+    OP_TILING_CHECK(rows <= 0 || gateUpColumns <= 0 || hiddenSize <= 0,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug dimensions must be positive."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(gateUpColumns % 2 != 0,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug residualGateUp width must be even."), return ge::GRAPH_FAILED);
+
+    const int64_t intermediateSize = gateUpColumns / 2;
+    OP_TILING_CHECK(gateUpLowRankShape->GetStorageShape().GetDim(0) != rows ||
+        gateUpLowRankShape->GetStorageShape().GetDim(1) != gateUpColumns,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug gateUpLowRank shape mismatch."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(downRows != rows ||
+        downLowRankShape->GetStorageShape().GetDim(0) != rows ||
+        downLowRankShape->GetStorageShape().GetDim(1) != hiddenSize,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug down branch shape mismatch."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(intermediateSize % SVDQ_MIXED_DEBUG_VECTOR_TILE != 0 ||
+        hiddenSize % SVDQ_MIXED_DEBUG_VECTOR_TILE != 0,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug widths must be multiples of vector tile."), return ge::GRAPH_FAILED);
+
+    OP_TILING_CHECK(CheckDebugOutputRank2Shape(context, MIXED_DEBUG_GATE_UP_TOTAL_INDEX, "mixed debug gateUpTotal",
+        rows, gateUpColumns) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug gateUpTotal shape check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckDebugOutputRank2Shape(context, MIXED_DEBUG_HIDDEN_BF16_INDEX, "mixed debug hiddenBf16",
+        rows, intermediateSize) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug hiddenBf16 shape check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckDebugOutputRank2Shape(context, MIXED_DEBUG_HIDDEN_INT8_INDEX, "mixed debug hiddenInt8",
+        rows, intermediateSize) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug hiddenInt8 shape check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckDebugOutputRank2Shape(context, MIXED_DEBUG_DOWN_TOTAL_INDEX, "mixed debug downTotal",
+        rows, hiddenSize) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug downTotal shape check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckDebugOutputRank2Shape(context, MIXED_DEBUG_OUT_BF16_INDEX, "mixed debug outBf16",
+        rows, hiddenSize) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug outBf16 shape check failed."), return ge::GRAPH_FAILED);
+
+    const gert::StorageShape* hiddenScaleShape = context->GetOutputShape(MIXED_DEBUG_HIDDEN_SCALE_INDEX);
+    OP_TILING_CHECK(hiddenScaleShape == nullptr || hiddenScaleShape->GetStorageShape().GetDimNum() != 1 ||
+        hiddenScaleShape->GetStorageShape().GetDim(0) != rows,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug hiddenScale shape mismatch."), return ge::GRAPH_FAILED);
+
+    auto ascendcPlatform = platform_ascendc::PlatformAscendC(context->GetPlatformInfo());
+    const uint32_t aicNum = ascendcPlatform.GetCoreNumAic();
+    const uint32_t aivNum = ascendcPlatform.GetCoreNumAiv();
+    const uint32_t blockDim = ascendcPlatform.CalcTschBlockDim(aivNum, aicNum, aivNum);
+    context->SetBlockDim(blockDim);
+    context->SetTilingKey(0);
+
+    tilingData->rows = static_cast<uint32_t>(rows);
+    tilingData->intermediateSize = static_cast<uint32_t>(intermediateSize);
+    tilingData->hiddenSize = static_cast<uint32_t>(hiddenSize);
+    tilingData->vectorTile = SVDQ_MIXED_DEBUG_VECTOR_TILE;
+    return ge::GRAPH_SUCCESS;
+}
+
+static ge::graphStatus SVDQMixedEpilogueDebugReadbackTilingFunc(gert::TilingContext* context)
+{
+    const char* nodeName = context->GetNodeName();
+    SVDQMixedEpilogueDebugTilingData* tilingData = context->GetTilingData<SVDQMixedEpilogueDebugTilingData>();
+    OP_TILING_CHECK(tilingData == nullptr,
+        OP_LOGE(nodeName, "mixed debug tilingData is nullptr."), return ge::GRAPH_FAILED);
+
+    OP_TILING_CHECK(SVDQMixedEpilogueDebugReadbackCheckAttr(context, tilingData) != ge::GRAPH_SUCCESS,
+        OP_LOGE(nodeName, "mixed debug CheckAttr failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(SVDQMixedEpilogueDebugReadbackCheckDType(context) != ge::GRAPH_SUCCESS,
+        OP_LOGE(nodeName, "mixed debug CheckDType failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(SVDQMixedEpilogueDebugReadbackCheckShapeAndSetTiling(context, tilingData) != ge::GRAPH_SUCCESS,
+        OP_LOGE(nodeName, "mixed debug CheckShapeAndSetTiling failed."), return ge::GRAPH_FAILED);
+
+    size_t* workSpaces = context->GetWorkspaceSizes(1);
+    OP_TILING_CHECK(workSpaces == nullptr,
+        OP_LOGE(nodeName, "mixed debug workSpaces is nullptr."), return ge::GRAPH_FAILED);
+    workSpaces[0] = SVDQ_SYSTEM_WORKSPACE;
+    return ge::GRAPH_SUCCESS;
+}
+
+struct SVDQMixedEpilogueDebugReadbackCompileInfo {};
+
+ge::graphStatus TilingParseForSVDQMixedEpilogueDebugReadback(gert::TilingParseContext* context)
+{
+    (void)context;
+    return ge::GRAPH_SUCCESS;
+}
+
+IMPL_OP_OPTILING(SVDQMixedEpilogueDebugReadback)
+    .Tiling(SVDQMixedEpilogueDebugReadbackTilingFunc)
+    .TilingParse<SVDQMixedEpilogueDebugReadbackCompileInfo>(TilingParseForSVDQMixedEpilogueDebugReadback);
 }  // namespace optiling

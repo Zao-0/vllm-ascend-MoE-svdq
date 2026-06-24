@@ -213,6 +213,41 @@ def test_svdq_csrc_torch_schema_meta_and_adapter_are_registered():
         last = current
 
 
+def test_svdq_mixed_epilogue_debug_torch_schema_meta_and_adapter_are_registered():
+    binding = (REPO_ROOT / "csrc/torch_binding.cpp").read_text()
+    meta = (REPO_ROOT / "csrc/torch_binding_meta.cpp").read_text()
+    adapter = (
+        REPO_ROOT / "csrc/mc2/svdq_mixed_epilogue_debug_readback/"
+        "svdq_mixed_epilogue_debug_readback_torch_adpt.h"
+    ).read_text()
+
+    assert "svdq_mixed_epilogue_debug_readback(Tensor residual_gate_up" in binding
+    assert 'ops.impl("svdq_mixed_epilogue_debug_readback", torch::kPrivateUse1' in binding
+    assert "svdq_mixed_epilogue_debug_readback_meta" in meta
+    assert 'ops.impl("svdq_mixed_epilogue_debug_readback"' in meta
+    assert "svdq_mixed_epilogue_debug_readback(" in adapter
+    assert "EXEC_NPU_CMD(" in adapter
+    assert "aclnnSVDQMixedEpilogueDebugReadback" in adapter
+    assert "aclnn_svdq_mixed_epilogue_debug_readback.h" in adapter
+
+    for name in (
+        "residual_gate_up",
+        "gate_up_low_rank",
+        "residual_down",
+        "down_low_rank",
+        "swiglu_limit",
+        "gate_up_total",
+        "hidden_bf16",
+        "hidden_int8",
+        "hidden_scale",
+        "down_total",
+        "out_bf16",
+    ):
+        assert name in binding
+        assert name in meta
+        assert name in adapter
+
+
 def test_svdq_cann_op_host_surface_uses_canonical_five_factor_abi():
     op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
     cmake = (op_root / "op_host/CMakeLists.txt").read_text()
@@ -228,10 +263,15 @@ def test_svdq_cann_op_host_surface_uses_canonical_five_factor_abi():
     assert "OFF)" in cmake
     assert "list(APPEND _DISPATCH_FFN_SVDQ_DEBUG_OPTS -DSVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK)" in cmake
     assert "${_DISPATCH_FFN_SVDQ_DEBUG_OPTS}" in cmake
-    assert "OPTYPE dispatch_ffn_combine_w4_a8_svdq svdq_low_rank_debug_readback" in cmake
-    assert "ACLNNTYPE aclnn_inner aclnn_inner" in cmake
+    assert (
+        "OPTYPE dispatch_ffn_combine_w4_a8_svdq svdq_low_rank_debug_readback "
+        "svdq_mixed_epilogue_debug_readback"
+    ) in cmake
+    assert "ACLNNTYPE aclnn_inner aclnn_inner aclnn_inner" in cmake
     assert "target_sources(op_host_aclnnInner PRIVATE" in cmake
     assert "svdq_low_rank_debug_readback_def.cpp" in cmake
+    assert "svdq_mixed_epilogue_debug_readback_def.cpp" in cmake
+    assert "SVDQMixedEpilogueDebugReadback" in cmake
     assert "aclnnDispatchFFNCombineW4A8SVDQGetWorkspaceSize" in header
     assert "aclnnInnerDispatchFFNCombineW4A8SVDQGetWorkspaceSize" in wrapper
     assert "OP_ADD(DispatchFFNCombineW4A8SVDQ)" in op_def
@@ -327,6 +367,7 @@ def _assert_svdq_ops_selected(build_branch: str):
     assert '"dispatch_ffn_combine_w4_a8"' in build_branch
     assert '"dispatch_ffn_combine_w4_a8_svdq"' in build_branch
     assert '"svdq_low_rank_debug_readback"' in build_branch
+    assert '"svdq_mixed_epilogue_debug_readback"' in build_branch
     assert '"dispatch_ffn_combine_bf16"' in build_branch
     assert build_branch.index('"dispatch_ffn_combine_w4_a8"') < build_branch.index(
         '"dispatch_ffn_combine_w4_a8_svdq"'
@@ -334,7 +375,12 @@ def _assert_svdq_ops_selected(build_branch: str):
     assert build_branch.index('"dispatch_ffn_combine_w4_a8_svdq"') < build_branch.index(
         '"svdq_low_rank_debug_readback"'
     )
-    assert build_branch.index('"svdq_low_rank_debug_readback"') < build_branch.index('"dispatch_ffn_combine_bf16"')
+    assert build_branch.index('"svdq_low_rank_debug_readback"') < build_branch.index(
+        '"svdq_mixed_epilogue_debug_readback"'
+    )
+    assert build_branch.index('"svdq_mixed_epilogue_debug_readback"') < build_branch.index(
+        '"dispatch_ffn_combine_bf16"'
+    )
 
 
 def test_svdq_cann_ops_are_selected_by_a2_and_a3_aclnn_build_script():

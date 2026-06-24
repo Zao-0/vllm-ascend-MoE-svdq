@@ -38,6 +38,7 @@
 #include "mc2/dispatch_ffn_combine/dispatch_ffn_combine_torch_adpt.h"
 #include "mc2/dispatch_ffn_combine_w4_a8_svdq/dispatch_ffn_combine_w4_a8_svdq_torch_adpt.h"
 #include "mc2/svdq_low_rank_debug_readback/svdq_low_rank_debug_readback_torch_adpt.h"
+#include "mc2/svdq_mixed_epilogue_debug_readback/svdq_mixed_epilogue_debug_readback_torch_adpt.h"
 #include "mc2/svdq_w4a8_debug_readback/svdq_w4a8_debug_readback_torch_adpt.h"
 #include "mc2/dispatch_gmm_combine_decode/dispatch_gmm_combine_decode_torch_adpt.h"
 #include "mc2/dispatch_layout/dispatch_layout_torch_adpt.h"
@@ -2489,6 +2490,19 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         "                                                    Tensor gate_up_accumulator, Tensor down_accumulator)"
     );
     ops.impl("svdq_low_rank_debug_readback", torch::kPrivateUse1, &vllm_ascend::svdq_low_rank_debug_readback);
+
+    ops.def(
+        "svdq_mixed_epilogue_debug_readback(Tensor residual_gate_up, Tensor gate_up_low_rank,"
+        "                                   Tensor residual_down, Tensor down_low_rank,"
+        "                                   float swiglu_limit=0.0) -> (Tensor gate_up_total,"
+        "                                                               Tensor hidden_bf16,"
+        "                                                               Tensor hidden_int8,"
+        "                                                               Tensor hidden_scale,"
+        "                                                               Tensor down_total,"
+        "                                                               Tensor out_bf16)"
+    );
+    ops.impl("svdq_mixed_epilogue_debug_readback", torch::kPrivateUse1,
+             &vllm_ascend::svdq_mixed_epilogue_debug_readback);
 
     ops.def(
         "svdq_w4a8_debug_readback(Tensor x, Tensor[] weight1, Tensor[] weight2, Tensor expert_idx,"

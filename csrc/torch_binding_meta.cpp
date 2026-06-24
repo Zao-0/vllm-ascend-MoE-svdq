@@ -407,6 +407,46 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_low_rank_debug_r
     return {gate_up_output, down_output, gate_up_accumulator, down_accumulator};
 }
 
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+svdq_mixed_epilogue_debug_readback_meta(
+    const at::Tensor& residual_gate_up,
+    const at::Tensor& gate_up_low_rank,
+    const at::Tensor& residual_down,
+    const at::Tensor& down_low_rank,
+    double swiglu_limit)
+{
+    TORCH_CHECK(residual_gate_up.dim() == 2, "residual_gate_up must be rank-2.");
+    TORCH_CHECK(gate_up_low_rank.dim() == 2, "gate_up_low_rank must be rank-2.");
+    TORCH_CHECK(residual_down.dim() == 2, "residual_down must be rank-2.");
+    TORCH_CHECK(down_low_rank.dim() == 2, "down_low_rank must be rank-2.");
+    TORCH_CHECK(residual_gate_up.scalar_type() == at::kFloat, "residual_gate_up must be FP32.");
+    TORCH_CHECK(gate_up_low_rank.scalar_type() == at::kBFloat16, "gate_up_low_rank must be BF16.");
+    TORCH_CHECK(residual_down.scalar_type() == at::kFloat, "residual_down must be FP32.");
+    TORCH_CHECK(down_low_rank.scalar_type() == at::kBFloat16, "down_low_rank must be BF16.");
+    TORCH_CHECK(swiglu_limit >= 0.0, "swiglu_limit must be non-negative.");
+    TORCH_CHECK(residual_gate_up.size(1) % 2 == 0, "residual_gate_up width must be even.");
+    TORCH_CHECK(gate_up_low_rank.sizes() == residual_gate_up.sizes(),
+                "gate_up_low_rank shape must match residual_gate_up.");
+    TORCH_CHECK(down_low_rank.sizes() == residual_down.sizes(), "down_low_rank shape must match residual_down.");
+    TORCH_CHECK(residual_down.size(0) == residual_gate_up.size(0),
+                "down branch row count must match gate/up row count.");
+
+    const auto rows = residual_gate_up.size(0);
+    const auto intermediate_size = residual_gate_up.size(1) / 2;
+    const auto hidden_size = residual_down.size(1);
+    TORCH_CHECK(intermediate_size % 64 == 0 && hidden_size % 64 == 0,
+                "intermediate_size and hidden_size must be multiples of 64 for the debug AIV tile.");
+
+    auto gate_up_total = at::empty_like(residual_gate_up, residual_gate_up.options().device(at::kMeta));
+    auto hidden_bf16 = at::empty({rows, intermediate_size}, gate_up_low_rank.options().device(at::kMeta));
+    auto hidden_int8 = at::empty({rows, intermediate_size},
+                                 gate_up_low_rank.options().device(at::kMeta).dtype(at::kChar));
+    auto hidden_scale = at::empty({rows}, residual_gate_up.options().device(at::kMeta));
+    auto down_total = at::empty_like(residual_down, residual_down.options().device(at::kMeta));
+    auto out_bf16 = at::empty({rows, hidden_size}, down_low_rank.options().device(at::kMeta));
+    return {gate_up_total, hidden_bf16, hidden_int8, hidden_scale, down_total, out_bf16};
+}
+
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
 svdq_w4a8_debug_readback_meta(
     const at::Tensor& x,
@@ -1840,6 +1880,8 @@ TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
     ops.impl("dispatch_ffn_combine_w4a8_svdq", &vllm_ascend::meta::dispatch_ffn_combine_w4a8_svdq_meta);
     // SVDQ low-rank debug readback
     ops.impl("svdq_low_rank_debug_readback", &vllm_ascend::meta::svdq_low_rank_debug_readback_meta);
+    ops.impl("svdq_mixed_epilogue_debug_readback",
+             &vllm_ascend::meta::svdq_mixed_epilogue_debug_readback_meta);
     ops.impl("svdq_w4a8_debug_readback", &vllm_ascend::meta::svdq_w4a8_debug_readback_meta);
     // matmul allreduce add rmsnorm
     ops.impl("matmul_allreduce_add_rmsnorm", &vllm_ascend::meta::matmul_allreduce_add_rmsnorm_meta);

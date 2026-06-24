@@ -45,4 +45,20 @@ static ge::graphStatus InferDataTypeSVDQLowRankDebugReadback(gert::InferDataType
 IMPL_OP_INFERSHAPE(SVDQLowRankDebugReadback)
     .InferShape(InferShapeSVDQLowRankDebugReadback)
     .InferDataType(InferDataTypeSVDQLowRankDebugReadback);
+
+static ge::graphStatus InferShapeSVDQMixedEpilogueDebugReadback(gert::InferShapeContext* context)
+{
+    (void)context;
+    return ge::GRAPH_SUCCESS;
+}
+
+static ge::graphStatus InferDataTypeSVDQMixedEpilogueDebugReadback(gert::InferDataTypeContext* context)
+{
+    (void)context;
+    return ge::GRAPH_SUCCESS;
+}
+
+IMPL_OP_INFERSHAPE(SVDQMixedEpilogueDebugReadback)
+    .InferShape(InferShapeSVDQMixedEpilogueDebugReadback)
+    .InferDataType(InferDataTypeSVDQMixedEpilogueDebugReadback);
 }  // namespace ops
