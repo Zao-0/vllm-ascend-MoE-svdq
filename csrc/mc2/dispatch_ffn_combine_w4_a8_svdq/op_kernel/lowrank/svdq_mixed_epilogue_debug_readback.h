@@ -106,6 +106,13 @@ private:
         WaitFlag<HardEvent::MTE3_V>(eventId);
     }
 
+    __aicore__ inline void SyncMte3ToMte2() const
+    {
+        event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_MTE2));
+        SetFlag<HardEvent::MTE3_MTE2>(eventId);
+        WaitFlag<HardEvent::MTE3_MTE2>(eventId);
+    }
+
     __aicore__ inline void CopyInFloat(LocalTensor<float> dst, const GlobalTensor<float>& src, uint32_t offset,
         uint32_t count) const
     {
@@ -195,6 +202,7 @@ private:
             CopyOutFloat(gateUpTotalGm_, gateOffset, gate, tilingData_.vectorTile);
             CopyOutFloat(gateUpTotalGm_, upOffset, up, tilingData_.vectorTile);
             SyncMte3ToV();
+            SyncMte3ToMte2();
 
             Muls(tmp, gate, -1.0f, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
@@ -211,6 +219,7 @@ private:
             SyncVToMte3();
             CopyOutBf16(hiddenBf16Gm_, row * intermediate + column, hiddenOut, tilingData_.vectorTile);
             SyncMte3ToV();
+            SyncMte3ToMte2();
         }
     }
 
@@ -264,6 +273,7 @@ private:
                 CopyOutInt8(hiddenInt8Gm_, row * tilingData_.intermediateSize + column, hiddenI8,
                     tilingData_.vectorTile);
                 SyncMte3ToV();
+                SyncMte3ToMte2();
             }
             return;
         }
@@ -288,6 +298,7 @@ private:
             CopyOutInt8(hiddenInt8Gm_, row * tilingData_.intermediateSize + column, hiddenI8,
                 tilingData_.vectorTile);
             SyncMte3ToV();
+            SyncMte3ToMte2();
         }
     }
 
@@ -311,11 +322,13 @@ private:
             SyncVToMte3();
             CopyOutFloat(downTotalGm_, offset, down, tilingData_.vectorTile);
             SyncMte3ToV();
+            SyncMte3ToMte2();
             Cast(outBf16, down, RoundMode::CAST_RINT, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
             SyncVToMte3();
             CopyOutBf16(outBf16Gm_, offset, outBf16, tilingData_.vectorTile);
             SyncMte3ToV();
+            SyncMte3ToMte2();
         }
     }
 

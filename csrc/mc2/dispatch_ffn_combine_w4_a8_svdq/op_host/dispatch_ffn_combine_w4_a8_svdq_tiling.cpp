@@ -1135,11 +1135,7 @@ static ge::graphStatus SVDQMixedEpilogueDebugReadbackCheckShapeAndSetTiling(
         hiddenScaleShape->GetStorageShape().GetDim(0) != rows,
         OP_LOGE(K_INNER_DEBUG, "mixed debug hiddenScale shape mismatch."), return ge::GRAPH_FAILED);
 
-    auto ascendcPlatform = platform_ascendc::PlatformAscendC(context->GetPlatformInfo());
-    const uint32_t aicNum = ascendcPlatform.GetCoreNumAic();
-    const uint32_t aivNum = ascendcPlatform.GetCoreNumAiv();
-    const uint32_t blockDim = ascendcPlatform.CalcTschBlockDim(aivNum, aicNum, aivNum);
-    context->SetBlockDim(blockDim);
+    context->SetBlockDim(1);
     context->SetTilingKey(0);
 
     tilingData->rows = static_cast<uint32_t>(rows);
