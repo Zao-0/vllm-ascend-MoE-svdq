@@ -845,6 +845,29 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "ResidualGmmLaunchReady(uint32_t stageId)" in sources["kernel_contract"]
             and "BuildResidualGmmLaunch(stageId)" in sources["kernel_contract"]
         ),
+        "kernel_residual_gmm_scalar_execution_enabled": (
+            "return RunResidualPackedW4A8ScalarGmmStage(launch);" in sources["kernel_contract"]
+            and "RunResidualPackedW4A8ScalarGmmStage(const SVDQResidualGmmLaunch& launch) const"
+            in sources["kernel_contract"]
+            and "ResolveResidualGmmExpert(launch, row)" in sources["kernel_contract"]
+            and "LoadResidualGmmExpertTokenCount(" in sources["kernel_contract"]
+            and "LoadResidualGmmInputINT8(" in sources["kernel_contract"]
+            and "LoadResidualGmmActivationScale(" in sources["kernel_contract"]
+            and "LoadResidualGmmWeightINT4(" in sources["kernel_contract"]
+            and "LoadResidualGmmWeightScale(" in sources["kernel_contract"]
+            and "LoadResidualGmmBias(" in sources["kernel_contract"]
+            and "StoreResidualGmmOutputBF16(" in sources["kernel_contract"]
+            and "launch.n % 8 != 0" in sources["kernel_contract"]
+            and "const uint32_t packedColumns = launch.n / 8" in sources["kernel_contract"]
+            and "const uint32_t shift = (nColumn % 8) * 4" in sources["kernel_contract"]
+            and "nibble >= 8 ? nibble - 16 : nibble" in sources["kernel_contract"]
+            and "UInt32BitsToFloat(static_cast<uint32_t>(packedScale & 0xffffffffULL))"
+            in sources["kernel_contract"]
+            and "activation * activationScale * weightValue * weightScale" in sources["kernel_contract"]
+            and "StoreResidualGmmOutputBF16(launch, row, column, static_cast<bfloat16_t>(accumulator))"
+            in sources["kernel_contract"]
+            and "return true;" in sources["kernel_contract"]
+        ),
         "kernel_residual_quant_launch_descriptor_recorded": (
             "SVDQ_RESIDUAL_QUANT_COUNT = 2" in sources["kernel_tiling"]
             and "struct SVDQResidualQuantShape" in sources["kernel_tiling"]
@@ -1416,7 +1439,8 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "IsImplemented() const\n    {\n        return HasCompleteContract();" in sources["lowrank_header"]
             ),
             "reason": (
-                "W4A8 residual GMM execution and host tiling success are incomplete."
+                "Host tiling success, synchronization handoff validation, "
+                "and target-model E2E validation are incomplete."
             ),
             "dispatch_routing_execution_enabled": source_proof["kernel_dispatch_routing_execution_enabled"],
             "residual_routed_input_quant_execution_enabled": source_proof[
@@ -1430,6 +1454,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             ],
             "residual_gmm_launch_descriptor_recorded": source_proof[
                 "kernel_residual_gmm_launch_descriptor_recorded"
+            ],
+            "residual_gmm_execution_enabled": source_proof[
+                "kernel_residual_gmm_scalar_execution_enabled"
             ],
             "mixed_epilogue_launch_descriptor_recorded": source_proof[
                 "kernel_mixed_epilogue_launch_descriptor_recorded"
@@ -1447,8 +1474,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "kernel_final_combine_scalar_execution_enabled"
             ],
             "w4a8_residual_execution_fail_closed": (
-                "RunW4A8ResidualStages() const" in sources["kernel_contract"]
-                and "RunMixedEpilogueStages() const" in sources["kernel_contract"]
+                not source_proof["kernel_residual_routed_input_quant_execution_enabled"]
+                or not source_proof["kernel_residual_hidden_quant_scalar_execution_enabled"]
+                or not source_proof["kernel_residual_gmm_scalar_execution_enabled"]
             ),
             "mixed_epilogue_execution_fail_closed": (
                 not source_proof["kernel_mixed_output_epilogue_scalar_execution_enabled"]

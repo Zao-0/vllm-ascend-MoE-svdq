@@ -1100,6 +1100,33 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     ):
         assert token in gmm_ready_source
 
+    gmm_execution_source = contract[
+        contract.index("__aicore__ inline bool RunResidualGmmStage") : contract.index(
+            "__aicore__ inline SVDQMixedEpilogueContract MixedEpilogueContract"
+        )
+    ]
+    for token in (
+        "return RunResidualPackedW4A8ScalarGmmStage(launch)",
+        "RunResidualPackedW4A8ScalarGmmStage(const SVDQResidualGmmLaunch& launch) const",
+        "LoadResidualGmmExpertTokenCount(",
+        "ResolveResidualGmmExpert(launch, row)",
+        "LoadResidualGmmInputINT8(",
+        "LoadResidualGmmActivationScale(",
+        "LoadResidualGmmWeightINT4(",
+        "LoadResidualGmmWeightScale(",
+        "LoadResidualGmmBias(",
+        "StoreResidualGmmOutputBF16(",
+        "launch.n % 8 != 0",
+        "const uint32_t packedColumns = launch.n / 8",
+        "const uint32_t shift = (nColumn % 8) * 4",
+        "nibble >= 8 ? nibble - 16 : nibble",
+        "UInt32BitsToFloat(static_cast<uint32_t>(packedScale & 0xffffffffULL))",
+        "activation * activationScale * weightValue * weightScale",
+        "StoreResidualGmmOutputBF16(launch, row, column, static_cast<bfloat16_t>(accumulator))",
+        "return true",
+    ):
+        assert token in gmm_execution_source
+
     assert "stage.residualOnly = residualOnly" in tiling
     assert "true);" in tiling
     assert "AscendC kernel is not implemented yet" in tiling
@@ -2048,12 +2075,13 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["residual_hidden_quant_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_quant_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_launch_descriptor_recorded"]
+    assert loaded["production_fail_closed"]["residual_gmm_execution_enabled"]
     assert loaded["production_fail_closed"]["mixed_epilogue_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["mixed_output_epilogue_execution_enabled"]
     assert loaded["production_fail_closed"]["mixed_swiglu_epilogue_execution_enabled"]
     assert loaded["production_fail_closed"]["final_combine_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["final_combine_execution_enabled"]
-    assert loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
+    assert not loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
     assert not loaded["production_fail_closed"]["mixed_epilogue_execution_fail_closed"]
     assert not loaded["production_fail_closed"]["final_combine_execution_fail_closed"]
     assert loaded["production_fail_closed"]["w4a8_residual_contract_recorded"]
@@ -2071,6 +2099,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_residual_dispatches_dynamic_quant_and_gmm"]
     assert loaded["source_proof"]["kernel_residual_quant_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_launch_descriptor_recorded"]
+    assert loaded["source_proof"]["kernel_residual_gmm_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_routed_input_quant_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_hidden_quant_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_execution_fail_closed"]

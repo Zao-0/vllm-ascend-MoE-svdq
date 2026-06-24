@@ -845,8 +845,7 @@ public:
             return false;
         }
         SVDQResidualGmmLaunch launch = BuildResidualGmmLaunch(stageId);
-        (void)launch;
-        return false;
+        return RunResidualPackedW4A8ScalarGmmStage(launch);
     }
 
     __aicore__ inline bool RunResidualStage(uint32_t stageId) const
@@ -868,7 +867,131 @@ public:
                 return false;
             }
         }
-        return false;
+        return true;
+    }
+
+    __aicore__ inline int32_t LoadResidualGmmExpertTokenCount(
+        const SVDQResidualGmmLaunch& launch, uint32_t expertIndex) const
+    {
+        AscendC::GlobalTensor<int32_t> expertTokenNums;
+        expertTokenNums.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(launch.expertTokenNums));
+        return expertTokenNums.GetValue(expertIndex);
+    }
+
+    __aicore__ inline uint32_t ResolveResidualGmmExpert(
+        const SVDQResidualGmmLaunch& launch, uint32_t row) const
+    {
+        uint32_t cumulativeRows = 0;
+        for (uint32_t expertIndex = 0; expertIndex < launch.listLen; ++expertIndex) {
+            const int32_t count = LoadResidualGmmExpertTokenCount(launch, expertIndex);
+            if (count <= 0) {
+                continue;
+            }
+            cumulativeRows += static_cast<uint32_t>(count);
+            if (row < cumulativeRows) {
+                return expertIndex;
+            }
+        }
+        return SVDQ_INVALID_ID;
+    }
+
+    __aicore__ inline int8_t LoadResidualGmmInputINT8(
+        const SVDQResidualGmmLaunch& launch, uint32_t row, uint32_t column) const
+    {
+        AscendC::GlobalTensor<int8_t> input;
+        input.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t*>(launch.input));
+        return input.GetValue(static_cast<uint64_t>(row) * launch.k + column);
+    }
+
+    __aicore__ inline float LoadResidualGmmActivationScale(
+        const SVDQResidualGmmLaunch& launch, uint32_t row) const
+    {
+        AscendC::GlobalTensor<float> activationScale;
+        activationScale.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(launch.activationScale));
+        return activationScale.GetValue(row);
+    }
+
+    __aicore__ inline int8_t LoadResidualGmmWeightINT4(
+        const SVDQResidualGmmLaunch& launch, uint32_t expertIndex, uint32_t kColumn, uint32_t nColumn) const
+    {
+        AscendC::GlobalTensor<int32_t> weight;
+        weight.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(launch.weight));
+        const uint32_t packedColumns = launch.n / 8;
+        const uint64_t wordOffset =
+            (static_cast<uint64_t>(expertIndex) * launch.k + kColumn) * packedColumns + nColumn / 8;
+        const uint32_t shift = (nColumn % 8) * 4;
+        const int32_t packedWord = weight.GetValue(wordOffset);
+        const int32_t nibble = (packedWord >> shift) & 0xF;
+        return static_cast<int8_t>(nibble >= 8 ? nibble - 16 : nibble);
+    }
+
+    __aicore__ inline float UInt32BitsToFloat(uint32_t bits) const
+    {
+        union FloatBits {
+            uint32_t u32;
+            float fp32;
+        } value;
+        value.u32 = bits;
+        return value.fp32;
+    }
+
+    __aicore__ inline float LoadResidualGmmWeightScale(
+        const SVDQResidualGmmLaunch& launch, uint32_t expertIndex, uint32_t nColumn) const
+    {
+        AscendC::GlobalTensor<uint64_t> weightScale;
+        weightScale.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(launch.weightScale));
+        const uint64_t packedScale = weightScale.GetValue(static_cast<uint64_t>(expertIndex) * launch.n + nColumn);
+        return UInt32BitsToFloat(static_cast<uint32_t>(packedScale & 0xffffffffULL));
+    }
+
+    __aicore__ inline float LoadResidualGmmBias(
+        const SVDQResidualGmmLaunch& launch, uint32_t expertIndex, uint32_t nColumn) const
+    {
+        AscendC::GlobalTensor<float> bias;
+        bias.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(launch.bias));
+        return bias.GetValue(static_cast<uint64_t>(expertIndex) * launch.n + nColumn);
+    }
+
+    __aicore__ inline void StoreResidualGmmOutputBF16(
+        const SVDQResidualGmmLaunch& launch, uint32_t row, uint32_t column, bfloat16_t value) const
+    {
+        AscendC::GlobalTensor<bfloat16_t> output;
+        output.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(launch.output));
+        output.SetValue(static_cast<uint64_t>(row) * launch.n + column, value);
+    }
+
+    __aicore__ inline bool RunResidualPackedW4A8ScalarGmmStage(const SVDQResidualGmmLaunch& launch) const
+    {
+        if (!launch.residualOnly || launch.transB || !launch.weightNz || launch.groupListType != 1 ||
+            launch.groupType != 0 || launch.splitItem != 2 || launch.n == 0 || launch.k == 0 ||
+            launch.n % 8 != 0 || launch.listLen == 0) {
+            return false;
+        }
+        const uint32_t coreIdx = AscendC::GetBlockIdx();
+        const uint32_t coreCount = AscendC::GetBlockNum();
+        if (coreCount == 0) {
+            return false;
+        }
+        const uint64_t outputElements = static_cast<uint64_t>(launch.m) * launch.n;
+        for (uint64_t elementIndex = coreIdx; elementIndex < outputElements; elementIndex += coreCount) {
+            const uint32_t row = static_cast<uint32_t>(elementIndex / launch.n);
+            const uint32_t column = static_cast<uint32_t>(elementIndex % launch.n);
+            const uint32_t expertIndex = ResolveResidualGmmExpert(launch, row);
+            if (expertIndex == SVDQ_INVALID_ID) {
+                return false;
+            }
+            const float activationScale = LoadResidualGmmActivationScale(launch, row);
+            const float weightScale = LoadResidualGmmWeightScale(launch, expertIndex, column);
+            float accumulator = LoadResidualGmmBias(launch, expertIndex, column);
+            for (uint32_t kColumn = 0; kColumn < launch.k; ++kColumn) {
+                const float activation = static_cast<float>(LoadResidualGmmInputINT8(launch, row, kColumn));
+                const float weightValue = static_cast<float>(
+                    LoadResidualGmmWeightINT4(launch, expertIndex, kColumn, column));
+                accumulator += activation * activationScale * weightValue * weightScale;
+            }
+            StoreResidualGmmOutputBF16(launch, row, column, static_cast<bfloat16_t>(accumulator));
+        }
+        return true;
     }
 
     __aicore__ inline SVDQMixedEpilogueContract MixedEpilogueContract(uint32_t epilogueId) const
