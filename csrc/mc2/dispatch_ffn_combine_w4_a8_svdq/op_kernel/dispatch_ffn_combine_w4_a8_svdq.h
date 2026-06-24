@@ -26,6 +26,8 @@ constexpr uint32_t SVDQ_RESIDUAL_WEIGHT1_SLOT = 1;
 constexpr uint32_t SVDQ_RESIDUAL_WEIGHT2_SLOT = 2;
 constexpr uint32_t SVDQ_RESIDUAL_SCALE1_SLOT = 4;
 constexpr uint32_t SVDQ_RESIDUAL_SCALE2_SLOT = 5;
+constexpr uint32_t SVDQ_RESIDUAL_BIAS1_SLOT = 6;
+constexpr uint32_t SVDQ_RESIDUAL_BIAS2_SLOT = 7;
 
 enum SVDQBF16LowRankStageId : uint32_t {
     SVDQ_BF16_STAGE_ROUTING = 0,
@@ -116,6 +118,23 @@ struct SVDQResidualStageContract {
     uint32_t secondWaitFlagId;
     uint32_t signalFlagId;
     uint32_t secondSignalFlagId;
+    bool residualOnly;
+};
+
+enum SVDQResidualOpKind : uint32_t {
+    SVDQ_RESIDUAL_OP_DYNAMIC_QUANT = 1,
+    SVDQ_RESIDUAL_OP_W4A8_GMM = 2,
+};
+
+struct SVDQResidualExecutionPlan {
+    uint32_t stageId;
+    uint32_t opKind;
+    uint32_t inputRegionId;
+    uint32_t activationScaleRegionId;
+    uint32_t outputRegionId;
+    uint32_t residualWeightSlot;
+    uint32_t residualScaleSlot;
+    uint32_t residualBiasSlot;
     bool residualOnly;
 };
 
@@ -282,6 +301,18 @@ public:
         }
     }
 
+    __aicore__ inline GM_ADDR ResidualBiasAddress(uint32_t residualBiasSlot) const
+    {
+        switch (residualBiasSlot) {
+            case SVDQ_RESIDUAL_BIAS1_SLOT:
+                return runtime_.residual.bias1;
+            case SVDQ_RESIDUAL_BIAS2_SLOT:
+                return runtime_.residual.bias2;
+            default:
+                return nullptr;
+        }
+    }
+
     __aicore__ inline SVDQFusedDownUpTiling LowRankInvocation(uint32_t invocationId) const
     {
         return tilingData_.lowRankInvocations[invocationId];
@@ -420,6 +451,29 @@ public:
         }
     }
 
+    __aicore__ inline SVDQResidualExecutionPlan ResidualExecutionPlan(uint32_t stageId) const
+    {
+        switch (stageId) {
+            case SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT:
+                return {stageId, SVDQ_RESIDUAL_OP_DYNAMIC_QUANT, SVDQ_REGION_ROUTED_X, SVDQ_REGION_X_SCALE,
+                    SVDQ_REGION_X_Q, SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID, true};
+            case SVDQ_RESIDUAL_STAGE_W4A8_GMM1:
+                return {stageId, SVDQ_RESIDUAL_OP_W4A8_GMM, SVDQ_REGION_X_Q, SVDQ_REGION_X_SCALE,
+                    SVDQ_REGION_ACCUMULATOR_1, SVDQ_RESIDUAL_WEIGHT1_SLOT, SVDQ_RESIDUAL_SCALE1_SLOT,
+                    SVDQ_RESIDUAL_BIAS1_SLOT, true};
+            case SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN:
+                return {stageId, SVDQ_RESIDUAL_OP_DYNAMIC_QUANT, SVDQ_REGION_HIDDEN, SVDQ_REGION_HIDDEN_SCALE,
+                    SVDQ_REGION_HIDDEN_Q, SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID, true};
+            case SVDQ_RESIDUAL_STAGE_W4A8_GMM2:
+                return {stageId, SVDQ_RESIDUAL_OP_W4A8_GMM, SVDQ_REGION_HIDDEN_Q, SVDQ_REGION_HIDDEN_SCALE,
+                    SVDQ_REGION_ACCUMULATOR_2, SVDQ_RESIDUAL_WEIGHT2_SLOT, SVDQ_RESIDUAL_SCALE2_SLOT,
+                    SVDQ_RESIDUAL_BIAS2_SLOT, true};
+            default:
+                return {SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID,
+                    SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID, false};
+        }
+    }
+
     __aicore__ inline bool ResidualStageReady(uint32_t stageId) const
     {
         SVDQResidualStageShape shape = ResidualStageShape(stageId);
@@ -448,10 +502,61 @@ public:
         return true;
     }
 
+    __aicore__ inline bool ResidualExecutionPlanReady(uint32_t stageId) const
+    {
+        SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
+        if (!ResidualStageReady(stageId) || plan.stageId != stageId || !plan.residualOnly ||
+            WorkspaceAddress(plan.inputRegionId) == nullptr ||
+            WorkspaceAddress(plan.activationScaleRegionId) == nullptr ||
+            WorkspaceAddress(plan.outputRegionId) == nullptr) {
+            return false;
+        }
+        if (plan.opKind == SVDQ_RESIDUAL_OP_DYNAMIC_QUANT) {
+            return plan.residualWeightSlot == SVDQ_INVALID_ID && plan.residualScaleSlot == SVDQ_INVALID_ID &&
+                   plan.residualBiasSlot == SVDQ_INVALID_ID;
+        }
+        if (plan.opKind == SVDQ_RESIDUAL_OP_W4A8_GMM) {
+            return ResidualWeightAddress(plan.residualWeightSlot) != nullptr &&
+                   ResidualScaleAddress(plan.residualScaleSlot) != nullptr &&
+                   ResidualBiasAddress(plan.residualBiasSlot) != nullptr;
+        }
+        return false;
+    }
+
+    __aicore__ inline bool RunResidualDynamicQuantStage(uint32_t stageId) const
+    {
+        SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
+        if (plan.opKind != SVDQ_RESIDUAL_OP_DYNAMIC_QUANT || !ResidualExecutionPlanReady(stageId)) {
+            return false;
+        }
+        return false;
+    }
+
+    __aicore__ inline bool RunResidualGmmStage(uint32_t stageId) const
+    {
+        SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
+        if (plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM || !ResidualExecutionPlanReady(stageId)) {
+            return false;
+        }
+        return false;
+    }
+
+    __aicore__ inline bool RunResidualStage(uint32_t stageId) const
+    {
+        SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
+        if (plan.opKind == SVDQ_RESIDUAL_OP_DYNAMIC_QUANT) {
+            return RunResidualDynamicQuantStage(stageId);
+        }
+        if (plan.opKind == SVDQ_RESIDUAL_OP_W4A8_GMM) {
+            return RunResidualGmmStage(stageId);
+        }
+        return false;
+    }
+
     __aicore__ inline bool RunW4A8ResidualStages() const
     {
         for (uint32_t stageId = 0; stageId < SVDQ_RESIDUAL_STAGE_COUNT; ++stageId) {
-            if (!ResidualStageReady(stageId)) {
+            if (!RunResidualStage(stageId)) {
                 return false;
             }
         }

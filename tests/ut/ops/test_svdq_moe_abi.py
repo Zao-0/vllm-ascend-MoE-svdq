@@ -892,19 +892,32 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     assert "return tilingData_.residualStageShapes[stageId]" in contract
     assert "SVDQResidualStageContract" in contract
     assert "ResidualStageContract(uint32_t stageId)" in contract
+    assert "SVDQResidualExecutionPlan" in contract
+    assert "ResidualExecutionPlan(uint32_t stageId)" in contract
     assert "ResidualStageReady(uint32_t stageId)" in contract
+    assert "ResidualExecutionPlanReady(uint32_t stageId)" in contract
+    assert "RunResidualDynamicQuantStage(uint32_t stageId)" in contract
+    assert "RunResidualGmmStage(uint32_t stageId)" in contract
+    assert "RunResidualStage(uint32_t stageId)" in contract
     assert "RunW4A8ResidualStages() const" in contract
-    assert "return false;\n    }\n\nprivate:" in contract
 
     for slot in (
         "SVDQ_RESIDUAL_WEIGHT1_SLOT = 1",
         "SVDQ_RESIDUAL_WEIGHT2_SLOT = 2",
         "SVDQ_RESIDUAL_SCALE1_SLOT = 4",
         "SVDQ_RESIDUAL_SCALE2_SLOT = 5",
+        "SVDQ_RESIDUAL_BIAS1_SLOT = 6",
+        "SVDQ_RESIDUAL_BIAS2_SLOT = 7",
     ):
         assert slot in contract
     assert "ResidualWeightAddress(uint32_t residualWeightSlot)" in contract
     assert "ResidualScaleAddress(uint32_t residualScaleSlot)" in contract
+    assert "ResidualBiasAddress(uint32_t residualBiasSlot)" in contract
+    assert "SVDQ_RESIDUAL_OP_DYNAMIC_QUANT" in contract
+    assert "SVDQ_RESIDUAL_OP_W4A8_GMM" in contract
+    assert "RunResidualDynamicQuantStage(stageId)" in contract
+    assert "RunResidualGmmStage(stageId)" in contract
+    assert "RunResidualStage(stageId)" in contract
 
     expected_stage_shapes = (
         (
@@ -963,6 +976,16 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         assert input_region in contract
         assert scale_region in contract
         assert output_region in contract
+
+    for token in (
+        "SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT:\n                return {stageId, SVDQ_RESIDUAL_OP_DYNAMIC_QUANT",
+        "SVDQ_RESIDUAL_STAGE_W4A8_GMM1:\n                return {stageId, SVDQ_RESIDUAL_OP_W4A8_GMM",
+        "SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN:\n                return {stageId, SVDQ_RESIDUAL_OP_DYNAMIC_QUANT",
+        "SVDQ_RESIDUAL_STAGE_W4A8_GMM2:\n                return {stageId, SVDQ_RESIDUAL_OP_W4A8_GMM",
+        "SVDQ_RESIDUAL_BIAS1_SLOT",
+        "SVDQ_RESIDUAL_BIAS2_SLOT",
+    ):
+        assert token in contract
 
     assert "stage.residualOnly = residualOnly" in tiling
     assert "true);" in tiling
@@ -1673,6 +1696,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_dispatch_routing_calls_official_bf16_helper"]
     assert loaded["source_proof"]["kernel_dispatch_routing_execution_fail_closed"]
     assert loaded["source_proof"]["kernel_binds_residual_weight_scale_slots"]
+    assert loaded["source_proof"]["kernel_residual_dispatches_dynamic_quant_and_gmm"]
     assert loaded["source_proof"]["kernel_residual_execution_fail_closed"]
     assert loaded["source_proof"]["kernel_records_mixed_epilogue_contracts"]
     assert loaded["source_proof"]["kernel_records_final_combine_contract"]

@@ -636,19 +636,38 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         "kernel_exposes_residual_stage_contracts": (
             "ResidualStageShape(uint32_t stageId)" in sources["kernel_contract"]
             and "ResidualStageContract(uint32_t stageId)" in sources["kernel_contract"]
+            and "ResidualExecutionPlan(uint32_t stageId)" in sources["kernel_contract"]
             and "ResidualStageReady(uint32_t stageId)" in sources["kernel_contract"]
+            and "ResidualExecutionPlanReady(uint32_t stageId)" in sources["kernel_contract"]
         ),
         "kernel_binds_residual_weight_scale_slots": (
             "SVDQ_RESIDUAL_WEIGHT1_SLOT = 1" in sources["kernel_contract"]
             and "SVDQ_RESIDUAL_WEIGHT2_SLOT = 2" in sources["kernel_contract"]
             and "SVDQ_RESIDUAL_SCALE1_SLOT = 4" in sources["kernel_contract"]
             and "SVDQ_RESIDUAL_SCALE2_SLOT = 5" in sources["kernel_contract"]
+            and "SVDQ_RESIDUAL_BIAS1_SLOT = 6" in sources["kernel_contract"]
+            and "SVDQ_RESIDUAL_BIAS2_SLOT = 7" in sources["kernel_contract"]
             and "ResidualWeightAddress(uint32_t residualWeightSlot)" in sources["kernel_contract"]
             and "ResidualScaleAddress(uint32_t residualScaleSlot)" in sources["kernel_contract"]
+            and "ResidualBiasAddress(uint32_t residualBiasSlot)" in sources["kernel_contract"]
+        ),
+        "kernel_residual_dispatches_dynamic_quant_and_gmm": (
+            "SVDQResidualOpKind" in sources["kernel_contract"]
+            and "SVDQ_RESIDUAL_OP_DYNAMIC_QUANT" in sources["kernel_contract"]
+            and "SVDQ_RESIDUAL_OP_W4A8_GMM" in sources["kernel_contract"]
+            and "RunResidualDynamicQuantStage(uint32_t stageId)" in sources["kernel_contract"]
+            and "RunResidualGmmStage(uint32_t stageId)" in sources["kernel_contract"]
+            and "RunResidualStage(uint32_t stageId)" in sources["kernel_contract"]
+            and "RunResidualDynamicQuantStage(stageId)" in sources["kernel_contract"]
+            and "RunResidualGmmStage(stageId)" in sources["kernel_contract"]
+            and "SVDQ_RESIDUAL_BIAS1_SLOT" in sources["kernel_contract"]
+            and "SVDQ_RESIDUAL_BIAS2_SLOT" in sources["kernel_contract"]
         ),
         "kernel_residual_execution_fail_closed": (
             "RunW4A8ResidualStages() const" in sources["kernel_contract"]
-            and "ResidualStageReady(stageId)" in sources["kernel_contract"]
+            and "RunResidualStage(stageId)" in sources["kernel_contract"]
+            and "RunResidualDynamicQuantStage(uint32_t stageId) const" in sources["kernel_contract"]
+            and "RunResidualGmmStage(uint32_t stageId) const" in sources["kernel_contract"]
             and "RunMixedEpilogueStages() const" in sources["kernel_contract"]
         ),
         "kernel_records_mixed_epilogue_contracts": (
