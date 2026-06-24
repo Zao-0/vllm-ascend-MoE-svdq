@@ -1242,13 +1242,18 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         ),
         "official_w4a8_debug_output_pointer_hook": (
             "GM_ADDR ptrDebugGMM1;" in sources["official_w4a8_kernel"]
+            and "GM_ADDR ptrDebugGMM1Hidden;" in sources["official_w4a8_kernel"]
             and "GM_ADDR ptrDebugGMM2;" in sources["official_w4a8_kernel"]
             and "GM_ADDR ptrDebugGMM1_ = nullptr" in sources["official_w4a8_kernel"]
+            and "GM_ADDR ptrDebugGMM1Hidden_ = nullptr" in sources["official_w4a8_kernel"]
             and "GM_ADDR ptrDebugGMM2_ = nullptr" in sources["official_w4a8_kernel"]
             and "ptrDebugGMM1(ptrDebugGMM1_)" in sources["official_w4a8_kernel"]
+            and "ptrDebugGMM1Hidden(ptrDebugGMM1Hidden_)" in sources["official_w4a8_kernel"]
             and "ptrDebugGMM2(ptrDebugGMM2_)" in sources["official_w4a8_kernel"]
             and "if (params.ptrDebugGMM1 != nullptr)" in sources["official_w4a8_kernel"]
             and "ptrCGMM1 = params.ptrDebugGMM1;" in sources["official_w4a8_kernel"]
+            and "if (params.ptrDebugGMM1Hidden != nullptr)" in sources["official_w4a8_kernel"]
+            and "ptrCGMM1Hidden = params.ptrDebugGMM1Hidden;" in sources["official_w4a8_kernel"]
             and "if (params.ptrDebugGMM2 != nullptr)" in sources["official_w4a8_kernel"]
             and "ptrCGMM2 = params.ptrDebugGMM2;" in sources["official_w4a8_kernel"]
         ),
@@ -1258,6 +1263,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "svdqw4_a8_debug_readback" in sources["official_w4a8_cmake"]
             and "class SVDQW4A8DebugReadback" in sources["official_w4a8_debug_def"]
             and 'this->Output("gmm1PostDequant")' in sources["official_w4a8_debug_def"]
+            and 'this->Output("gmm1HiddenPrequant")' in sources["official_w4a8_debug_def"]
             and 'this->Output("gmm2PostDequant")' in sources["official_w4a8_debug_def"]
             and "OP_ADD(SVDQW4A8DebugReadback)" in sources["official_w4a8_debug_def"]
             and "IMPL_OP_OPTILING(SVDQW4A8DebugReadback)" in sources["official_w4a8_host_tiling"]
@@ -1270,6 +1276,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             in sources["official_w4a8_debug_api_wrapper"]
             and "aclnnInnerSVDQW4A8DebugReadback(" in sources["official_w4a8_debug_api_wrapper"]
             and "gmm1PostDequant" in sources["official_w4a8_debug_api_wrapper"]
+            and "gmm1HiddenPrequant" in sources["official_w4a8_debug_api_wrapper"]
             and "gmm2PostDequant" in sources["official_w4a8_debug_api_wrapper"]
         ),
         "official_w4a8_debug_kernel_reuses_official_path": (
@@ -1279,6 +1286,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "DispatchFFNCombineW4A8<DTYPE_A, DTYPE_W1, DTYPE_OUT, false, true> op"
             in sources["official_w4a8_debug_kernel_entry"]
             and "gmm1PostDequant" in sources["official_w4a8_debug_kernel_entry"]
+            and "gmm1HiddenPrequant" in sources["official_w4a8_debug_kernel_entry"]
             and "gmm2PostDequant" in sources["official_w4a8_debug_kernel_entry"]
         ),
         "official_w4a8_debug_torch_adapter_registered": (
@@ -1297,6 +1305,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "public_grouped_matmul_used" in sources["w4a8_debug_probe"]
             and "real_checkpoint_validation" in sources["w4a8_debug_probe"]
             and "gmm1_post_dequant_active" in sources["w4a8_debug_probe"]
+            and "gmm1_hidden_prequant_active" in sources["w4a8_debug_probe"]
             and "gmm2_post_dequant_active" in sources["w4a8_debug_probe"]
             and "npu_grouped_matmul" not in sources["w4a8_debug_probe"]
         ),
@@ -1763,6 +1772,16 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "semantic_point": "post-dequant pre-SwiGLU GMM1",
                 "copy_token": "copyUbToGmGMM1(gmTileGMM1, ubCFp32, layoutGMM1, layoutGMM1);",
             },
+            "gmm1_hidden_prequant_readback": {
+                "workspace_ptr": "ptrCGMM1Hidden",
+                "source": "block_epilogue_w4a8post_pertoken_swiglu.hpp",
+                "dtype": "FP32",
+                "semantic_point": "post-SwiGLU pre-hidden-quant GMM1",
+                "copy_token": (
+                    "copyUbToGmGMM1Hidden(gmTileGMM1Hidden, ubCFp32ChunkN, "
+                    "layoutGMM1Hidden, layoutGMM1Hidden);"
+                ),
+            },
             "gmm2_readback": {
                 "workspace_ptr": "ptrCGMM2",
                 "source": "block_epilogue_w4a8post_pertoken_v2.hpp",
@@ -1777,10 +1796,13 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "kernel_symbol": "svdqw4_a8_debug_readback",
                 "readback_tensors": [
                     "gmm1_post_dequant_fp32",
+                    "gmm1_hidden_prequant_fp32",
                     "gmm2_post_dequant_fp32",
                 ],
                 "input_surface": "official DispatchFFNCombineW4A8 inputs plus readback outputs",
-                "debug_output_pointer_hook": "MatmulKernel::Params ptrDebugGMM1/ptrDebugGMM2",
+                "debug_output_pointer_hook": (
+                    "MatmulKernel::Params ptrDebugGMM1/ptrDebugGMM1Hidden/ptrDebugGMM2"
+                ),
                 "must_reuse": [
                     "DispatchFFNCombineW4A8Kernel",
                     "BlockMmad",

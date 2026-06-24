@@ -393,39 +393,53 @@ def test_official_w4a8_debug_readback_compile_flag_is_default_off():
     assert "set(svdqw4_a8_debug_readback_dir ${_DISPATCH_FFN_W4A8_ROOT}" in cmake
 
     assert "ptrCGMM1" in kernel
+    assert "ptrCGMM1Hidden" in kernel
     assert "ptrCGMM2" in kernel
     assert "GM_ADDR ptrDebugGMM1;" in kernel
+    assert "GM_ADDR ptrDebugGMM1Hidden;" in kernel
     assert "GM_ADDR ptrDebugGMM2;" in kernel
     assert "GM_ADDR symmetricPtr_ = nullptr, GM_ADDR ptrDebugGMM1_ = nullptr" in kernel
+    assert "GM_ADDR ptrDebugGMM1Hidden_ = nullptr" in kernel
     assert "GM_ADDR ptrDebugGMM2_ = nullptr" in kernel
     assert "ptrDebugGMM1(ptrDebugGMM1_)" in kernel
+    assert "ptrDebugGMM1Hidden(ptrDebugGMM1Hidden_)" in kernel
     assert "ptrDebugGMM2(ptrDebugGMM2_)" in kernel
     assert "#ifdef W4A8_DEBUG" in kernel
     assert "if (params.ptrDebugGMM1 != nullptr)" in kernel
     assert "ptrCGMM1 = params.ptrDebugGMM1;" in kernel
     assert "workspaceOffset += params.maxOutputSize * params.problemShape.n() * sizeof(float);" in kernel
+    assert "if (params.ptrDebugGMM1Hidden != nullptr)" in kernel
+    assert "ptrCGMM1Hidden = params.ptrDebugGMM1Hidden;" in kernel
+    assert "workspaceOffset += params.maxOutputSize * k2 * sizeof(float);" in kernel
     assert "if (params.ptrDebugGMM2 != nullptr)" in kernel
     assert "ptrCGMM2 = params.ptrDebugGMM2;" in kernel
     assert "workspaceOffset += params.maxOutputSize * n2 * sizeof(float);" in kernel
     assert "using CopyUbToGmGMM1 = typename TileCopyDebug::CopyUbToGmD;" in gmm1_epilogue
+    assert "using CopyUbToGmGMM1Hidden = typename TileCopyDebug::CopyUbToGmD;" in gmm1_epilogue
     assert "layout::RowMajor layoutGMM1{1, blockN};" in gmm1_epilogue
     assert "copyUbToGmGMM1(gmTileGMM1, ubCFp32, layoutGMM1, layoutGMM1);" in gmm1_epilogue
+    assert "layout::RowMajor layoutGMM1Hidden{1, ChunkTileLen};" in gmm1_epilogue
+    assert "copyUbToGmGMM1Hidden(gmTileGMM1Hidden, ubCFp32ChunkN, layoutGMM1Hidden, layoutGMM1Hidden);" in gmm1_epilogue
     assert "copyUbToGmGMM2(gmTileGMM2, ubFp32, layoutGM, layoutUB);" in gmm2_epilogue
 
     assert "GM_ADDR debugGMM1GM = nullptr" in op_class
+    assert "GM_ADDR debugGMM1HiddenGM = nullptr" in op_class
     assert "GM_ADDR debugGMM2GM = nullptr" in op_class
     assert "debugGMM1GM_" in op_class
+    assert "debugGMM1HiddenGM_" in op_class
     assert "debugGMM2GM_" in op_class
-    assert "nullptr, debugGMM1GM_, debugGMM2GM_" in op_class
+    assert "nullptr, debugGMM1GM_, debugGMM1HiddenGM_, debugGMM2GM_" in op_class
 
     assert "extern \"C\" __global__ __aicore__ void svdqw4_a8_debug_readback" in debug_kernel
     assert "KERNEL_TYPE_MIX_AIC_1_2" in debug_kernel
     assert "DispatchFFNCombineW4A8<DTYPE_A, DTYPE_W1, DTYPE_OUT, false, true> op" in debug_kernel
     assert "gmm1PostDequant" in debug_kernel
+    assert "gmm1HiddenPrequant" in debug_kernel
     assert "gmm2PostDequant" in debug_kernel
 
     assert "class SVDQW4A8DebugReadback" in debug_def
     assert 'this->Output("gmm1PostDequant")' in debug_def
+    assert 'this->Output("gmm1HiddenPrequant")' in debug_def
     assert 'this->Output("gmm2PostDequant")' in debug_def
     assert "OP_ADD(SVDQW4A8DebugReadback)" in debug_def
     assert "IMPL_OP_OPTILING(SVDQW4A8DebugReadback)" in tiling
@@ -433,6 +447,7 @@ def test_official_w4a8_debug_readback_compile_flag_is_default_off():
     assert "aclnnSVDQW4A8DebugReadbackGetWorkspaceSize" in debug_api
     assert "aclnnInnerSVDQW4A8DebugReadbackGetWorkspaceSize" in debug_api
     assert "gmm1PostDequant" in debug_api
+    assert "gmm1HiddenPrequant" in debug_api
     assert "gmm2PostDequant" in debug_api
 
 
@@ -670,6 +685,7 @@ def test_svdq_w4a8_debug_readback_real_checkpoint_probe_uses_official_debug_path
         "linear",
         "input_health_gate_passed",
         "gmm1_post_dequant_active",
+        "gmm1_hidden_prequant_active",
         "gmm2_post_dequant_active",
         "public_grouped_matmul_used",
         "False",
@@ -2630,6 +2646,16 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
             "semantic_point": "post-dequant pre-SwiGLU GMM1",
             "copy_token": "copyUbToGmGMM1(gmTileGMM1, ubCFp32, layoutGMM1, layoutGMM1);",
         },
+        "gmm1_hidden_prequant_readback": {
+            "workspace_ptr": "ptrCGMM1Hidden",
+            "source": "block_epilogue_w4a8post_pertoken_swiglu.hpp",
+            "dtype": "FP32",
+            "semantic_point": "post-SwiGLU pre-hidden-quant GMM1",
+            "copy_token": (
+                "copyUbToGmGMM1Hidden(gmTileGMM1Hidden, ubCFp32ChunkN, "
+                "layoutGMM1Hidden, layoutGMM1Hidden);"
+            ),
+        },
         "gmm2_readback": {
             "workspace_ptr": "ptrCGMM2",
             "source": "block_epilogue_w4a8post_pertoken_v2.hpp",
@@ -2644,10 +2670,13 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
             "kernel_symbol": "svdqw4_a8_debug_readback",
             "readback_tensors": [
                 "gmm1_post_dequant_fp32",
+                "gmm1_hidden_prequant_fp32",
                 "gmm2_post_dequant_fp32",
             ],
             "input_surface": "official DispatchFFNCombineW4A8 inputs plus readback outputs",
-            "debug_output_pointer_hook": "MatmulKernel::Params ptrDebugGMM1/ptrDebugGMM2",
+            "debug_output_pointer_hook": (
+                "MatmulKernel::Params ptrDebugGMM1/ptrDebugGMM1Hidden/ptrDebugGMM2"
+            ),
             "must_reuse": [
                 "DispatchFFNCombineW4A8Kernel",
                 "BlockMmad",

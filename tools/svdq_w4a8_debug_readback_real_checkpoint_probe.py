@@ -260,7 +260,7 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
     x_active_mask = torch.ones((args.num_tokens,), dtype=torch.bool, device=device)
 
     op = torch.ops._C_ascend.svdq_w4a8_debug_readback
-    out, expert_token_nums, gmm1_post_dequant, gmm2_post_dequant = op(
+    out, expert_token_nums, gmm1_post_dequant, gmm1_hidden_prequant, gmm2_post_dequant = op(
         x,
         [layer.w13_weight],
         [layer.w2_weight],
@@ -281,6 +281,7 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
         "input": _float_stats(x),
         "out": _float_stats(out),
         "gmm1_post_dequant_active": _float_stats(gmm1_post_dequant[:active_rows]),
+        "gmm1_hidden_prequant_active": _float_stats(gmm1_hidden_prequant[:active_rows]),
         "gmm2_post_dequant_active": _float_stats(gmm2_post_dequant[:active_rows]),
         "expert_token_nums": {
             "shape": list(expert_token_nums.shape),
@@ -295,6 +296,7 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
             "finite official debug tap; not assumed zero because the official epilogue adds weight auxiliary/"
             "scale-bias before per-token scaling"
         ),
+        "expected_gmm1_hidden_prequant": "finite official hidden prequant debug tap after SwiGLU",
         "expected_gmm2_post_dequant": "finite official debug tap",
         "expected_out": "finite output",
     }
@@ -307,6 +309,18 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
     )
     routed_rows_match = output_stats["expert_token_nums"]["sum"] == active_rows
     input_health_gate_passed = readback_finite and routed_rows_match and output_health
+    hidden_prequant_health = {
+        "finite": output_stats["gmm1_hidden_prequant_active"]["finite"],
+        "nonzero": output_stats["gmm1_hidden_prequant_active"]["nonzero"],
+    }
+    if output_stats["gmm1_post_dequant_active"]["finite"] and hidden_prequant_health["finite"]:
+        debug_boundary_classification = "gmm1_post_dequant_and_hidden_prequant_finite"
+    elif not output_stats["gmm1_post_dequant_active"]["finite"] and hidden_prequant_health["finite"]:
+        debug_boundary_classification = "gmm1_post_dequant_nonfinite_hidden_prequant_finite"
+    elif output_stats["gmm1_post_dequant_active"]["finite"] and not hidden_prequant_health["finite"]:
+        debug_boundary_classification = "gmm1_post_dequant_finite_hidden_prequant_nonfinite"
+    else:
+        debug_boundary_classification = "gmm1_post_dequant_and_hidden_prequant_nonfinite"
     return {
         "stage": f"real_checkpoint_w4a8_debug_readback_{args.input_mode}_input_health",
         "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_debug_readback -> aclnnSVDQW4A8DebugReadback",
@@ -338,6 +352,8 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
         "checks": {
             "input_health_gate_passed": input_health_gate_passed,
             "readback_finite": readback_finite,
+            "hidden_prequant_health": hidden_prequant_health,
+            "debug_boundary_classification": debug_boundary_classification,
             "routed_rows_match": routed_rows_match,
             "output_health": output_health,
             "out_zero_match": out_zero_match,

@@ -407,7 +407,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_low_rank_debug_r
     return {gate_up_output, down_output, gate_up_accumulator, down_accumulator};
 }
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_w4a8_debug_readback_meta(
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_w4a8_debug_readback_meta(
     const at::Tensor& x,
     const at::TensorList& weight1,
     const at::TensorList& weight2,
@@ -461,16 +461,19 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_w4a8_debug_readb
     const auto num_experts = weight1[0].size(0);
     const auto hidden_size = x.size(1);
     const auto gmm1_columns = weight1[0].size(2) * INT4_NUMS_IN_INT32;
+    const auto intermediate_size = gmm1_columns / 2;
     TORCH_CHECK(gmm1_columns % 2 == 0, "GMM1 output columns must contain gate and up halves.");
-    TORCH_CHECK(weight2[0].size(1) == gmm1_columns / 2, "weight2 K dimension must match GMM1 half width.");
+    TORCH_CHECK(weight2[0].size(1) == intermediate_size, "weight2 K dimension must match GMM1 half width.");
 
     at::Tensor out = at::empty({x.size(0), hidden_size}, x.options().device(at::kMeta));
     at::Tensor expert_token_nums = at::empty({1, num_experts}, expert_idx.options().device(at::kMeta));
     at::Tensor gmm1_post_dequant =
         at::empty({max_output_size, gmm1_columns}, x.options().dtype(at::kFloat).device(at::kMeta));
+    at::Tensor gmm1_hidden_prequant =
+        at::empty({max_output_size, intermediate_size}, x.options().dtype(at::kFloat).device(at::kMeta));
     at::Tensor gmm2_post_dequant =
         at::empty({max_output_size, hidden_size}, x.options().dtype(at::kFloat).device(at::kMeta));
-    return {out, expert_token_nums, gmm1_post_dequant, gmm2_post_dequant};
+    return {out, expert_token_nums, gmm1_post_dequant, gmm1_hidden_prequant, gmm2_post_dequant};
 }
 
 at::Tensor npu_lightning_indexer_meta(

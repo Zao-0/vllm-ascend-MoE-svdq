@@ -103,6 +103,7 @@ public:
         int32_t ubMoveNum;
         GM_ADDR symmetricPtr;
         GM_ADDR ptrDebugGMM1;
+        GM_ADDR ptrDebugGMM1Hidden;
         GM_ADDR ptrDebugGMM2;
         //--------------
         GM_ADDR expertIdx;
@@ -138,7 +139,8 @@ public:
                GM_ADDR expertTokensBeforeCapacity_, GM_ADDR probs_, GM_ADDR ptrWorkspace_, GM_ADDR gmExpertTokenNums_,
                int32_t ubMoveNum_, GM_ADDR ptrXActiveMask_,
                optiling::MoeInitRoutingQuantV2TilingData moeInitRoutingQuantV2TilingData_, float swigluLimit_,
-               GM_ADDR symmetricPtr_ = nullptr, GM_ADDR ptrDebugGMM1_ = nullptr, GM_ADDR ptrDebugGMM2_ = nullptr)
+               GM_ADDR symmetricPtr_ = nullptr, GM_ADDR ptrDebugGMM1_ = nullptr,
+               GM_ADDR ptrDebugGMM1Hidden_ = nullptr, GM_ADDR ptrDebugGMM2_ = nullptr)
             : problemShape(problemShape_),
               EP(EP_),
               listLen(listLen_),
@@ -175,6 +177,7 @@ public:
               ubMoveNum(ubMoveNum_),
               symmetricPtr(symmetricPtr_),
               ptrDebugGMM1(ptrDebugGMM1_),
+              ptrDebugGMM1Hidden(ptrDebugGMM1Hidden_),
               ptrDebugGMM2(ptrDebugGMM2_),
               ptrXActiveMask(ptrXActiveMask_),
               moeInitRoutingQuantV2TilingData(moeInitRoutingQuantV2TilingData_),
@@ -262,6 +265,7 @@ private:
             gmA2I4.SetGlobalBuffer(reinterpret_cast<__gm__ int4b_t *>(workspaceInfo.ptrA2Int4));
             gmA2I4_I8.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t *>(workspaceInfo.ptrA2Int4));
             gmCGMM1.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspaceInfo.ptrCGMM1));
+            gmCGMM1Hidden.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspaceInfo.ptrCGMM1Hidden));
             gmCGMM2.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(workspaceInfo.ptrCGMM2));
         }
 
@@ -1061,7 +1065,8 @@ private:
                 if constexpr (std::is_same_v<ElementB, AscendC::int4b_t>) {
                     blockEpilogue1(gmC[gmOffsetC * 2], shapeC, gmPerTokenScale1[rowStartThisCore], params.ptrMAux1,
                                     gmA2I4_I8[gmOffsetD], cumsumMM, rowStartThisCore, gmPerTokenScale2[rowStartThisCore],
-                                    params.expertPerRank, params.EP, gmCGMM1[gmOffsetC], params.rank, params.listLen, resource,
+                                    params.expertPerRank, params.EP, gmCGMM1[gmOffsetC],
+                                    gmCGMM1Hidden[gmOffsetD], params.rank, params.listLen, resource,
                                     params.epilogueCoreNum, params.swigluLimit);
                 }
             }
@@ -1205,6 +1210,7 @@ private:
         GM_ADDR ptrA1Int4;
         GM_ADDR ptrA2Int4;
         GM_ADDR ptrCGMM1;
+        GM_ADDR ptrCGMM1Hidden;
         GM_ADDR ptrCGMM2;
         GM_ADDR ptrSumBeforeRank;
 #ifdef ENABLE_TIMER
@@ -1274,6 +1280,14 @@ private:
                     workspaceOffset += params.maxOutputSize * params.problemShape.n() * sizeof(float);
                 }
 #endif
+                ptrCGMM1Hidden = params.ptrWorkspace + workspaceOffset;
+#ifdef W4A8_DEBUG
+                if (params.ptrDebugGMM1Hidden != nullptr) {
+                    ptrCGMM1Hidden = params.ptrDebugGMM1Hidden;
+                } else {
+                    workspaceOffset += params.maxOutputSize * k2 * sizeof(float);
+                }
+#endif
                 ptrCGMM2 = params.ptrWorkspace + workspaceOffset;
 #ifdef W4A8_DEBUG
                 if (params.ptrDebugGMM2 != nullptr) {
@@ -1340,6 +1354,7 @@ private:
     AscendC::GlobalTensor<int4b_t> gmA2I4;
     AscendC::GlobalTensor<int8_t> gmA2I4_I8;
     AscendC::GlobalTensor<float> gmCGMM1;
+    AscendC::GlobalTensor<float> gmCGMM1Hidden;
     AscendC::GlobalTensor<float> gmCGMM2;
 
     // AscendC::GlobalTensor<ElementD1> gmPermutedToken;

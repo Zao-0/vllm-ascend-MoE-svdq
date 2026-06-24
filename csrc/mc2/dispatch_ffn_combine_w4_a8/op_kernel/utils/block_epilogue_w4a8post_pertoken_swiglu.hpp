@@ -62,6 +62,7 @@ public:
                                  Gemm::GemmType<uint64_t, layout::VectorLayout>,
                                  Gemm::GemmType<float, layout::VectorLayout>, Gemm::GemmType<float, layout::RowMajor>>;
     using CopyUbToGmGMM1 = typename TileCopyDebug::CopyUbToGmD;
+    using CopyUbToGmGMM1Hidden = typename TileCopyDebug::CopyUbToGmD;
 
     struct Params {
         __gm__ ElementPerTokenScale *ptrPerTokenScale{nullptr};
@@ -177,7 +178,8 @@ public:
                     __gm__ float *gmWeightAux, AscendC::GlobalTensor<ElementD> const &gmD,
                     AscendC::GlobalTensor<int32_t> const &cumsumMM, uint32_t MOffset,
                     AscendC::GlobalTensor<ElementPerTokenScale> const &gmPerTokenScale2, uint32_t expertPerRank,
-                    uint32_t EP, AscendC::GlobalTensor<float> const &gmGMM1, int32_t rank, int32_t listLen,
+                    uint32_t EP, AscendC::GlobalTensor<float> const &gmGMM1,
+                    AscendC::GlobalTensor<float> const &gmGMM1Hidden, int32_t rank, int32_t listLen,
                     Arch::Resource<ArchTag> const &resource,
                     uint32_t epilogueCoreNum = 40, float swigluLimit = 0.0f, Callback &&callback = Callback{})
     {
@@ -232,6 +234,7 @@ public:
             auto gmTileD = gmD[loopIdx * ChunkTileLen];
 #ifdef W4A8_DEBUG
             auto gmTileGMM1 = gmGMM1[loopIdx * blockN];
+            auto gmTileGMM1Hidden = gmGMM1Hidden[loopIdx * ChunkTileLen];
 #endif
             LayoutC layoutUbC{2, blockN};
 
@@ -332,6 +335,16 @@ public:
             AscendC::Div(ubCFp32ChunkN, ubCFp32, ubCFp32ChunkN, ChunkTileLen);
             AscendC::PipeBarrier<PIPE_V>();
             AscendC::Mul(ubCFp32ChunkN, ubCFp32ChunkN, ubCFp32[ChunkTileLen], ChunkTileLen); //ubCFp32 finished
+
+#ifdef W4A8_DEBUG
+            AscendC::PipeBarrier<PIPE_V>();
+            AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID5);
+            AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID5);
+            AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID5);
+            layout::RowMajor layoutGMM1Hidden{1, ChunkTileLen};
+            copyUbToGmGMM1Hidden(gmTileGMM1Hidden, ubCFp32ChunkN, layoutGMM1Hidden, layoutGMM1Hidden);
+            AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID5);
+#endif
 
             // Quantization
             AscendC::PipeBarrier<PIPE_V>();
@@ -449,6 +462,7 @@ private:
     CopyUbToGmD copyUbToGmD;
     CopyUbToGmDequantScale copyUbToGmDequantScale;
     CopyUbToGmGMM1 copyUbToGmGMM1;
+    CopyUbToGmGMM1Hidden copyUbToGmGMM1Hidden;
 };
 
 }  // namespace Catlass::Epilogue::Block

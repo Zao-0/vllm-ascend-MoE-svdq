@@ -309,7 +309,7 @@ def _run_debug_readback(args: argparse.Namespace, group: str) -> dict[str, Any]:
     npu_tensors = _move_inputs_to_device(tensors, device)
     _cast_packed_weights_to_official_format(npu_tensors)
     op = torch.ops._C_ascend.svdq_w4a8_debug_readback
-    out, expert_token_nums, gmm1_post_dequant, gmm2_post_dequant = op(
+    out, expert_token_nums, gmm1_post_dequant, gmm1_hidden_prequant, gmm2_post_dequant = op(
         npu_tensors["x"],
         [npu_tensors["w13_weight"]],
         [npu_tensors["w2_weight"]],
@@ -329,6 +329,7 @@ def _run_debug_readback(args: argparse.Namespace, group: str) -> dict[str, Any]:
     output_stats = {
         "out": _float_stats(out),
         "gmm1_post_dequant_active": _float_stats(gmm1_post_dequant[:active_rows]),
+        "gmm1_hidden_prequant_active": _float_stats(gmm1_hidden_prequant[:active_rows]),
         "gmm2_post_dequant_active": _float_stats(gmm2_post_dequant[:active_rows]),
         "expert_token_nums": {
             "shape": list(expert_token_nums.shape),
@@ -349,6 +350,10 @@ def _run_debug_readback(args: argparse.Namespace, group: str) -> dict[str, Any]:
     routed_rows_match = output_stats["expert_token_nums"]["sum"] == active_rows
     calibration_stage_passed = calibration_data_validated and routed_rows_match
     readback_health_passed = readback_finite and readback_nonzero
+    hidden_prequant_health = {
+        "finite": output_stats["gmm1_hidden_prequant_active"]["finite"],
+        "nonzero": output_stats["gmm1_hidden_prequant_active"]["nonzero"],
+    }
     return {
         "stage": "official_svdqw4a8_debug_readback_deterministic_packed_int4_calibration",
         "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_debug_readback -> aclnnSVDQW4A8DebugReadback",
@@ -358,6 +363,7 @@ def _run_debug_readback(args: argparse.Namespace, group: str) -> dict[str, Any]:
         "readback_finite": readback_finite,
         "readback_nonzero": readback_nonzero,
         "readback_health_passed": readback_health_passed,
+        "hidden_prequant_health": hidden_prequant_health,
         "routed_rows_match": routed_rows_match,
         "synthetic_calibration_numerical_gate": False,
         "public_grouped_matmul_used": False,
