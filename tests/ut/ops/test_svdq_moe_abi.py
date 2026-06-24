@@ -473,6 +473,19 @@ def test_svdq_w4a8_residual_gmm_device_probe_executes_official_stage_shapes():
         "output_dtype=torch.bfloat16",
         "phase_f_residual_gmm_device_probe_summary.json",
         "--require-npu",
+        "--real-checkpoint",
+        "_load_real_residual_layer",
+        "build_svdq_moe_layer_spec",
+        "_make_official_w4a8_method",
+        "_make_residual_validation_layer",
+        "_load_residual_checkpoint_tensor",
+        "_ensure_minimal_ascend_config_for_official_postload",
+        "real_checkpoint_w4a8_residual_gmm1",
+        "real_checkpoint_w4a8_residual_gmm2",
+        "reference_formula",
+        "signed_int4_weight",
+        "scale_bias",
+        "per_token_scale",
     ):
         assert token in probe
 
