@@ -41,6 +41,18 @@ LOWRANK_DEBUG_PROBE = Path("tools/svdq_lowrank_debug_readback_probe.py")
 LOWRANK_DEBUG_INSTALL_VALIDATE = Path("tools/svdq_lowrank_debug_install_validate.py")
 BUILD_ACLNN = Path("csrc/build_aclnn.sh")
 
+OFFICIAL_W4A8_ROOT = Path("csrc/mc2/dispatch_ffn_combine_w4_a8")
+OFFICIAL_W4A8_CMAKE = OFFICIAL_W4A8_ROOT / "op_host/CMakeLists.txt"
+OFFICIAL_W4A8_KERNEL = OFFICIAL_W4A8_ROOT / "op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp"
+OFFICIAL_W4A8_KERNEL_ENTRY = OFFICIAL_W4A8_ROOT / "op_kernel/dispatch_ffn_combine_w4_a8.cpp"
+OFFICIAL_W4A8_OP = OFFICIAL_W4A8_ROOT / "op_kernel/dispatch_ffn_combine_w4_a8.h"
+OFFICIAL_W4A8_GMM1_EPILOGUE = (
+    OFFICIAL_W4A8_ROOT / "op_kernel/utils/block_epilogue_w4a8post_pertoken_swiglu.hpp"
+)
+OFFICIAL_W4A8_GMM2_EPILOGUE = (
+    OFFICIAL_W4A8_ROOT / "op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp"
+)
+
 FACTOR_ABI = [
     {"id": 0, "name": "SVDQ_FACTOR_GATE_UP_L1", "operator_tensor": "gate_up_svdq_l1"},
     {"id": 1, "name": "SVDQ_FACTOR_GATE_L2", "operator_tensor": "gate_svdq_l2"},
@@ -614,6 +626,18 @@ def _read_sources(repo_root: Path) -> dict[str, str]:
             encoding="utf-8"
         ),
         "build_aclnn": (repo_root / BUILD_ACLNN).read_text(encoding="utf-8"),
+        "official_w4a8_cmake": (repo_root / OFFICIAL_W4A8_CMAKE).read_text(encoding="utf-8"),
+        "official_w4a8_kernel": (repo_root / OFFICIAL_W4A8_KERNEL).read_text(encoding="utf-8"),
+        "official_w4a8_kernel_entry": (repo_root / OFFICIAL_W4A8_KERNEL_ENTRY).read_text(
+            encoding="utf-8"
+        ),
+        "official_w4a8_op": (repo_root / OFFICIAL_W4A8_OP).read_text(encoding="utf-8"),
+        "official_w4a8_gmm1_epilogue": (repo_root / OFFICIAL_W4A8_GMM1_EPILOGUE).read_text(
+            encoding="utf-8"
+        ),
+        "official_w4a8_gmm2_epilogue": (repo_root / OFFICIAL_W4A8_GMM2_EPILOGUE).read_text(
+            encoding="utf-8"
+        ),
     }
 
 
@@ -1154,6 +1178,57 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "SVDQ_RESIDUAL_STAGE_W4A8_GMM1" in sources["host_tiling"]
             and "SVDQ_RESIDUAL_STAGE_W4A8_GMM2" in sources["host_tiling"]
         ),
+        "official_w4a8_debug_option_default_off": (
+            "option(SVDQ_W4A8_DEBUG_READBACK" in sources["official_w4a8_cmake"]
+            and "Compile official W4A8 epilogues with FP32 GMM readback"
+            in sources["official_w4a8_cmake"]
+            and "OFF)" in sources["official_w4a8_cmake"]
+        ),
+        "official_w4a8_debug_macro_scoped": (
+            "if(SVDQ_W4A8_DEBUG_READBACK)" in sources["official_w4a8_cmake"]
+            and "list(APPEND _DISPATCH_FFN_W4A8_DEBUG_OPTS -DW4A8_DEBUG)"
+            in sources["official_w4a8_cmake"]
+            and "${_DISPATCH_FFN_W4A8_DEBUG_OPTS}" in sources["official_w4a8_cmake"]
+        ),
+        "official_w4a8_mixed_aic_aiv_kernel": (
+            "dispatch_ffn_combine_w4_a8" in sources["official_w4a8_kernel_entry"]
+            and "KERNEL_TYPE_MIX_AIC_1_2" in sources["official_w4a8_kernel_entry"]
+        ),
+        "official_w4a8_aic_calls_gmm1_gmm2": (
+            "operator()<AscendC::AIC>" in sources["official_w4a8_kernel"]
+            and "GMM1(params);" in sources["official_w4a8_kernel"]
+            and "GMM2(params);" in sources["official_w4a8_kernel"]
+        ),
+        "official_w4a8_aiv_calls_dispatch_and_combine": (
+            "operator()<AscendC::AIV>" in sources["official_w4a8_kernel"]
+            and "DispatchAndCombine(params);" in sources["official_w4a8_kernel"]
+        ),
+        "official_w4a8_workspace_has_ptr_cgmm1_cgmm2": (
+            "ptrCGMM1" in sources["official_w4a8_kernel"]
+            and "ptrCGMM2" in sources["official_w4a8_kernel"]
+            and "#ifdef W4A8_DEBUG" in sources["official_w4a8_kernel"]
+            and "workspaceOffset += params.maxOutputSize * params.problemShape.n() * sizeof(float);"
+            in sources["official_w4a8_kernel"]
+            and "workspaceOffset += params.maxOutputSize * n2 * sizeof(float);"
+            in sources["official_w4a8_kernel"]
+        ),
+        "official_w4a8_kernel_binds_block_mmad_and_epilogues": (
+            "using BlockMmad = Gemm::Block::BlockMmad" in sources["official_w4a8_op"]
+            and "EpilogueAtlasA2W4A8PostPerTokenDequantSwigluQuant"
+            in sources["official_w4a8_op"]
+            and "EpilogueAtlasA2W4A8PostPerTokenDequantV2" in sources["official_w4a8_op"]
+            and "DispatchFFNCombineW4A8Kernel<BlockMmad" in sources["official_w4a8_op"]
+        ),
+        "official_w4a8_gmm1_epilogue_debug_copies_fp32": (
+            "#ifdef W4A8_DEBUG" in sources["official_w4a8_gmm1_epilogue"]
+            and "DataCopy(gmTileGMM1, ubCFp32, blockN);"
+            in sources["official_w4a8_gmm1_epilogue"]
+        ),
+        "official_w4a8_gmm2_epilogue_debug_copies_fp32": (
+            "#ifdef W4A8_DEBUG" in sources["official_w4a8_gmm2_epilogue"]
+            and "copyUbToGmGMM2(gmTileGMM2, ubFp32, layoutGM, layoutUB);"
+            in sources["official_w4a8_gmm2_epilogue"]
+        ),
         "lowrank_helper_enabled_by_contract": "IsImplemented() const\n    {\n        return HasCompleteContract();"
         in sources["lowrank_header"],
         "lowrank_helper_uses_separate_rank_workspace": (
@@ -1449,6 +1524,11 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
         if not manifest["source_proof"].get(proof_name):
             raise ValueError(f"debug launch source proof failed: {proof_name}.")
 
+    w4a8_readback = manifest["w4a8_debug_readback_contract"]
+    for proof_name in w4a8_readback["source_proof"]:
+        if not manifest["source_proof"].get(proof_name):
+            raise ValueError(f"W4A8 debug readback source proof failed: {proof_name}.")
+
 
 def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
     sources = _read_sources(repo_root)
@@ -1479,6 +1559,12 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "lowrank_debug_probe": str(LOWRANK_DEBUG_PROBE),
             "lowrank_debug_install_validate": str(LOWRANK_DEBUG_INSTALL_VALIDATE),
             "build_aclnn": str(BUILD_ACLNN),
+            "official_w4a8_cmake": str(OFFICIAL_W4A8_CMAKE),
+            "official_w4a8_kernel": str(OFFICIAL_W4A8_KERNEL),
+            "official_w4a8_kernel_entry": str(OFFICIAL_W4A8_KERNEL_ENTRY),
+            "official_w4a8_op": str(OFFICIAL_W4A8_OP),
+            "official_w4a8_gmm1_epilogue": str(OFFICIAL_W4A8_GMM1_EPILOGUE),
+            "official_w4a8_gmm2_epilogue": str(OFFICIAL_W4A8_GMM2_EPILOGUE),
         },
         "factor_abi": FACTOR_ABI,
         "workspace_regions": WORKSPACE_REGIONS,
@@ -1555,6 +1641,59 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "lowrank_debug_probe_preflights_runtime_soc_package",
                 "lowrank_debug_install_validator_checks_schema_symbols_and_soc",
                 "svdq_ops_in_a2_a3_aclnn_package",
+            ],
+        },
+        "w4a8_debug_readback_contract": {
+            "launch_operator_wired": False,
+            "acceptance_gate_claimed": False,
+            "public_grouped_matmul_allowed": False,
+            "required_compile_option": "SVDQ_W4A8_DEBUG_READBACK",
+            "official_compile_macro": "W4A8_DEBUG",
+            "default_enabled": False,
+            "production_abi_changed": False,
+            "official_kernel": "DispatchFFNCombineW4A8",
+            "official_kernel_symbol": "dispatch_ffn_combine_w4_a8",
+            "kernel_type": "KERNEL_TYPE_MIX_AIC_1_2",
+            "aic_entry": "operator()<AscendC::AIC> -> GMM1(params); GMM2(params);",
+            "aiv_entry": "operator()<AscendC::AIV> -> DispatchAndCombine(params);",
+            "gmm1_readback": {
+                "workspace_ptr": "ptrCGMM1",
+                "source": "block_epilogue_w4a8post_pertoken_swiglu.hpp",
+                "dtype": "FP32",
+                "semantic_point": "post-dequant pre-SwiGLU GMM1",
+                "copy_token": "DataCopy(gmTileGMM1, ubCFp32, blockN);",
+            },
+            "gmm2_readback": {
+                "workspace_ptr": "ptrCGMM2",
+                "source": "block_epilogue_w4a8post_pertoken_v2.hpp",
+                "dtype": "FP32",
+                "semantic_point": "post-dequant GMM2 before BF16/output copy",
+                "copy_token": "copyUbToGmGMM2(gmTileGMM2, ubFp32, layoutGM, layoutUB);",
+            },
+            "future_debug_op_abi": {
+                "op_name": "SVDQW4A8DebugReadback",
+                "readback_tensors": [
+                    "gmm1_post_dequant_fp32",
+                    "gmm2_post_dequant_fp32",
+                ],
+                "input_surface": "official DispatchFFNCombineW4A8 inputs plus readback outputs",
+                "must_reuse": [
+                    "DispatchFFNCombineW4A8Kernel",
+                    "BlockMmad",
+                    "EpilogueAtlasA2W4A8PostPerTokenDequantSwigluQuant",
+                    "EpilogueAtlasA2W4A8PostPerTokenDequantV2",
+                ],
+            },
+            "source_proof": [
+                "official_w4a8_debug_option_default_off",
+                "official_w4a8_debug_macro_scoped",
+                "official_w4a8_mixed_aic_aiv_kernel",
+                "official_w4a8_aic_calls_gmm1_gmm2",
+                "official_w4a8_aiv_calls_dispatch_and_combine",
+                "official_w4a8_workspace_has_ptr_cgmm1_cgmm2",
+                "official_w4a8_kernel_binds_block_mmad_and_epilogues",
+                "official_w4a8_gmm1_epilogue_debug_copies_fp32",
+                "official_w4a8_gmm2_epilogue_debug_copies_fp32",
             ],
         },
         "rank_split_contract": {

@@ -2183,6 +2183,26 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "tools/svdq_lowrank_debug_install_validate.py"
     )
     assert loaded["source_files"]["build_aclnn"] == "csrc/build_aclnn.sh"
+    assert loaded["source_files"]["official_w4a8_cmake"] == (
+        "csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/CMakeLists.txt"
+    )
+    assert loaded["source_files"]["official_w4a8_kernel"] == (
+        "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp"
+    )
+    assert loaded["source_files"]["official_w4a8_kernel_entry"] == (
+        "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.cpp"
+    )
+    assert loaded["source_files"]["official_w4a8_op"] == (
+        "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h"
+    )
+    assert loaded["source_files"]["official_w4a8_gmm1_epilogue"] == (
+        "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/"
+        "block_epilogue_w4a8post_pertoken_swiglu.hpp"
+    )
+    assert loaded["source_files"]["official_w4a8_gmm2_epilogue"] == (
+        "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/"
+        "block_epilogue_w4a8post_pertoken_v2.hpp"
+    )
     assert loaded["counts"] == {
         "factor_abi": 5,
         "workspace_regions": 16,
@@ -2453,6 +2473,59 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
             "lowrank_debug_probe_preflights_runtime_soc_package",
             "lowrank_debug_install_validator_checks_schema_symbols_and_soc",
             "svdq_ops_in_a2_a3_aclnn_package",
+        ],
+    }
+    assert loaded["w4a8_debug_readback_contract"] == {
+        "launch_operator_wired": False,
+        "acceptance_gate_claimed": False,
+        "public_grouped_matmul_allowed": False,
+        "required_compile_option": "SVDQ_W4A8_DEBUG_READBACK",
+        "official_compile_macro": "W4A8_DEBUG",
+        "default_enabled": False,
+        "production_abi_changed": False,
+        "official_kernel": "DispatchFFNCombineW4A8",
+        "official_kernel_symbol": "dispatch_ffn_combine_w4_a8",
+        "kernel_type": "KERNEL_TYPE_MIX_AIC_1_2",
+        "aic_entry": "operator()<AscendC::AIC> -> GMM1(params); GMM2(params);",
+        "aiv_entry": "operator()<AscendC::AIV> -> DispatchAndCombine(params);",
+        "gmm1_readback": {
+            "workspace_ptr": "ptrCGMM1",
+            "source": "block_epilogue_w4a8post_pertoken_swiglu.hpp",
+            "dtype": "FP32",
+            "semantic_point": "post-dequant pre-SwiGLU GMM1",
+            "copy_token": "DataCopy(gmTileGMM1, ubCFp32, blockN);",
+        },
+        "gmm2_readback": {
+            "workspace_ptr": "ptrCGMM2",
+            "source": "block_epilogue_w4a8post_pertoken_v2.hpp",
+            "dtype": "FP32",
+            "semantic_point": "post-dequant GMM2 before BF16/output copy",
+            "copy_token": "copyUbToGmGMM2(gmTileGMM2, ubFp32, layoutGM, layoutUB);",
+        },
+        "future_debug_op_abi": {
+            "op_name": "SVDQW4A8DebugReadback",
+            "readback_tensors": [
+                "gmm1_post_dequant_fp32",
+                "gmm2_post_dequant_fp32",
+            ],
+            "input_surface": "official DispatchFFNCombineW4A8 inputs plus readback outputs",
+            "must_reuse": [
+                "DispatchFFNCombineW4A8Kernel",
+                "BlockMmad",
+                "EpilogueAtlasA2W4A8PostPerTokenDequantSwigluQuant",
+                "EpilogueAtlasA2W4A8PostPerTokenDequantV2",
+            ],
+        },
+        "source_proof": [
+            "official_w4a8_debug_option_default_off",
+            "official_w4a8_debug_macro_scoped",
+            "official_w4a8_mixed_aic_aiv_kernel",
+            "official_w4a8_aic_calls_gmm1_gmm2",
+            "official_w4a8_aiv_calls_dispatch_and_combine",
+            "official_w4a8_workspace_has_ptr_cgmm1_cgmm2",
+            "official_w4a8_kernel_binds_block_mmad_and_epilogues",
+            "official_w4a8_gmm1_epilogue_debug_copies_fp32",
+            "official_w4a8_gmm2_epilogue_debug_copies_fp32",
         ],
     }
 
