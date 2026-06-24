@@ -292,4 +292,8 @@ ge::graphStatus TilingParseForDispatchFFNCombineW4A8(gert::TilingParseContext *c
 IMPL_OP_OPTILING(DispatchFFNCombineW4A8)
     .Tiling(DispatchFFNCombineW4A8TilingFunc)
     .TilingParse<DispatchFFNCombineW4A8CompileInfo>(TilingParseForDispatchFFNCombineW4A8);
+
+IMPL_OP_OPTILING(SVDQW4A8DebugReadback)
+    .Tiling(DispatchFFNCombineW4A8TilingFunc)
+    .TilingParse<DispatchFFNCombineW4A8CompileInfo>(TilingParseForDispatchFFNCombineW4A8);
 } // namespace optiling

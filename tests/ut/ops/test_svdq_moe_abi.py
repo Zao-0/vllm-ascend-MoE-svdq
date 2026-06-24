@@ -372,6 +372,11 @@ def test_official_w4a8_debug_readback_compile_flag_is_default_off():
     op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8"
     cmake = (op_root / "op_host/CMakeLists.txt").read_text()
     kernel = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp").read_text()
+    op_class = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8.h").read_text()
+    debug_kernel = (op_root / "op_kernel/svdqw4_a8_debug_readback.cpp").read_text()
+    debug_def = (op_root / "op_host/svdqw4_a8_debug_readback_def.cpp").read_text()
+    debug_api = (op_root / "op_host/op_api/aclnn_svdq_w4a8_debug_readback.cpp").read_text()
+    tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_tiling.cpp").read_text()
     gmm1_epilogue = (op_root / "op_kernel/utils/block_epilogue_w4a8post_pertoken_swiglu.hpp").read_text()
     gmm2_epilogue = (op_root / "op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp").read_text()
 
@@ -381,6 +386,11 @@ def test_official_w4a8_debug_readback_compile_flag_is_default_off():
     assert "if(SVDQ_W4A8_DEBUG_READBACK)" in cmake
     assert "list(APPEND _DISPATCH_FFN_W4A8_DEBUG_OPTS -DW4A8_DEBUG)" in cmake
     assert "${_DISPATCH_FFN_W4A8_DEBUG_OPTS}" in cmake
+    assert "OP_NAME SVDQW4A8DebugReadback" in cmake
+    assert "-DW4A8_DEBUG" in cmake
+    assert "svdqw4_a8_debug_readback" in cmake
+    assert "get_filename_component(_DISPATCH_FFN_W4A8_ROOT" in cmake
+    assert "set(svdqw4_a8_debug_readback_dir ${_DISPATCH_FFN_W4A8_ROOT}" in cmake
 
     assert "ptrCGMM1" in kernel
     assert "ptrCGMM2" in kernel
@@ -399,6 +409,29 @@ def test_official_w4a8_debug_readback_compile_flag_is_default_off():
     assert "workspaceOffset += params.maxOutputSize * n2 * sizeof(float);" in kernel
     assert "DataCopy(gmTileGMM1, ubCFp32, blockN);" in gmm1_epilogue
     assert "copyUbToGmGMM2(gmTileGMM2, ubFp32, layoutGM, layoutUB);" in gmm2_epilogue
+
+    assert "GM_ADDR debugGMM1GM = nullptr" in op_class
+    assert "GM_ADDR debugGMM2GM = nullptr" in op_class
+    assert "debugGMM1GM_" in op_class
+    assert "debugGMM2GM_" in op_class
+    assert "nullptr, debugGMM1GM_, debugGMM2GM_" in op_class
+
+    assert "extern \"C\" __global__ __aicore__ void svdqw4_a8_debug_readback" in debug_kernel
+    assert "KERNEL_TYPE_MIX_AIC_1_2" in debug_kernel
+    assert "DispatchFFNCombineW4A8<DTYPE_A, DTYPE_W1, DTYPE_OUT, false, true> op" in debug_kernel
+    assert "gmm1PostDequant" in debug_kernel
+    assert "gmm2PostDequant" in debug_kernel
+
+    assert "class SVDQW4A8DebugReadback" in debug_def
+    assert 'this->Output("gmm1PostDequant")' in debug_def
+    assert 'this->Output("gmm2PostDequant")' in debug_def
+    assert "OP_ADD(SVDQW4A8DebugReadback)" in debug_def
+    assert "IMPL_OP_OPTILING(SVDQW4A8DebugReadback)" in tiling
+
+    assert "aclnnSVDQW4A8DebugReadbackGetWorkspaceSize" in debug_api
+    assert "aclnnInnerSVDQW4A8DebugReadbackGetWorkspaceSize" in debug_api
+    assert "gmm1PostDequant" in debug_api
+    assert "gmm2PostDequant" in debug_api
 
 
 def test_svdq_w4a8_debug_calibration_probe_builds_nonzero_packed_int4_data():
@@ -2240,11 +2273,26 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_files"]["official_w4a8_cmake"] == (
         "csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/CMakeLists.txt"
     )
+    assert loaded["source_files"]["official_w4a8_debug_def"] == (
+        "csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/svdqw4_a8_debug_readback_def.cpp"
+    )
+    assert loaded["source_files"]["official_w4a8_debug_api_header"] == (
+        "csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/op_api/aclnn_svdq_w4a8_debug_readback.h"
+    )
+    assert loaded["source_files"]["official_w4a8_debug_api_wrapper"] == (
+        "csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/op_api/aclnn_svdq_w4a8_debug_readback.cpp"
+    )
+    assert loaded["source_files"]["official_w4a8_host_tiling"] == (
+        "csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/dispatch_ffn_combine_w4_a8_tiling.cpp"
+    )
     assert loaded["source_files"]["official_w4a8_kernel"] == (
         "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp"
     )
     assert loaded["source_files"]["official_w4a8_kernel_entry"] == (
         "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.cpp"
+    )
+    assert loaded["source_files"]["official_w4a8_debug_kernel_entry"] == (
+        "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/svdqw4_a8_debug_readback.cpp"
     )
     assert loaded["source_files"]["official_w4a8_op"] == (
         "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h"
@@ -2530,6 +2578,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         ],
     }
     assert loaded["w4a8_debug_readback_contract"] == {
+        "cann_operator_surface_wired": True,
         "launch_operator_wired": False,
         "acceptance_gate_claimed": False,
         "public_grouped_matmul_allowed": False,
@@ -2558,6 +2607,9 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         },
         "future_debug_op_abi": {
             "op_name": "SVDQW4A8DebugReadback",
+            "aclnn_get_workspace": "aclnnSVDQW4A8DebugReadbackGetWorkspaceSize",
+            "aclnn_launch": "aclnnSVDQW4A8DebugReadback",
+            "kernel_symbol": "svdqw4_a8_debug_readback",
             "readback_tensors": [
                 "gmm1_post_dequant_fp32",
                 "gmm2_post_dequant_fp32",
@@ -2579,6 +2631,9 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
             "official_w4a8_aiv_calls_dispatch_and_combine",
             "official_w4a8_workspace_has_ptr_cgmm1_cgmm2",
             "official_w4a8_debug_output_pointer_hook",
+            "official_w4a8_debug_op_surface_wired",
+            "official_w4a8_debug_op_aclnn_wrapper",
+            "official_w4a8_debug_kernel_reuses_official_path",
             "official_w4a8_kernel_binds_block_mmad_and_epilogues",
             "official_w4a8_gmm1_epilogue_debug_copies_fp32",
             "official_w4a8_gmm2_epilogue_debug_copies_fp32",

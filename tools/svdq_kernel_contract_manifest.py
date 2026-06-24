@@ -43,8 +43,19 @@ BUILD_ACLNN = Path("csrc/build_aclnn.sh")
 
 OFFICIAL_W4A8_ROOT = Path("csrc/mc2/dispatch_ffn_combine_w4_a8")
 OFFICIAL_W4A8_CMAKE = OFFICIAL_W4A8_ROOT / "op_host/CMakeLists.txt"
+OFFICIAL_W4A8_DEBUG_DEF = OFFICIAL_W4A8_ROOT / "op_host/svdqw4_a8_debug_readback_def.cpp"
+OFFICIAL_W4A8_DEBUG_API_HEADER = (
+    OFFICIAL_W4A8_ROOT / "op_host/op_api/aclnn_svdq_w4a8_debug_readback.h"
+)
+OFFICIAL_W4A8_DEBUG_API_WRAPPER = (
+    OFFICIAL_W4A8_ROOT / "op_host/op_api/aclnn_svdq_w4a8_debug_readback.cpp"
+)
+OFFICIAL_W4A8_HOST_TILING = OFFICIAL_W4A8_ROOT / "op_host/dispatch_ffn_combine_w4_a8_tiling.cpp"
 OFFICIAL_W4A8_KERNEL = OFFICIAL_W4A8_ROOT / "op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp"
 OFFICIAL_W4A8_KERNEL_ENTRY = OFFICIAL_W4A8_ROOT / "op_kernel/dispatch_ffn_combine_w4_a8.cpp"
+OFFICIAL_W4A8_DEBUG_KERNEL_ENTRY = (
+    OFFICIAL_W4A8_ROOT / "op_kernel/svdqw4_a8_debug_readback.cpp"
+)
 OFFICIAL_W4A8_OP = OFFICIAL_W4A8_ROOT / "op_kernel/dispatch_ffn_combine_w4_a8.h"
 OFFICIAL_W4A8_GMM1_EPILOGUE = (
     OFFICIAL_W4A8_ROOT / "op_kernel/utils/block_epilogue_w4a8post_pertoken_swiglu.hpp"
@@ -627,10 +638,23 @@ def _read_sources(repo_root: Path) -> dict[str, str]:
         ),
         "build_aclnn": (repo_root / BUILD_ACLNN).read_text(encoding="utf-8"),
         "official_w4a8_cmake": (repo_root / OFFICIAL_W4A8_CMAKE).read_text(encoding="utf-8"),
+        "official_w4a8_debug_def": (repo_root / OFFICIAL_W4A8_DEBUG_DEF).read_text(encoding="utf-8"),
+        "official_w4a8_debug_api_header": (repo_root / OFFICIAL_W4A8_DEBUG_API_HEADER).read_text(
+            encoding="utf-8"
+        ),
+        "official_w4a8_debug_api_wrapper": (
+            repo_root / OFFICIAL_W4A8_DEBUG_API_WRAPPER
+        ).read_text(encoding="utf-8"),
+        "official_w4a8_host_tiling": (repo_root / OFFICIAL_W4A8_HOST_TILING).read_text(
+            encoding="utf-8"
+        ),
         "official_w4a8_kernel": (repo_root / OFFICIAL_W4A8_KERNEL).read_text(encoding="utf-8"),
         "official_w4a8_kernel_entry": (repo_root / OFFICIAL_W4A8_KERNEL_ENTRY).read_text(
             encoding="utf-8"
         ),
+        "official_w4a8_debug_kernel_entry": (
+            repo_root / OFFICIAL_W4A8_DEBUG_KERNEL_ENTRY
+        ).read_text(encoding="utf-8"),
         "official_w4a8_op": (repo_root / OFFICIAL_W4A8_OP).read_text(encoding="utf-8"),
         "official_w4a8_gmm1_epilogue": (repo_root / OFFICIAL_W4A8_GMM1_EPILOGUE).read_text(
             encoding="utf-8"
@@ -1224,6 +1248,35 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "if (params.ptrDebugGMM2 != nullptr)" in sources["official_w4a8_kernel"]
             and "ptrCGMM2 = params.ptrDebugGMM2;" in sources["official_w4a8_kernel"]
         ),
+        "official_w4a8_debug_op_surface_wired": (
+            "OP_NAME SVDQW4A8DebugReadback" in sources["official_w4a8_cmake"]
+            and "-DW4A8_DEBUG" in sources["official_w4a8_cmake"]
+            and "svdqw4_a8_debug_readback" in sources["official_w4a8_cmake"]
+            and "class SVDQW4A8DebugReadback" in sources["official_w4a8_debug_def"]
+            and 'this->Output("gmm1PostDequant")' in sources["official_w4a8_debug_def"]
+            and 'this->Output("gmm2PostDequant")' in sources["official_w4a8_debug_def"]
+            and "OP_ADD(SVDQW4A8DebugReadback)" in sources["official_w4a8_debug_def"]
+            and "IMPL_OP_OPTILING(SVDQW4A8DebugReadback)" in sources["official_w4a8_host_tiling"]
+        ),
+        "official_w4a8_debug_op_aclnn_wrapper": (
+            "aclnnSVDQW4A8DebugReadbackGetWorkspaceSize"
+            in sources["official_w4a8_debug_api_header"]
+            and "aclnnSVDQW4A8DebugReadback(" in sources["official_w4a8_debug_api_header"]
+            and "aclnnInnerSVDQW4A8DebugReadbackGetWorkspaceSize"
+            in sources["official_w4a8_debug_api_wrapper"]
+            and "aclnnInnerSVDQW4A8DebugReadback(" in sources["official_w4a8_debug_api_wrapper"]
+            and "gmm1PostDequant" in sources["official_w4a8_debug_api_wrapper"]
+            and "gmm2PostDequant" in sources["official_w4a8_debug_api_wrapper"]
+        ),
+        "official_w4a8_debug_kernel_reuses_official_path": (
+            "extern \"C\" __global__ __aicore__ void svdqw4_a8_debug_readback"
+            in sources["official_w4a8_debug_kernel_entry"]
+            and "KERNEL_TYPE_MIX_AIC_1_2" in sources["official_w4a8_debug_kernel_entry"]
+            and "DispatchFFNCombineW4A8<DTYPE_A, DTYPE_W1, DTYPE_OUT, false, true> op"
+            in sources["official_w4a8_debug_kernel_entry"]
+            and "gmm1PostDequant" in sources["official_w4a8_debug_kernel_entry"]
+            and "gmm2PostDequant" in sources["official_w4a8_debug_kernel_entry"]
+        ),
         "official_w4a8_kernel_binds_block_mmad_and_epilogues": (
             "using BlockMmad = Gemm::Block::BlockMmad" in sources["official_w4a8_op"]
             and "EpilogueAtlasA2W4A8PostPerTokenDequantSwigluQuant"
@@ -1572,8 +1625,13 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "lowrank_debug_install_validate": str(LOWRANK_DEBUG_INSTALL_VALIDATE),
             "build_aclnn": str(BUILD_ACLNN),
             "official_w4a8_cmake": str(OFFICIAL_W4A8_CMAKE),
+            "official_w4a8_debug_def": str(OFFICIAL_W4A8_DEBUG_DEF),
+            "official_w4a8_debug_api_header": str(OFFICIAL_W4A8_DEBUG_API_HEADER),
+            "official_w4a8_debug_api_wrapper": str(OFFICIAL_W4A8_DEBUG_API_WRAPPER),
+            "official_w4a8_host_tiling": str(OFFICIAL_W4A8_HOST_TILING),
             "official_w4a8_kernel": str(OFFICIAL_W4A8_KERNEL),
             "official_w4a8_kernel_entry": str(OFFICIAL_W4A8_KERNEL_ENTRY),
+            "official_w4a8_debug_kernel_entry": str(OFFICIAL_W4A8_DEBUG_KERNEL_ENTRY),
             "official_w4a8_op": str(OFFICIAL_W4A8_OP),
             "official_w4a8_gmm1_epilogue": str(OFFICIAL_W4A8_GMM1_EPILOGUE),
             "official_w4a8_gmm2_epilogue": str(OFFICIAL_W4A8_GMM2_EPILOGUE),
@@ -1656,6 +1714,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             ],
         },
         "w4a8_debug_readback_contract": {
+            "cann_operator_surface_wired": True,
             "launch_operator_wired": False,
             "acceptance_gate_claimed": False,
             "public_grouped_matmul_allowed": False,
@@ -1684,6 +1743,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             },
             "future_debug_op_abi": {
                 "op_name": "SVDQW4A8DebugReadback",
+                "aclnn_get_workspace": "aclnnSVDQW4A8DebugReadbackGetWorkspaceSize",
+                "aclnn_launch": "aclnnSVDQW4A8DebugReadback",
+                "kernel_symbol": "svdqw4_a8_debug_readback",
                 "readback_tensors": [
                     "gmm1_post_dequant_fp32",
                     "gmm2_post_dequant_fp32",
@@ -1705,6 +1767,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "official_w4a8_aiv_calls_dispatch_and_combine",
                 "official_w4a8_workspace_has_ptr_cgmm1_cgmm2",
                 "official_w4a8_debug_output_pointer_hook",
+                "official_w4a8_debug_op_surface_wired",
+                "official_w4a8_debug_op_aclnn_wrapper",
+                "official_w4a8_debug_kernel_reuses_official_path",
                 "official_w4a8_kernel_binds_block_mmad_and_epilogues",
                 "official_w4a8_gmm1_epilogue_debug_copies_fp32",
                 "official_w4a8_gmm2_epilogue_debug_copies_fp32",

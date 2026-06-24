@@ -18,10 +18,14 @@ if(SVDQ_W4A8_DEBUG_READBACK)
 endif()
 
 add_op_to_compiled_list()
+get_filename_component(_DISPATCH_FFN_W4A8_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/.. ABSOLUTE)
+set(svdqw4_a8_debug_readback_dir ${_DISPATCH_FFN_W4A8_ROOT}
+    CACHE STRING "Build SVDQW4A8DebugReadback binaries from official W4A8 sources." FORCE)
 
 if (BUILD_OPEN_PROJECT)
     target_sources(op_host_aclnnInner PRIVATE
         dispatch_ffn_combine_w4_a8_def.cpp
+        svdqw4_a8_debug_readback_def.cpp
     )
 endif()
 
@@ -37,8 +41,23 @@ add_ops_compile_options(
         ${_DISPATCH_FFN_W4A8_DEBUG_OPTS}
 )
 
+add_ops_compile_options(
+    OP_NAME SVDQW4A8DebugReadback
+    OPTIONS
+        --cce-auto-sync=on
+        -Wno-deprecated-declarations
+        -Werror
+        -DHCCL_COMM
+        -DCATLASS_ARCH=2201
+        -DW4A8_DEBUG
+        ${_DISPATCH_FFN_INC_OPTS}
+)
+
 if (NOT BUILD_OPS_RTY_KERNEL)
-    add_modules_sources(OPTYPE dispatch_ffn_combine_w4_a8 ACLNNTYPE aclnn_inner)
+    add_modules_sources(
+        OPTYPE dispatch_ffn_combine_w4_a8 svdqw4_a8_debug_readback
+        ACLNNTYPE aclnn_inner aclnn_inner
+    )
     target_include_directories(${OPHOST_NAME}_tiling_obj PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/../op_kernel
