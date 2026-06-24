@@ -22,6 +22,7 @@ add_op_to_compiled_list()
 if (BUILD_OPEN_PROJECT)
     target_sources(op_host_aclnnInner PRIVATE
         dispatch_ffn_combine_w4_a8_svdq_def.cpp
+        svdq_low_rank_debug_readback_def.cpp
     )
 endif()
 
@@ -49,7 +50,10 @@ add_ops_compile_options(
 )
 
 if (NOT BUILD_OPS_RTY_KERNEL)
-    add_modules_sources(OPTYPE dispatch_ffn_combine_w4_a8_svdq ACLNNTYPE aclnn_inner)
+    add_modules_sources(
+        OPTYPE dispatch_ffn_combine_w4_a8_svdq svdq_low_rank_debug_readback
+        ACLNNTYPE aclnn_inner aclnn_inner
+    )
     target_include_directories(${OPHOST_NAME}_tiling_obj PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/../op_kernel

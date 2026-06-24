@@ -219,6 +219,7 @@ def test_svdq_cann_op_host_surface_uses_canonical_five_factor_abi():
     header = (op_root / "op_host/op_api/aclnn_dispatch_ffn_combine_w4_a8_svdq.h").read_text()
     wrapper = (op_root / "op_host/op_api/aclnn_dispatch_ffn_combine_w4_a8_svdq.cpp").read_text()
     op_def = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_def.cpp").read_text()
+    debug_op_def = (op_root / "op_host/svdq_low_rank_debug_readback_def.cpp").read_text()
     tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
 
     assert "DispatchFFNCombineW4A8SVDQ" in cmake
@@ -227,9 +228,19 @@ def test_svdq_cann_op_host_surface_uses_canonical_five_factor_abi():
     assert "OFF)" in cmake
     assert "list(APPEND _DISPATCH_FFN_SVDQ_DEBUG_OPTS -DSVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK)" in cmake
     assert "${_DISPATCH_FFN_SVDQ_DEBUG_OPTS}" in cmake
+    assert "OPTYPE dispatch_ffn_combine_w4_a8_svdq svdq_low_rank_debug_readback" in cmake
+    assert "ACLNNTYPE aclnn_inner aclnn_inner" in cmake
+    assert "target_sources(op_host_aclnnInner PRIVATE" in cmake
+    assert "svdq_low_rank_debug_readback_def.cpp" in cmake
     assert "aclnnDispatchFFNCombineW4A8SVDQGetWorkspaceSize" in header
     assert "aclnnInnerDispatchFFNCombineW4A8SVDQGetWorkspaceSize" in wrapper
     assert "OP_ADD(DispatchFFNCombineW4A8SVDQ)" in op_def
+    assert "class SVDQLowRankDebugReadback" in debug_op_def
+    assert "OP_ADD(SVDQLowRankDebugReadback)" in debug_op_def
+    assert 'this->Output("gateUpOutput")' in debug_op_def
+    assert 'this->Output("downOutput")' in debug_op_def
+    assert 'this->Output("gateUpAccumulator")' in debug_op_def
+    assert 'this->Output("downAccumulator")' in debug_op_def
     assert "IMPL_OP_OPTILING(DispatchFFNCombineW4A8SVDQ)" in tiling
     assert "AscendC kernel is not implemented yet" in tiling
 
@@ -250,7 +261,7 @@ def test_svdq_cann_op_host_surface_uses_canonical_five_factor_abi():
         assert name in wrapper
         assert name in op_def or name.upper() in tiling
 
-    for source in (header, wrapper, op_def, tiling):
+    for source in (header, wrapper, op_def, debug_op_def, tiling):
         assert "gateUpSvdqL2" not in source
         assert "gate_up_svdq_l2" not in source
 
@@ -268,8 +279,10 @@ def test_svdq_cann_op_is_selected_by_a3_aclnn_build_script():
 
     assert '"dispatch_ffn_combine_w4_a8"' in a3_ops
     assert '"dispatch_ffn_combine_w4_a8_svdq"' in a3_ops
+    assert '"svdq_low_rank_debug_readback"' in a3_ops
     assert a3_ops.index('"dispatch_ffn_combine_w4_a8"') < a3_ops.index('"dispatch_ffn_combine_w4_a8_svdq"')
-    assert a3_ops.index('"dispatch_ffn_combine_w4_a8_svdq"') < a3_ops.index('"dispatch_ffn_combine_bf16"')
+    assert a3_ops.index('"dispatch_ffn_combine_w4_a8_svdq"') < a3_ops.index('"svdq_low_rank_debug_readback"')
+    assert a3_ops.index('"svdq_low_rank_debug_readback"') < a3_ops.index('"dispatch_ffn_combine_bf16"')
 
 
 def test_cann_host_library_build_path_honors_soc_selection():
@@ -1170,6 +1183,9 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_files"]["op_cmake"] == (
         "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_host/CMakeLists.txt"
     )
+    assert loaded["source_files"]["debug_op_def"] == (
+        "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_host/svdq_low_rank_debug_readback_def.cpp"
+    )
     assert loaded["source_files"]["debug_op_api_header"] == (
         "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_host/op_api/aclnn_svdq_lowrank_debug_readback.h"
     )
@@ -1197,6 +1213,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_files"]["torch_binding"] == "csrc/torch_binding.cpp"
     assert loaded["source_files"]["torch_binding_meta"] == "csrc/torch_binding_meta.cpp"
     assert loaded["source_files"]["lowrank_debug_probe"] == "tools/svdq_lowrank_debug_readback_probe.py"
+    assert loaded["source_files"]["build_aclnn"] == "csrc/build_aclnn.sh"
     assert loaded["counts"] == {
         "factor_abi": 5,
         "workspace_regions": 14,
@@ -1270,6 +1287,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
             "lowrank_debug_kernel_uses_separate_tiling_contract",
             "lowrank_debug_kernel_preserves_branch_separation",
             "lowrank_debug_op_has_compile_options",
+            "lowrank_debug_op_inner_aclnn_linked",
             "lowrank_debug_op_registered",
             "lowrank_debug_op_tiling_registered",
             "lowrank_debug_op_public_aclnn_wrapper",
@@ -1278,6 +1296,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
             "lowrank_debug_torch_adapter_registered",
             "lowrank_debug_meta_registered",
             "lowrank_debug_probe_launches_real_op",
+            "lowrank_debug_op_in_a3_aclnn_package",
         ],
     }
 

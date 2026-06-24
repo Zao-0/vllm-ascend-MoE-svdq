@@ -20,6 +20,7 @@ DEFAULT_EVIDENCE_DIR = Path("/root/workspace/lza/svdq_clean_evidence")
 OP_ROOT = Path("csrc/mc2/dispatch_ffn_combine_w4_a8_svdq")
 OP_CMAKE = OP_ROOT / "op_host/CMakeLists.txt"
 OP_DEF = OP_ROOT / "op_host/dispatch_ffn_combine_w4_a8_svdq_def.cpp"
+DEBUG_OP_DEF = OP_ROOT / "op_host/svdq_low_rank_debug_readback_def.cpp"
 OP_PROTO = OP_ROOT / "op_host/dispatch_ffn_combine_w4_a8_svdq_proto.cpp"
 DEBUG_OP_API_HEADER = OP_ROOT / "op_host/op_api/aclnn_svdq_lowrank_debug_readback.h"
 DEBUG_OP_API_WRAPPER = OP_ROOT / "op_host/op_api/aclnn_svdq_lowrank_debug_readback.cpp"
@@ -37,6 +38,7 @@ LOWRANK_DEBUG_TORCH_ADAPTER = LOWRANK_DEBUG_ALIAS_ROOT / "svdq_low_rank_debug_re
 TORCH_BINDING = Path("csrc/torch_binding.cpp")
 TORCH_BINDING_META = Path("csrc/torch_binding_meta.cpp")
 LOWRANK_DEBUG_PROBE = Path("tools/svdq_lowrank_debug_readback_probe.py")
+BUILD_ACLNN = Path("csrc/build_aclnn.sh")
 
 FACTOR_ABI = [
     {"id": 0, "name": "SVDQ_FACTOR_GATE_UP_L1", "operator_tensor": "gate_up_svdq_l1"},
@@ -397,6 +399,7 @@ def _read_sources(repo_root: Path) -> dict[str, str]:
     return {
         "op_cmake": (repo_root / OP_CMAKE).read_text(encoding="utf-8"),
         "op_def": (repo_root / OP_DEF).read_text(encoding="utf-8"),
+        "debug_op_def": (repo_root / DEBUG_OP_DEF).read_text(encoding="utf-8"),
         "op_proto": (repo_root / OP_PROTO).read_text(encoding="utf-8"),
         "debug_op_api_header": (repo_root / DEBUG_OP_API_HEADER).read_text(encoding="utf-8"),
         "debug_op_api_wrapper": (repo_root / DEBUG_OP_API_WRAPPER).read_text(encoding="utf-8"),
@@ -413,6 +416,7 @@ def _read_sources(repo_root: Path) -> dict[str, str]:
         "torch_binding": (repo_root / TORCH_BINDING).read_text(encoding="utf-8"),
         "torch_binding_meta": (repo_root / TORCH_BINDING_META).read_text(encoding="utf-8"),
         "lowrank_debug_probe": (repo_root / LOWRANK_DEBUG_PROBE).read_text(encoding="utf-8"),
+        "build_aclnn": (repo_root / BUILD_ACLNN).read_text(encoding="utf-8"),
     }
 
 
@@ -517,9 +521,16 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             "OP_NAME SVDQLowRankDebugReadback" in sources["op_cmake"]
             and "${_DISPATCH_FFN_SVDQ_DEBUG_OPTS}" in sources["op_cmake"]
         ),
+        "lowrank_debug_op_inner_aclnn_linked": (
+            "OPTYPE dispatch_ffn_combine_w4_a8_svdq svdq_low_rank_debug_readback"
+            in sources["op_cmake"]
+            and "ACLNNTYPE aclnn_inner aclnn_inner" in sources["op_cmake"]
+            and "target_sources(op_host_aclnnInner PRIVATE" in sources["op_cmake"]
+            and "svdq_low_rank_debug_readback_def.cpp" in sources["op_cmake"]
+        ),
         "lowrank_debug_op_registered": (
-            "class SVDQLowRankDebugReadback" in sources["op_def"]
-            and "OP_ADD(SVDQLowRankDebugReadback)" in sources["op_def"]
+            "class SVDQLowRankDebugReadback" in sources["debug_op_def"]
+            and "OP_ADD(SVDQLowRankDebugReadback)" in sources["debug_op_def"]
             and "IMPL_OP_INFERSHAPE(SVDQLowRankDebugReadback)" in sources["op_proto"]
         ),
         "lowrank_debug_op_tiling_registered": (
@@ -533,10 +544,10 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "aclnnSVDQLowRankDebugReadback(" in sources["debug_op_api_wrapper"]
         ),
         "lowrank_debug_op_exposes_same_readback_outputs": (
-            'this->Output("gateUpOutput")' in sources["op_def"]
-            and 'this->Output("downOutput")' in sources["op_def"]
-            and 'this->Output("gateUpAccumulator")' in sources["op_def"]
-            and 'this->Output("downAccumulator")' in sources["op_def"]
+            'this->Output("gateUpOutput")' in sources["debug_op_def"]
+            and 'this->Output("downOutput")' in sources["debug_op_def"]
+            and 'this->Output("gateUpAccumulator")' in sources["debug_op_def"]
+            and 'this->Output("downAccumulator")' in sources["debug_op_def"]
         ),
         "lowrank_debug_alias_source_root": (
             "add_op_to_compiled_list()" in sources["lowrank_debug_alias_cmake"]
@@ -558,6 +569,12 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             "torch.ops._C_ascend.svdq_low_rank_debug_readback" in sources["lowrank_debug_probe"]
             and "_load_validation_layer(" in sources["lowrank_debug_probe"]
             and "build_svdq_bf16_stage_reference" in sources["lowrank_debug_probe"]
+        ),
+        "lowrank_debug_op_in_a3_aclnn_package": (
+            '"dispatch_ffn_combine_w4_a8_svdq"' in sources["build_aclnn"]
+            and '"svdq_low_rank_debug_readback"' in sources["build_aclnn"]
+            and sources["build_aclnn"].index('"dispatch_ffn_combine_w4_a8_svdq"')
+            < sources["build_aclnn"].index('"svdq_low_rank_debug_readback"')
         ),
     }
 
@@ -635,6 +652,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
         "source_files": {
             "op_cmake": str(OP_CMAKE),
             "op_def": str(OP_DEF),
+            "debug_op_def": str(DEBUG_OP_DEF),
             "op_proto": str(OP_PROTO),
             "debug_op_api_header": str(DEBUG_OP_API_HEADER),
             "debug_op_api_wrapper": str(DEBUG_OP_API_WRAPPER),
@@ -651,6 +669,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "torch_binding": str(TORCH_BINDING),
             "torch_binding_meta": str(TORCH_BINDING_META),
             "lowrank_debug_probe": str(LOWRANK_DEBUG_PROBE),
+            "build_aclnn": str(BUILD_ACLNN),
         },
         "factor_abi": FACTOR_ABI,
         "workspace_regions": WORKSPACE_REGIONS,
@@ -710,6 +729,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "lowrank_debug_kernel_uses_separate_tiling_contract",
                 "lowrank_debug_kernel_preserves_branch_separation",
                 "lowrank_debug_op_has_compile_options",
+                "lowrank_debug_op_inner_aclnn_linked",
                 "lowrank_debug_op_registered",
                 "lowrank_debug_op_tiling_registered",
                 "lowrank_debug_op_public_aclnn_wrapper",
@@ -718,6 +738,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "lowrank_debug_torch_adapter_registered",
                 "lowrank_debug_meta_registered",
                 "lowrank_debug_probe_launches_real_op",
+                "lowrank_debug_op_in_a3_aclnn_package",
             ],
         },
         "rank_split_contract": {
