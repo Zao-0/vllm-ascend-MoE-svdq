@@ -391,6 +391,50 @@ def test_official_w4a8_debug_readback_compile_flag_is_default_off():
     assert "copyUbToGmGMM2(gmTileGMM2, ubFp32, layoutGM, layoutUB);" in gmm2_epilogue
 
 
+def test_svdq_w4a8_debug_calibration_probe_builds_nonzero_packed_int4_data():
+    from tools.svdq_w4a8_debug_calibration_probe import (
+        CalibrationShape,
+        build_calibration_tensors,
+        validate_calibration_tensors,
+    )
+
+    shape = CalibrationShape(
+        num_experts=2,
+        hidden_size=16,
+        intermediate_size=16,
+        group_size=8,
+        num_tokens=4,
+        top_k=1,
+    )
+    tensors = build_calibration_tensors(shape)
+    validation = validate_calibration_tensors(tensors, shape)
+
+    assert validation["passed"]
+    assert not validation["public_grouped_matmul_used"]
+    assert not validation["official_kernel_launched"]
+    assert not validation["numerical_acceptance_claimed"]
+    assert tensors["w13_weight"].shape == (2, 16, 4)
+    assert tensors["w2_weight"].shape == (2, 16, 2)
+    assert tensors["w13_weight"].dtype == torch.int32
+    assert tensors["w2_weight"].dtype == torch.int32
+    assert tensors["w13_weight_scale"].shape == (2, 2, 32)
+    assert tensors["w2_weight_scale"].shape == (2, 2, 16)
+    assert tensors["w13_weight_scale"].dtype == torch.int64
+    assert tensors["w2_weight_scale"].dtype == torch.int64
+    assert validation["packed_int4_checks"]["w13_weight"]["nonzero_nibbles"]
+    assert validation["packed_int4_checks"]["w2_weight"]["nonzero_nibbles"]
+    assert validation["expert_token_total"] == 4
+
+
+def test_svdq_w4a8_debug_calibration_probe_does_not_use_public_grouped_matmul():
+    probe = (REPO_ROOT / "tools/svdq_w4a8_debug_calibration_probe.py").read_text()
+
+    assert "npu_grouped_matmul" not in probe
+    assert "torch.ops._C_ascend.dispatch_ffn_combine" not in probe
+    assert '"public_grouped_matmul_used": False' in probe
+    assert '"numerical_acceptance_claimed": False' in probe
+
+
 def test_svdq_lowrank_debug_probe_preflights_runtime_soc_package_support(tmp_path):
     from tools.svdq_lowrank_debug_readback_probe import (
         DEBUG_OP_NAME,
