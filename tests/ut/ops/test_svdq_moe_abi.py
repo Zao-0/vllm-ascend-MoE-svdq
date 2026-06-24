@@ -1238,6 +1238,10 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
 
     for token in (
         "SVDQFinalCombineContract",
+        "SVDQFinalCombineShape",
+        "SVDQFinalCombineLaunch",
+        "FinalCombineShape() const",
+        "BuildFinalCombineLaunch() const",
         "FinalCombineContract() const",
         "FinalCombineReady() const",
         "RunFinalCombine() const",
@@ -1246,11 +1250,59 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
         "SVDQ_REGION_EXPANDED_ROW_IDX",
         "SVDQ_SYNC_MIXED_OUTPUT_EPILOGUE_TO_UNPERMUTE",
         "SVDQ_SYNC_DISPATCH_METADATA_TO_UNPERMUTE",
-        "runtime_.out != nullptr",
-        "runtime_.expertId != nullptr",
-        "runtime_.probs != nullptr",
+        "launch.output != nullptr",
+        "launch.expertId != nullptr",
+        "launch.probs != nullptr",
     ):
         assert token in contract
+
+    for token in (
+        "SVDQFinalCombineShape",
+        "SVDQFinalCombineShape finalCombineShape",
+    ):
+        assert token in tiling_header
+
+    for token in (
+        "BuildFinalCombineShape",
+        "BuildFinalCombineShape(tilingData)",
+        "finalCombine.stageId = SVDQ_STAGE_UNPERMUTE_COMBINE",
+        "finalCombine.inputRegionId = SVDQ_REGION_PEER_OUTPUT",
+        "finalCombine.routeRegionId = SVDQ_REGION_EXPANDED_ROW_IDX",
+        "finalCombine.m = info.m",
+        "finalCombine.routedRows = info.maxOutputSize",
+        "finalCombine.hiddenSize = info.hiddenSize",
+        "finalCombine.topK = info.topK",
+        "finalCombine.activeSlots = info.m * info.topK",
+    ):
+        assert token in tiling
+
+    final_combine_source = contract[
+        contract.index("__aicore__ inline SVDQFinalCombineContract FinalCombineContract") : contract.index(
+            "private:"
+        )
+    ]
+    for token in (
+        "SVDQFinalCombineShape shape = FinalCombineShape()",
+        "SVDQFinalCombineLaunch launch = BuildFinalCombineLaunch()",
+        "WorkspaceAddress(shape.inputRegionId)",
+        "WorkspaceAddress(shape.routeRegionId)",
+        "runtime_.expertId",
+        "runtime_.probs",
+        "runtime_.out",
+        "shape.stageId == contract.stageId",
+        "shape.inputRegionId == contract.inputRegionId",
+        "shape.routeRegionId == contract.routeRegionId",
+        "shape.m == tilingData_.info.m",
+        "shape.routedRows == tilingData_.info.maxOutputSize",
+        "shape.hiddenSize == tilingData_.info.hiddenSize",
+        "shape.topK == tilingData_.info.topK",
+        "shape.activeSlots == tilingData_.info.m * tilingData_.info.topK",
+        "shape.routedRows >= shape.activeSlots",
+        "launch.expertId != nullptr",
+        "launch.probs != nullptr",
+        "(void)launch",
+    ):
+        assert token in final_combine_source
 
     process = contract[
         contract.index("__aicore__ inline void Process()") : contract.index(
@@ -1928,6 +1980,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "residual_quant_launches": 2,
         "residual_gmm_launches": 2,
         "mixed_epilogue_launches": 2,
+        "final_combine_launches": 1,
         "lowrank_invocations": 2,
     }
     assert [factor["operator_tensor"] for factor in loaded["factor_abi"]] == [
@@ -1947,6 +2000,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["residual_quant_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["mixed_epilogue_launch_descriptor_recorded"]
+    assert loaded["production_fail_closed"]["final_combine_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
     assert loaded["production_fail_closed"]["mixed_epilogue_execution_fail_closed"]
     assert loaded["production_fail_closed"]["final_combine_execution_fail_closed"]
@@ -1970,6 +2024,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_records_mixed_epilogue_contracts"]
     assert loaded["source_proof"]["kernel_mixed_epilogue_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_records_final_combine_contract"]
+    assert loaded["source_proof"]["kernel_final_combine_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_mixed_final_execution_fail_closed"]
     assert loaded["source_proof"]["lowrank_helper_enabled_by_contract"]
     assert loaded["source_proof"]["lowrank_helper_uses_separate_rank_workspace"]
@@ -2073,6 +2128,18 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "gate_column_offset": "SVDQ_INVALID_ID",
         "up_column_offset": "SVDQ_INVALID_ID",
         "applies_swiglu": False,
+    }
+    assert loaded["final_combine_launch"] == {
+        "name": "SVDQ_STAGE_UNPERMUTE_COMBINE",
+        "input_region": "SVDQ_REGION_PEER_OUTPUT",
+        "route_region": "SVDQ_REGION_EXPANDED_ROW_IDX",
+        "m": "info.m",
+        "routed_rows": "info.maxOutputSize",
+        "hidden_size": "info.hiddenSize",
+        "top_k": "info.topK",
+        "active_slots": "info.m * info.topK",
+        "uses_expert_idx": True,
+        "uses_probs": True,
     }
     assert all(loaded["source_proof"].values())
     assert loaded["debug_readback_contract"] == {

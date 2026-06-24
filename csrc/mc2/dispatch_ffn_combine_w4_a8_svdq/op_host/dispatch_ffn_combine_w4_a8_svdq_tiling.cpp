@@ -462,6 +462,20 @@ static void BuildMixedEpilogueShapeTable(DispatchFFNCombineW4A8SVDQTilingData* t
         SVDQ_INVALID_ID, SVDQ_INVALID_ID, false);
 }
 
+static void BuildFinalCombineShape(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
+{
+    auto& info = tilingData->info;
+    auto& finalCombine = tilingData->finalCombineShape;
+    finalCombine.stageId = SVDQ_STAGE_UNPERMUTE_COMBINE;
+    finalCombine.inputRegionId = SVDQ_REGION_PEER_OUTPUT;
+    finalCombine.routeRegionId = SVDQ_REGION_EXPANDED_ROW_IDX;
+    finalCombine.m = info.m;
+    finalCombine.routedRows = info.maxOutputSize;
+    finalCombine.hiddenSize = info.hiddenSize;
+    finalCombine.topK = info.topK;
+    finalCombine.activeSlots = info.m * info.topK;
+}
+
 static void SetLowRankInvocation(
     DispatchFFNCombineW4A8SVDQTilingData* tilingData, uint32_t invocationId, uint32_t inputRegionId,
     uint32_t rankRegionId, uint32_t outputRegionId, uint32_t downFactorId, uint32_t upFactorId,
@@ -763,6 +777,7 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
     BuildResidualQuantShapeTable(tilingData);
     BuildResidualGmmShapeTable(tilingData);
     BuildMixedEpilogueShapeTable(tilingData);
+    BuildFinalCombineShape(tilingData);
     BuildLowRankInvocationTable(tilingData);
     size_t* workSpaces = context->GetWorkspaceSizes(1);
     OP_TILING_CHECK(workSpaces == nullptr,

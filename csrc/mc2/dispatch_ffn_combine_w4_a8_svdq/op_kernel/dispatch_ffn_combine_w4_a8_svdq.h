@@ -213,6 +213,20 @@ struct SVDQFinalCombineContract {
     uint32_t waitRouteFlagId;
 };
 
+struct SVDQFinalCombineLaunch {
+    uint32_t stageId;
+    GM_ADDR input;
+    GM_ADDR routeIndex;
+    GM_ADDR expertId;
+    GM_ADDR probs;
+    GM_ADDR output;
+    uint32_t m;
+    uint32_t routedRows;
+    uint32_t hiddenSize;
+    uint32_t topK;
+    uint32_t activeSlots;
+};
+
 class DispatchFFNCombineW4A8SVDQ {
 public:
     __aicore__ inline DispatchFFNCombineW4A8SVDQ() {}
@@ -330,6 +344,11 @@ public:
     __aicore__ inline SVDQMixedEpilogueShape MixedEpilogueShape(uint32_t epilogueId) const
     {
         return tilingData_.mixedEpilogueShapes[epilogueId];
+    }
+
+    __aicore__ inline SVDQFinalCombineShape FinalCombineShape() const
+    {
+        return tilingData_.finalCombineShape;
     }
 
     __aicore__ inline SVDQDispatchRoutingTiling DispatchRoutingTiling() const
@@ -861,12 +880,26 @@ public:
             SVDQ_SYNC_MIXED_OUTPUT_EPILOGUE_TO_UNPERMUTE, SVDQ_SYNC_DISPATCH_METADATA_TO_UNPERMUTE};
     }
 
+    __aicore__ inline SVDQFinalCombineLaunch BuildFinalCombineLaunch() const
+    {
+        SVDQFinalCombineShape shape = FinalCombineShape();
+        return {shape.stageId, WorkspaceAddress(shape.inputRegionId), WorkspaceAddress(shape.routeRegionId),
+            runtime_.expertId, runtime_.probs, runtime_.out, shape.m, shape.routedRows, shape.hiddenSize,
+            shape.topK, shape.activeSlots};
+    }
+
     __aicore__ inline bool FinalCombineReady() const
     {
         SVDQFinalCombineContract contract = FinalCombineContract();
-        return WorkspaceAddress(contract.inputRegionId) != nullptr &&
-               WorkspaceAddress(contract.routeRegionId) != nullptr && runtime_.out != nullptr &&
-               runtime_.expertId != nullptr && runtime_.probs != nullptr;
+        SVDQFinalCombineShape shape = FinalCombineShape();
+        SVDQFinalCombineLaunch launch = BuildFinalCombineLaunch();
+        return shape.stageId == contract.stageId && shape.inputRegionId == contract.inputRegionId &&
+               shape.routeRegionId == contract.routeRegionId && shape.m == tilingData_.info.m &&
+               shape.routedRows == tilingData_.info.maxOutputSize && shape.hiddenSize == tilingData_.info.hiddenSize &&
+               shape.topK == tilingData_.info.topK && shape.activeSlots == tilingData_.info.m * tilingData_.info.topK &&
+               shape.m > 0 && shape.routedRows >= shape.activeSlots && shape.hiddenSize > 0 &&
+               shape.topK > 0 && launch.input != nullptr && launch.routeIndex != nullptr &&
+               launch.output != nullptr && launch.expertId != nullptr && launch.probs != nullptr;
     }
 
     __aicore__ inline bool RunFinalCombine() const
@@ -874,6 +907,8 @@ public:
         if (!FinalCombineReady()) {
             return false;
         }
+        SVDQFinalCombineLaunch launch = BuildFinalCombineLaunch();
+        (void)launch;
         return false;
     }
 

@@ -199,6 +199,17 @@ struct SVDQMixedEpilogueShape {
     bool appliesSwiGLU;
 };
 
+struct SVDQFinalCombineShape {
+    uint32_t stageId;
+    uint32_t inputRegionId;
+    uint32_t routeRegionId;
+    uint32_t m;
+    uint32_t routedRows;
+    uint32_t hiddenSize;
+    uint32_t topK;
+    uint32_t activeSlots;
+};
+
 struct DispatchFFNCombineW4A8SVDQInfo {
     uint32_t m;
     uint32_t hiddenSize;
@@ -238,6 +249,7 @@ struct DispatchFFNCombineW4A8SVDQTilingData {
     SVDQResidualQuantShape residualQuantShapes[SVDQ_RESIDUAL_QUANT_COUNT];
     SVDQResidualGmmShape residualGmmShapes[SVDQ_RESIDUAL_GMM_COUNT];
     SVDQMixedEpilogueShape mixedEpilogueShapes[SVDQ_MIXED_EPILOGUE_COUNT];
+    SVDQFinalCombineShape finalCombineShape;
     DispatchFFNCombineW4A8SVDQImpl::SVDQFusedDownUpTiling
         lowRankInvocations[DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_COUNT];
 };

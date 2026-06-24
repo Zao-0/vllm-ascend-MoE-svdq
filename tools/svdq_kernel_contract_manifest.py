@@ -534,6 +534,19 @@ MIXED_EPILOGUE_LAUNCHES = [
     },
 ]
 
+FINAL_COMBINE_LAUNCH = {
+    "name": "SVDQ_STAGE_UNPERMUTE_COMBINE",
+    "input_region": "SVDQ_REGION_PEER_OUTPUT",
+    "route_region": "SVDQ_REGION_EXPANDED_ROW_IDX",
+    "m": "info.m",
+    "routed_rows": "info.maxOutputSize",
+    "hidden_size": "info.hiddenSize",
+    "top_k": "info.topK",
+    "active_slots": "info.m * info.topK",
+    "uses_expert_idx": True,
+    "uses_probs": True,
+}
+
 LOWRANK_INVOCATIONS = [
     {
         "id": 0,
@@ -910,9 +923,28 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "SVDQ_STAGE_UNPERMUTE_COMBINE" in sources["kernel_contract"]
             and "SVDQ_REGION_PEER_OUTPUT" in sources["kernel_contract"]
             and "SVDQ_REGION_EXPANDED_ROW_IDX" in sources["kernel_contract"]
-            and "runtime_.out != nullptr" in sources["kernel_contract"]
-            and "runtime_.expertId != nullptr" in sources["kernel_contract"]
-            and "runtime_.probs != nullptr" in sources["kernel_contract"]
+            and "SVDQFinalCombineLaunch launch = BuildFinalCombineLaunch()" in sources["kernel_contract"]
+            and "launch.output != nullptr" in sources["kernel_contract"]
+            and "launch.expertId != nullptr" in sources["kernel_contract"]
+            and "launch.probs != nullptr" in sources["kernel_contract"]
+        ),
+        "kernel_final_combine_launch_descriptor_recorded": (
+            "struct SVDQFinalCombineShape" in sources["kernel_tiling"]
+            and "SVDQFinalCombineShape finalCombineShape" in sources["kernel_tiling"]
+            and "BuildFinalCombineShape" in sources["host_tiling"]
+            and "BuildFinalCombineShape(tilingData)" in sources["host_tiling"]
+            and "finalCombine.stageId = SVDQ_STAGE_UNPERMUTE_COMBINE" in sources["host_tiling"]
+            and "finalCombine.inputRegionId = SVDQ_REGION_PEER_OUTPUT" in sources["host_tiling"]
+            and "finalCombine.routeRegionId = SVDQ_REGION_EXPANDED_ROW_IDX" in sources["host_tiling"]
+            and "finalCombine.activeSlots = info.m * info.topK" in sources["host_tiling"]
+            and "SVDQFinalCombineLaunch" in sources["kernel_contract"]
+            and "FinalCombineShape() const" in sources["kernel_contract"]
+            and "BuildFinalCombineLaunch() const" in sources["kernel_contract"]
+            and "BuildFinalCombineLaunch()" in sources["kernel_contract"]
+            and "shape.activeSlots == tilingData_.info.m * tilingData_.info.topK" in sources["kernel_contract"]
+            and "shape.routedRows >= shape.activeSlots" in sources["kernel_contract"]
+            and "launch.expertId != nullptr" in sources["kernel_contract"]
+            and "launch.probs != nullptr" in sources["kernel_contract"]
         ),
         "kernel_mixed_final_execution_fail_closed": (
             "RunMixedEpilogueStages() const" in sources["kernel_contract"]
@@ -1141,6 +1173,18 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
             if token not in sources["kernel_contract"]:
                 raise ValueError(f"mixed epilogue launch helper {token} missing from kernel contract.")
 
+    final_launch = manifest["final_combine_launch"]
+    for token in (
+        final_launch["name"],
+        final_launch["input_region"],
+        final_launch["route_region"],
+    ):
+        if token not in sources["host_tiling"] or token not in sources["kernel_contract"]:
+            raise ValueError(f"final combine launch token {token} missing from source.")
+    for token in ("SVDQFinalCombineShape", "SVDQFinalCombineLaunch", "BuildFinalCombineLaunch"):
+        if token not in sources["kernel_contract"]:
+            raise ValueError(f"final combine launch helper {token} missing from kernel contract.")
+
     for invocation in manifest["lowrank_invocations"]:
         for token in (
             invocation["name"],
@@ -1212,6 +1256,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
         "residual_quant_launches": RESIDUAL_QUANT_LAUNCHES,
         "residual_gmm_launches": RESIDUAL_GMM_LAUNCHES,
         "mixed_epilogue_launches": MIXED_EPILOGUE_LAUNCHES,
+        "final_combine_launch": FINAL_COMBINE_LAUNCH,
         "lowrank_invocations": LOWRANK_INVOCATIONS,
         "lowrank_tile_shape": {"m": 16, "n": 64, "k": 64},
         "debug_readback_contract": {
@@ -1307,6 +1352,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "mixed_epilogue_launch_descriptor_recorded": source_proof[
                 "kernel_mixed_epilogue_launch_descriptor_recorded"
             ],
+            "final_combine_launch_descriptor_recorded": source_proof[
+                "kernel_final_combine_launch_descriptor_recorded"
+            ],
             "w4a8_residual_execution_fail_closed": (
                 "RunW4A8ResidualStages() const" in sources["kernel_contract"]
                 and "RunMixedEpilogueStages() const" in sources["kernel_contract"]
@@ -1333,6 +1381,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "residual_quant_launches": len(RESIDUAL_QUANT_LAUNCHES),
             "residual_gmm_launches": len(RESIDUAL_GMM_LAUNCHES),
             "mixed_epilogue_launches": len(MIXED_EPILOGUE_LAUNCHES),
+            "final_combine_launches": 1,
             "lowrank_invocations": len(LOWRANK_INVOCATIONS),
         },
     }
