@@ -808,6 +808,32 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
                 "RunFinalCombine()",
             ],
         ),
+        "kernel_validates_complete_sync_flag_table": (
+            "HasCompleteSyncFlagTable() const" in sources["kernel_contract"]
+            and "ValidateSyncFlag(" in sources["kernel_contract"]
+            and "flag.producerSignalIndex == flagId" in sources["kernel_contract"]
+            and "flag.consumerWaitIndex == flagId" in sources["kernel_contract"]
+            and "HasCompleteSyncFlagTable();" in sources["kernel_contract"]
+            and "SVDQ_SYNC_DISPATCH_TO_QUANT_1" in sources["kernel_contract"]
+            and "SVDQ_SYNC_DISPATCH_METADATA_TO_UNPERMUTE" in sources["kernel_contract"]
+        ),
+        "kernel_synchronizes_stage_boundaries": (
+            "SynchronizeStageBoundary(" in sources["kernel_contract"]
+            and "AscendC::SyncAll();" in sources["kernel_contract"]
+            and "SVDQ_SYNC_DISPATCH_TO_LOWRANK_1, SVDQ_STAGE_BF16_DISPATCH" in process_source
+            and "SVDQ_SYNC_LOWRANK_1_TO_MIXED_EPILOGUE_1, SVDQ_STAGE_LOWRANK_1" in process_source
+            and "SVDQ_SYNC_QUANT_1_TO_W4A8_GEMM_1, SVDQ_STAGE_QUANT_1" in process_source
+            and "SVDQ_SYNC_W4A8_GEMM_1_TO_MIXED_EPILOGUE_1, SVDQ_STAGE_W4A8_GEMM_1"
+            in process_source
+            and "SVDQ_SYNC_MIXED_EPILOGUE_1_TO_LOWRANK_2, SVDQ_STAGE_MIXED_EPILOGUE_1"
+            in process_source
+            and "SVDQ_SYNC_LOWRANK_2_TO_MIXED_OUTPUT_EPILOGUE, SVDQ_STAGE_LOWRANK_2"
+            in process_source
+            and "SVDQ_SYNC_QUANT_2_TO_W4A8_GEMM_2, SVDQ_STAGE_QUANT_2" in process_source
+            and "SVDQ_SYNC_W4A8_GEMM_2_TO_MIXED_OUTPUT_EPILOGUE, SVDQ_STAGE_W4A8_GEMM_2"
+            in process_source
+            and "SVDQ_SYNC_MIXED_OUTPUT_EPILOGUE_TO_UNPERMUTE" in process_source
+        ),
         "kernel_exposes_residual_stage_contracts": (
             "ResidualStageShape(uint32_t stageId)" in sources["kernel_contract"]
             and "ResidualStageContract(uint32_t stageId)" in sources["kernel_contract"]
@@ -1466,6 +1492,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 or "return ge::GRAPH_FAILED;" in host_tiling_source
             ),
             "host_tiling_success_enabled": source_proof["host_tiling_graph_success_enabled"],
+            "sync_handoff_source_enabled": source_proof["kernel_synchronizes_stage_boundaries"],
             "lowrank_is_implemented_uses_complete_contract": (
                 "IsImplemented() const\n    {\n        return HasCompleteContract();" in sources["lowrank_header"]
             ),

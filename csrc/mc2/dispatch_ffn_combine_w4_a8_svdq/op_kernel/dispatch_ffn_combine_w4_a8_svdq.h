@@ -271,28 +271,64 @@ public:
         if (!RunDispatchRoutingStage()) {
             return;
         }
+        if (!SynchronizeStageBoundary(SVDQ_SYNC_DISPATCH_TO_LOWRANK_1, SVDQ_STAGE_BF16_DISPATCH,
+            SVDQ_STAGE_LOWRANK_1, SVDQ_REGION_ROUTED_X)) {
+            return;
+        }
         if (!ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_GATE_UP)) {
+            return;
+        }
+        if (!SynchronizeStageBoundary(SVDQ_SYNC_LOWRANK_1_TO_MIXED_EPILOGUE_1, SVDQ_STAGE_LOWRANK_1,
+            SVDQ_STAGE_MIXED_EPILOGUE_1, SVDQ_REGION_PROJECTION_1)) {
             return;
         }
         if (!RunResidualStage(SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT)) {
             return;
         }
+        if (!SynchronizeStageBoundary(SVDQ_SYNC_QUANT_1_TO_W4A8_GEMM_1, SVDQ_STAGE_QUANT_1,
+            SVDQ_STAGE_W4A8_GEMM_1, SVDQ_REGION_X_Q)) {
+            return;
+        }
         if (!RunResidualStage(SVDQ_RESIDUAL_STAGE_W4A8_GMM1)) {
+            return;
+        }
+        if (!SynchronizeStageBoundary(SVDQ_SYNC_W4A8_GEMM_1_TO_MIXED_EPILOGUE_1, SVDQ_STAGE_W4A8_GEMM_1,
+            SVDQ_STAGE_MIXED_EPILOGUE_1, SVDQ_REGION_ACCUMULATOR_1)) {
             return;
         }
         if (!RunMixedEpilogueStage(0)) {
             return;
         }
+        if (!SynchronizeStageBoundary(SVDQ_SYNC_MIXED_EPILOGUE_1_TO_LOWRANK_2, SVDQ_STAGE_MIXED_EPILOGUE_1,
+            SVDQ_STAGE_LOWRANK_2, SVDQ_REGION_HIDDEN)) {
+            return;
+        }
         if (!ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_DOWN)) {
+            return;
+        }
+        if (!SynchronizeStageBoundary(SVDQ_SYNC_LOWRANK_2_TO_MIXED_OUTPUT_EPILOGUE, SVDQ_STAGE_LOWRANK_2,
+            SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, SVDQ_REGION_PROJECTION_2)) {
             return;
         }
         if (!RunResidualStage(SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN)) {
             return;
         }
+        if (!SynchronizeStageBoundary(SVDQ_SYNC_QUANT_2_TO_W4A8_GEMM_2, SVDQ_STAGE_QUANT_2,
+            SVDQ_STAGE_W4A8_GEMM_2, SVDQ_REGION_HIDDEN_Q)) {
+            return;
+        }
         if (!RunResidualStage(SVDQ_RESIDUAL_STAGE_W4A8_GMM2)) {
             return;
         }
+        if (!SynchronizeStageBoundary(SVDQ_SYNC_W4A8_GEMM_2_TO_MIXED_OUTPUT_EPILOGUE, SVDQ_STAGE_W4A8_GEMM_2,
+            SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, SVDQ_REGION_ACCUMULATOR_2)) {
+            return;
+        }
         if (!RunMixedEpilogueStage(1)) {
+            return;
+        }
+        if (!SynchronizeStageBoundary(SVDQ_SYNC_MIXED_OUTPUT_EPILOGUE_TO_UNPERMUTE,
+            SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, SVDQ_STAGE_UNPERMUTE_COMBINE, SVDQ_REGION_PEER_OUTPUT)) {
             return;
         }
         if (!RunFinalCombine()) {
@@ -303,7 +339,8 @@ public:
     __aicore__ inline bool HasCompleteTilingContract() const
     {
         return tilingData_.info.workspaceBytes > 0 && tilingData_.info.syncFlagCount == SVDQ_SYNC_FLAG_COUNT &&
-               tilingData_.info.gateRankOffset == 0 && tilingData_.info.upRankOffset == tilingData_.info.gateRank;
+               tilingData_.info.gateRankOffset == 0 && tilingData_.info.upRankOffset == tilingData_.info.gateRank &&
+               HasCompleteSyncFlagTable();
     }
 
     __aicore__ inline GM_ADDR WorkspaceAddress(uint32_t regionId) const
@@ -319,6 +356,66 @@ public:
     __aicore__ inline SVDQSyncFlag SyncFlag(uint32_t flagId) const
     {
         return tilingData_.syncFlags[flagId];
+    }
+
+    __aicore__ inline bool SynchronizeStageBoundary(
+        uint32_t flagId, uint32_t producerStage, uint32_t consumerStage, uint32_t workspaceRegionId) const
+    {
+        if (flagId >= SVDQ_SYNC_FLAG_COUNT) {
+            return false;
+        }
+        SVDQSyncFlag flag = SyncFlag(flagId);
+        if (flag.flagId != flagId || flag.producerStage != producerStage ||
+            flag.consumerStage != consumerStage || flag.workspaceRegionId != workspaceRegionId ||
+            flag.producerSignalIndex != flag.consumerWaitIndex) {
+            return false;
+        }
+        AscendC::SyncAll();
+        return true;
+    }
+
+    __aicore__ inline bool ValidateSyncFlag(
+        uint32_t flagId, uint32_t producerStage, uint32_t consumerStage, uint32_t workspaceRegionId) const
+    {
+        if (flagId >= SVDQ_SYNC_FLAG_COUNT) {
+            return false;
+        }
+        SVDQSyncFlag flag = SyncFlag(flagId);
+        return flag.flagId == flagId && flag.producerStage == producerStage &&
+               flag.consumerStage == consumerStage && flag.workspaceRegionId == workspaceRegionId &&
+               flag.producerSignalIndex == flagId && flag.consumerWaitIndex == flagId;
+    }
+
+    __aicore__ inline bool HasCompleteSyncFlagTable() const
+    {
+        return ValidateSyncFlag(SVDQ_SYNC_DISPATCH_TO_QUANT_1, SVDQ_STAGE_BF16_DISPATCH,
+                   SVDQ_STAGE_QUANT_1, SVDQ_REGION_ROUTED_X) &&
+               ValidateSyncFlag(SVDQ_SYNC_DISPATCH_TO_LOWRANK_1, SVDQ_STAGE_BF16_DISPATCH,
+                   SVDQ_STAGE_LOWRANK_1, SVDQ_REGION_ROUTED_X) &&
+               ValidateSyncFlag(SVDQ_SYNC_QUANT_1_TO_W4A8_GEMM_1, SVDQ_STAGE_QUANT_1,
+                   SVDQ_STAGE_W4A8_GEMM_1, SVDQ_REGION_X_Q) &&
+               ValidateSyncFlag(SVDQ_SYNC_QUANT_1_TO_MIXED_EPILOGUE_1, SVDQ_STAGE_QUANT_1,
+                   SVDQ_STAGE_MIXED_EPILOGUE_1, SVDQ_REGION_X_SCALE) &&
+               ValidateSyncFlag(SVDQ_SYNC_LOWRANK_1_TO_MIXED_EPILOGUE_1, SVDQ_STAGE_LOWRANK_1,
+                   SVDQ_STAGE_MIXED_EPILOGUE_1, SVDQ_REGION_PROJECTION_1) &&
+               ValidateSyncFlag(SVDQ_SYNC_W4A8_GEMM_1_TO_MIXED_EPILOGUE_1, SVDQ_STAGE_W4A8_GEMM_1,
+                   SVDQ_STAGE_MIXED_EPILOGUE_1, SVDQ_REGION_ACCUMULATOR_1) &&
+               ValidateSyncFlag(SVDQ_SYNC_MIXED_EPILOGUE_1_TO_QUANT_2, SVDQ_STAGE_MIXED_EPILOGUE_1,
+                   SVDQ_STAGE_QUANT_2, SVDQ_REGION_HIDDEN) &&
+               ValidateSyncFlag(SVDQ_SYNC_MIXED_EPILOGUE_1_TO_LOWRANK_2, SVDQ_STAGE_MIXED_EPILOGUE_1,
+                   SVDQ_STAGE_LOWRANK_2, SVDQ_REGION_HIDDEN) &&
+               ValidateSyncFlag(SVDQ_SYNC_QUANT_2_TO_W4A8_GEMM_2, SVDQ_STAGE_QUANT_2,
+                   SVDQ_STAGE_W4A8_GEMM_2, SVDQ_REGION_HIDDEN_Q) &&
+               ValidateSyncFlag(SVDQ_SYNC_QUANT_2_TO_MIXED_OUTPUT_EPILOGUE, SVDQ_STAGE_QUANT_2,
+                   SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, SVDQ_REGION_HIDDEN_SCALE) &&
+               ValidateSyncFlag(SVDQ_SYNC_LOWRANK_2_TO_MIXED_OUTPUT_EPILOGUE, SVDQ_STAGE_LOWRANK_2,
+                   SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, SVDQ_REGION_PROJECTION_2) &&
+               ValidateSyncFlag(SVDQ_SYNC_W4A8_GEMM_2_TO_MIXED_OUTPUT_EPILOGUE, SVDQ_STAGE_W4A8_GEMM_2,
+                   SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, SVDQ_REGION_ACCUMULATOR_2) &&
+               ValidateSyncFlag(SVDQ_SYNC_MIXED_OUTPUT_EPILOGUE_TO_UNPERMUTE,
+                   SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, SVDQ_STAGE_UNPERMUTE_COMBINE, SVDQ_REGION_PEER_OUTPUT) &&
+               ValidateSyncFlag(SVDQ_SYNC_DISPATCH_METADATA_TO_UNPERMUTE, SVDQ_STAGE_BF16_DISPATCH,
+                   SVDQ_STAGE_UNPERMUTE_COMBINE, SVDQ_REGION_EXPANDED_ROW_IDX);
     }
 
     __aicore__ inline SVDQBF16StageShape BF16StageShape(uint32_t stageId) const

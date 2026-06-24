@@ -1904,8 +1904,15 @@ def test_svdq_cann_kernel_contract_resolves_factors_workspace_and_bf16_stages():
     assert "runtime_.workspace + tilingData_.workspaceRegions[regionId].offset" in contract
     assert "WorkspaceRegion(uint32_t regionId)" in contract
     assert "SyncFlag(uint32_t flagId)" in contract
+    assert "SynchronizeStageBoundary(" in contract
+    assert "ValidateSyncFlag(" in contract
+    assert "HasCompleteSyncFlagTable() const" in contract
+    assert "AscendC::SyncAll();" in contract
+    assert "flag.producerSignalIndex == flagId" in contract
+    assert "flag.consumerWaitIndex == flagId" in contract
     assert "HasCompleteTilingContract" in contract
     assert "tilingData_.info.syncFlagCount == SVDQ_SYNC_FLAG_COUNT" in contract
+    assert "HasCompleteSyncFlagTable()" in contract
     assert "tilingData_.info.upRankOffset == tilingData_.info.gateRank" in contract
 
     for factor in (
@@ -2001,6 +2008,24 @@ def test_svdq_cann_kernel_contract_resolves_factors_workspace_and_bf16_stages():
         assert wait_flag in contract
         assert signal_flag in contract
 
+    process_source = contract[
+        contract.index("__aicore__ inline void Process()") : contract.index(
+            "__aicore__ inline bool HasCompleteTilingContract()"
+        )
+    ]
+    for boundary in (
+        "SVDQ_SYNC_DISPATCH_TO_LOWRANK_1, SVDQ_STAGE_BF16_DISPATCH",
+        "SVDQ_SYNC_LOWRANK_1_TO_MIXED_EPILOGUE_1, SVDQ_STAGE_LOWRANK_1",
+        "SVDQ_SYNC_QUANT_1_TO_W4A8_GEMM_1, SVDQ_STAGE_QUANT_1",
+        "SVDQ_SYNC_W4A8_GEMM_1_TO_MIXED_EPILOGUE_1, SVDQ_STAGE_W4A8_GEMM_1",
+        "SVDQ_SYNC_MIXED_EPILOGUE_1_TO_LOWRANK_2, SVDQ_STAGE_MIXED_EPILOGUE_1",
+        "SVDQ_SYNC_LOWRANK_2_TO_MIXED_OUTPUT_EPILOGUE, SVDQ_STAGE_LOWRANK_2",
+        "SVDQ_SYNC_QUANT_2_TO_W4A8_GEMM_2, SVDQ_STAGE_QUANT_2",
+        "SVDQ_SYNC_W4A8_GEMM_2_TO_MIXED_OUTPUT_EPILOGUE, SVDQ_STAGE_W4A8_GEMM_2",
+        "SVDQ_SYNC_MIXED_OUTPUT_EPILOGUE_TO_UNPERMUTE",
+    ):
+        assert boundary in process_source
+
     assert "gateUpSvdqL2" not in contract
     assert "gate_up_svdq_l2" not in contract
 
@@ -2075,6 +2100,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["rank_split_contract"]["up_rank_offset"] == "gateRank"
     assert not loaded["production_fail_closed"]["host_tiling_returns_graph_failed"]
     assert loaded["production_fail_closed"]["host_tiling_success_enabled"]
+    assert loaded["production_fail_closed"]["sync_handoff_source_enabled"]
     assert loaded["production_fail_closed"]["lowrank_is_implemented_uses_complete_contract"]
     assert loaded["production_fail_closed"]["dispatch_routing_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_routed_input_quant_execution_enabled"]
@@ -2101,6 +2127,8 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_dispatch_routing_calls_official_bf16_helper"]
     assert loaded["source_proof"]["kernel_dispatch_routing_execution_enabled"]
     assert loaded["source_proof"]["kernel_process_orders_svdq_data_dependencies"]
+    assert loaded["source_proof"]["kernel_validates_complete_sync_flag_table"]
+    assert loaded["source_proof"]["kernel_synchronizes_stage_boundaries"]
     assert loaded["source_proof"]["kernel_binds_residual_weight_scale_slots"]
     assert loaded["source_proof"]["kernel_residual_dispatches_dynamic_quant_and_gmm"]
     assert loaded["source_proof"]["kernel_residual_quant_launch_descriptor_recorded"]
