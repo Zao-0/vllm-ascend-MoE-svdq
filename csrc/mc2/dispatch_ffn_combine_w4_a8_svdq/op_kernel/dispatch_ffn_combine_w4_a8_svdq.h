@@ -744,14 +744,97 @@ public:
             return false;
         }
         SVDQResidualQuantLaunch launch = BuildResidualQuantLaunch(stageId);
-        SVDQDispatchRoutingTiling routingTiling = DispatchRoutingTiling();
-        if (!launch.usesRouting) {
+        if (launch.usesRouting) {
+            SVDQDispatchRoutingTiling routingTiling = DispatchRoutingTiling();
+            moe_init_routing_quant_v2<bfloat16_t>(runtime_.x, runtime_.expertId, nullptr, nullptr,
+                launch.output, launch.routeIndex, launch.expertTokenNums, nullptr, launch.activationScale,
+                launch.workspace, &routingTiling.moeInitRoutingQuantV2TilingData,
+                routingTiling.initRoutingQuantTilingKey);
+            return true;
+        }
+        return RunResidualScalarDynamicQuantStage(launch);
+    }
+
+    __aicore__ inline float AbsFloat(float value) const
+    {
+        return value < 0.0F ? -value : value;
+    }
+
+    __aicore__ inline int32_t RoundQuantValue(float value) const
+    {
+        return value >= 0.0F ? static_cast<int32_t>(value + 0.5F) :
+            static_cast<int32_t>(value - 0.5F);
+    }
+
+    __aicore__ inline int8_t ClampInt8QuantValue(int32_t value) const
+    {
+        if (value > 127) {
+            return static_cast<int8_t>(127);
+        }
+        if (value < -127) {
+            return static_cast<int8_t>(-127);
+        }
+        return static_cast<int8_t>(value);
+    }
+
+    __aicore__ inline bfloat16_t LoadResidualQuantInputBF16(
+        const SVDQResidualQuantLaunch& launch, uint32_t row, uint32_t column) const
+    {
+        AscendC::GlobalTensor<bfloat16_t> input;
+        input.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(launch.input));
+        return input.GetValue(static_cast<uint64_t>(row) * launch.k + column);
+    }
+
+    __aicore__ inline void StoreResidualQuantOutputINT8(
+        const SVDQResidualQuantLaunch& launch, uint32_t row, uint32_t column, int8_t value) const
+    {
+        AscendC::GlobalTensor<int8_t> output;
+        output.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t*>(launch.output));
+        output.SetValue(static_cast<uint64_t>(row) * launch.k + column, value);
+    }
+
+    __aicore__ inline void StoreResidualQuantScaleFP32(
+        const SVDQResidualQuantLaunch& launch, uint32_t row, float value) const
+    {
+        AscendC::GlobalTensor<float> scale;
+        scale.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(launch.activationScale));
+        scale.SetValue(row, value);
+    }
+
+    __aicore__ inline bool RunResidualScalarDynamicQuantStage(const SVDQResidualQuantLaunch& launch) const
+    {
+        if (launch.usesRouting || launch.input == nullptr || launch.activationScale == nullptr ||
+            launch.output == nullptr || launch.m == 0 || launch.k == 0 || launch.scaleElements != launch.m) {
             return false;
         }
-        moe_init_routing_quant_v2<bfloat16_t>(runtime_.x, runtime_.expertId, nullptr, nullptr,
-            launch.output, launch.routeIndex, launch.expertTokenNums, nullptr, launch.activationScale,
-            launch.workspace, &routingTiling.moeInitRoutingQuantV2TilingData,
-            routingTiling.initRoutingQuantTilingKey);
+        const uint32_t coreIdx = AscendC::GetBlockIdx();
+        const uint32_t coreCount = AscendC::GetBlockNum();
+        if (coreCount == 0) {
+            return false;
+        }
+        for (uint32_t row = coreIdx; row < launch.m; row += coreCount) {
+            float maxAbs = 0.0F;
+            for (uint32_t column = 0; column < launch.k; ++column) {
+                const float value = static_cast<float>(LoadResidualQuantInputBF16(launch, row, column));
+                const float absValue = AbsFloat(value);
+                if (absValue > maxAbs) {
+                    maxAbs = absValue;
+                }
+            }
+            const float scale = maxAbs / 127.0F;
+            StoreResidualQuantScaleFP32(launch, row, scale);
+            if (scale == 0.0F) {
+                for (uint32_t column = 0; column < launch.k; ++column) {
+                    StoreResidualQuantOutputINT8(launch, row, column, static_cast<int8_t>(0));
+                }
+                continue;
+            }
+            for (uint32_t column = 0; column < launch.k; ++column) {
+                const float value = static_cast<float>(LoadResidualQuantInputBF16(launch, row, column));
+                const int32_t rounded = RoundQuantValue(value / scale);
+                StoreResidualQuantOutputINT8(launch, row, column, ClampInt8QuantValue(rounded));
+            }
+        }
         return true;
     }
 

@@ -868,7 +868,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             in sources["kernel_contract"]
             and "DispatchQuantRoutingTempWorkspace() const" in sources["kernel_contract"]
             and "SVDQResidualQuantLaunch launch = BuildResidualQuantLaunch(stageId)" in residual_quant_source
-            and "if (!launch.usesRouting)" in residual_quant_source
+            and "if (launch.usesRouting)" in residual_quant_source
             and "moe_init_routing_quant_v2<bfloat16_t>" in residual_quant_source
             and "launch.output" in residual_quant_source
             and "launch.routeIndex" in residual_quant_source
@@ -877,6 +877,22 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "launch.workspace" in residual_quant_source
             and "routingTiling.initRoutingQuantTilingKey" in residual_quant_source
             and "return true;" in residual_quant_source
+        ),
+        "kernel_residual_hidden_quant_scalar_execution_enabled": (
+            "RunResidualScalarDynamicQuantStage(const SVDQResidualQuantLaunch& launch) const"
+            in sources["kernel_contract"]
+            and "return RunResidualScalarDynamicQuantStage(launch);" in residual_quant_source
+            and "LoadResidualQuantInputBF16(" in sources["kernel_contract"]
+            and "StoreResidualQuantOutputINT8(" in sources["kernel_contract"]
+            and "StoreResidualQuantScaleFP32(" in sources["kernel_contract"]
+            and "for (uint32_t row = coreIdx; row < launch.m; row += coreCount)" in sources["kernel_contract"]
+            and "const float scale = maxAbs / 127.0F" in sources["kernel_contract"]
+            and "StoreResidualQuantScaleFP32(launch, row, scale)" in sources["kernel_contract"]
+            and "StoreResidualQuantOutputINT8(launch, row, column, static_cast<int8_t>(0))"
+            in sources["kernel_contract"]
+            and "const int32_t rounded = RoundQuantValue(value / scale)" in sources["kernel_contract"]
+            and "ClampInt8QuantValue(rounded)" in sources["kernel_contract"]
+            and "launch.scaleElements != launch.m" in sources["kernel_contract"]
         ),
         "kernel_residual_execution_fail_closed": (
             "RunW4A8ResidualStages() const" in sources["kernel_contract"]
@@ -1364,6 +1380,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "dispatch_routing_execution_enabled": source_proof["kernel_dispatch_routing_execution_enabled"],
             "residual_routed_input_quant_execution_enabled": source_proof[
                 "kernel_residual_routed_input_quant_execution_enabled"
+            ],
+            "residual_hidden_quant_execution_enabled": source_proof[
+                "kernel_residual_hidden_quant_scalar_execution_enabled"
             ],
             "residual_quant_launch_descriptor_recorded": source_proof[
                 "kernel_residual_quant_launch_descriptor_recorded"

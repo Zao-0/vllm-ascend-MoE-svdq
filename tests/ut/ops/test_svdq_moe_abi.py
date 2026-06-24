@@ -1115,7 +1115,7 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     ]
     for token in (
         "SVDQResidualQuantLaunch launch = BuildResidualQuantLaunch(stageId)",
-        "if (!launch.usesRouting)",
+        "if (launch.usesRouting)",
         "moe_init_routing_quant_v2<bfloat16_t>",
         "launch.output",
         "launch.routeIndex",
@@ -1124,6 +1124,18 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         "launch.workspace",
         "&routingTiling.moeInitRoutingQuantV2TilingData",
         "routingTiling.initRoutingQuantTilingKey",
+        "return RunResidualScalarDynamicQuantStage(launch)",
+        "RunResidualScalarDynamicQuantStage(const SVDQResidualQuantLaunch& launch) const",
+        "LoadResidualQuantInputBF16(",
+        "StoreResidualQuantOutputINT8(",
+        "StoreResidualQuantScaleFP32(",
+        "for (uint32_t row = coreIdx; row < launch.m; row += coreCount)",
+        "const float scale = maxAbs / 127.0F",
+        "StoreResidualQuantScaleFP32(launch, row, scale)",
+        "StoreResidualQuantOutputINT8(launch, row, column, static_cast<int8_t>(0))",
+        "const int32_t rounded = RoundQuantValue(value / scale)",
+        "ClampInt8QuantValue(rounded)",
+        "launch.scaleElements != launch.m",
         "return true;",
     ):
         assert token in residual_quant_source
@@ -2010,6 +2022,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["lowrank_is_implemented_uses_complete_contract"]
     assert loaded["production_fail_closed"]["dispatch_routing_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_routed_input_quant_execution_enabled"]
+    assert loaded["production_fail_closed"]["residual_hidden_quant_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_quant_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["mixed_epilogue_launch_descriptor_recorded"]
@@ -2034,6 +2047,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_residual_quant_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_residual_routed_input_quant_execution_enabled"]
+    assert loaded["source_proof"]["kernel_residual_hidden_quant_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_execution_fail_closed"]
     assert loaded["source_proof"]["kernel_records_mixed_epilogue_contracts"]
     assert loaded["source_proof"]["kernel_mixed_epilogue_launch_descriptor_recorded"]
