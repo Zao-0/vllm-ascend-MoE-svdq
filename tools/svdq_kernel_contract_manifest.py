@@ -190,6 +190,26 @@ WORKSPACE_REGIONS = [
         "lifetime_id": 14,
         "purpose": "future per-peer output before final unpermute/combine",
     },
+    {
+        "id": 14,
+        "name": "SVDQ_REGION_LOWRANK_RANK_1",
+        "dtype": "SVDQ_DTYPE_BF16",
+        "size_expr": "maxOutputSize * (gateRank + upRank) * BF16_BYTES",
+        "producer_stage": "SVDQ_STAGE_LOWRANK_1",
+        "consumer_stage": "SVDQ_STAGE_LOWRANK_1",
+        "lifetime_id": 15,
+        "purpose": "gate/up BF16 rank-state buffer between fused L1 and independent L2 stages",
+    },
+    {
+        "id": 15,
+        "name": "SVDQ_REGION_LOWRANK_RANK_2",
+        "dtype": "SVDQ_DTYPE_BF16",
+        "size_expr": "maxOutputSize * downRank * BF16_BYTES",
+        "producer_stage": "SVDQ_STAGE_LOWRANK_2",
+        "consumer_stage": "SVDQ_STAGE_LOWRANK_2",
+        "lifetime_id": 16,
+        "purpose": "down BF16 rank-state buffer between down L1 and down L2 stages",
+    },
 ]
 
 SYNC_FLAGS = [
@@ -287,7 +307,7 @@ BF16_STAGES = [
         "SVDQ_BF16_STAGE_GATE_UP_L1_GEMM",
         "SVDQ_FACTOR_GATE_UP_L1",
         "SVDQ_REGION_ROUTED_X",
-        "SVDQ_REGION_PROJECTION_1",
+        "SVDQ_REGION_LOWRANK_RANK_1",
         "routedRows",
         "info.hiddenSize",
         "gate_up_rank_columns",
@@ -298,8 +318,8 @@ BF16_STAGES = [
         2,
         "SVDQ_BF16_STAGE_GATE_UP_RANK_SPLIT",
         "SVDQ_INVALID_ID",
-        "SVDQ_REGION_PROJECTION_1",
-        "SVDQ_REGION_PROJECTION_1",
+        "SVDQ_REGION_LOWRANK_RANK_1",
+        "SVDQ_REGION_LOWRANK_RANK_1",
         "routedRows",
         "gate_up_rank_columns",
         "gate_up_rank_columns",
@@ -310,7 +330,7 @@ BF16_STAGES = [
         3,
         "SVDQ_BF16_STAGE_GATE_L2_GEMM",
         "SVDQ_FACTOR_GATE_L2",
-        "SVDQ_REGION_PROJECTION_1",
+        "SVDQ_REGION_LOWRANK_RANK_1",
         "SVDQ_REGION_PROJECTION_1",
         "routedRows",
         "info.gateRank",
@@ -322,7 +342,7 @@ BF16_STAGES = [
         4,
         "SVDQ_BF16_STAGE_UP_L2_GEMM",
         "SVDQ_FACTOR_UP_L2",
-        "SVDQ_REGION_PROJECTION_1",
+        "SVDQ_REGION_LOWRANK_RANK_1",
         "SVDQ_REGION_PROJECTION_1",
         "routedRows",
         "info.upRank",
@@ -335,7 +355,7 @@ BF16_STAGES = [
         "SVDQ_BF16_STAGE_DOWN_L1_GEMM",
         "SVDQ_FACTOR_DOWN_L1",
         "SVDQ_REGION_HIDDEN",
-        "SVDQ_REGION_PROJECTION_2",
+        "SVDQ_REGION_LOWRANK_RANK_2",
         "routedRows",
         "info.intermediateSize",
         "info.downRank",
@@ -346,7 +366,7 @@ BF16_STAGES = [
         6,
         "SVDQ_BF16_STAGE_DOWN_L2_GEMM",
         "SVDQ_FACTOR_DOWN_L2",
-        "SVDQ_REGION_PROJECTION_2",
+        "SVDQ_REGION_LOWRANK_RANK_2",
         "SVDQ_REGION_PROJECTION_2",
         "routedRows",
         "info.downRank",
@@ -416,6 +436,7 @@ LOWRANK_INVOCATIONS = [
         "id": 0,
         "name": "SVDQ_LOWRANK_INVOCATION_GATE_UP",
         "input_region": "SVDQ_REGION_ROUTED_X",
+        "rank_region": "SVDQ_REGION_LOWRANK_RANK_1",
         "output_region": "SVDQ_REGION_PROJECTION_1",
         "down_factor": "SVDQ_FACTOR_GATE_UP_L1",
         "up_factor": "SVDQ_FACTOR_GATE_L2",
@@ -434,6 +455,7 @@ LOWRANK_INVOCATIONS = [
         "id": 1,
         "name": "SVDQ_LOWRANK_INVOCATION_DOWN",
         "input_region": "SVDQ_REGION_HIDDEN",
+        "rank_region": "SVDQ_REGION_LOWRANK_RANK_2",
         "output_region": "SVDQ_REGION_PROJECTION_2",
         "down_factor": "SVDQ_FACTOR_DOWN_L1",
         "up_factor": "SVDQ_FACTOR_DOWN_L2",
@@ -548,6 +570,14 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         ),
         "lowrank_helper_fail_closed": "IsImplemented() const\n    {\n        return false;"
         in sources["lowrank_header"],
+        "lowrank_helper_uses_separate_rank_workspace": (
+            "GM_ADDR rank;" in sources["lowrank_header"]
+            and "args_.rank != nullptr" in sources["lowrank_header"]
+            and "GM_ADDR inputBase = stageIndex == 0 ? args_.input : args_.rank;" in sources["lowrank_header"]
+            and "GM_ADDR outputBase = stageIndex == 0 ? args_.rank : args_.output;" in sources["lowrank_header"]
+            and "WorkspaceAddress(invocation.rankRegionId)" in sources["kernel_contract"]
+            and "invocation.rankRegionId = rankRegionId;" in sources["host_tiling"]
+        ),
         "host_tiling_fail_closed": "AscendC kernel is not implemented yet" in sources["host_tiling"]
         and "return ge::GRAPH_FAILED;" in sources["host_tiling"],
         "lowrank_mmad_debug_readback_macro": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK"
@@ -711,6 +741,7 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
         for token in (
             invocation["name"],
             invocation["input_region"],
+            invocation["rank_region"],
             invocation["output_region"],
             invocation["down_factor"],
             invocation["up_factor"],

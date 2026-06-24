@@ -15,7 +15,7 @@
 
 #include "lowrank/svdq_fused_down_up_tiling.h"
 
-constexpr uint32_t SVDQ_WORKSPACE_REGION_COUNT = 14;
+constexpr uint32_t SVDQ_WORKSPACE_REGION_COUNT = 16;
 constexpr uint32_t SVDQ_SYNC_FLAG_COUNT = 14;
 constexpr uint32_t SVDQ_BF16_STAGE_COUNT = 7;
 constexpr uint32_t SVDQ_RESIDUAL_STAGE_COUNT = 4;
@@ -36,6 +36,8 @@ enum SVDQWorkspaceRegionId : uint32_t {
     SVDQ_REGION_LOWRANK_ACCUMULATOR_1 = 11,
     SVDQ_REGION_LOWRANK_ACCUMULATOR_2 = 12,
     SVDQ_REGION_PEER_OUTPUT = 13,
+    SVDQ_REGION_LOWRANK_RANK_1 = 14,
+    SVDQ_REGION_LOWRANK_RANK_2 = 15,
 };
 
 enum SVDQWorkspaceDType : uint32_t {

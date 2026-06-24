@@ -195,6 +195,7 @@ public:
             FactorAddress(invocation.downFactorId),
             FactorAddress(invocation.upFactorId),
             FactorAddress(invocation.secondUpFactorId),
+            WorkspaceAddress(invocation.rankRegionId),
             WorkspaceAddress(invocation.outputRegionId),
             WorkspaceAddress(invocation.accumulatorRegionId),
             runtime_.expertTokenNums,
@@ -234,22 +235,22 @@ public:
                 return {stageId, SVDQ_STAGE_BF16_DISPATCH, SVDQ_INVALID_ID, SVDQ_REGION_ROUTED_X,
                     SVDQ_INVALID_ID, SVDQ_SYNC_DISPATCH_TO_LOWRANK_1};
             case SVDQ_BF16_STAGE_GATE_UP_L1_GEMM:
-                return {stageId, SVDQ_STAGE_LOWRANK_1, SVDQ_REGION_ROUTED_X, SVDQ_REGION_PROJECTION_1,
+                return {stageId, SVDQ_STAGE_LOWRANK_1, SVDQ_REGION_ROUTED_X, SVDQ_REGION_LOWRANK_RANK_1,
                     SVDQ_SYNC_DISPATCH_TO_LOWRANK_1, SVDQ_INVALID_ID};
             case SVDQ_BF16_STAGE_GATE_UP_RANK_SPLIT:
-                return {stageId, SVDQ_STAGE_LOWRANK_1, SVDQ_REGION_PROJECTION_1, SVDQ_REGION_PROJECTION_1,
+                return {stageId, SVDQ_STAGE_LOWRANK_1, SVDQ_REGION_LOWRANK_RANK_1, SVDQ_REGION_LOWRANK_RANK_1,
                     SVDQ_INVALID_ID, SVDQ_INVALID_ID};
             case SVDQ_BF16_STAGE_GATE_L2_GEMM:
-                return {stageId, SVDQ_STAGE_LOWRANK_1, SVDQ_REGION_PROJECTION_1, SVDQ_REGION_PROJECTION_1,
+                return {stageId, SVDQ_STAGE_LOWRANK_1, SVDQ_REGION_LOWRANK_RANK_1, SVDQ_REGION_PROJECTION_1,
                     SVDQ_INVALID_ID, SVDQ_INVALID_ID};
             case SVDQ_BF16_STAGE_UP_L2_GEMM:
-                return {stageId, SVDQ_STAGE_LOWRANK_1, SVDQ_REGION_PROJECTION_1, SVDQ_REGION_PROJECTION_1,
+                return {stageId, SVDQ_STAGE_LOWRANK_1, SVDQ_REGION_LOWRANK_RANK_1, SVDQ_REGION_PROJECTION_1,
                     SVDQ_INVALID_ID, SVDQ_SYNC_LOWRANK_1_TO_MIXED_EPILOGUE_1};
             case SVDQ_BF16_STAGE_DOWN_L1_GEMM:
-                return {stageId, SVDQ_STAGE_LOWRANK_2, SVDQ_REGION_HIDDEN, SVDQ_REGION_PROJECTION_2,
+                return {stageId, SVDQ_STAGE_LOWRANK_2, SVDQ_REGION_HIDDEN, SVDQ_REGION_LOWRANK_RANK_2,
                     SVDQ_SYNC_MIXED_EPILOGUE_1_TO_LOWRANK_2, SVDQ_INVALID_ID};
             case SVDQ_BF16_STAGE_DOWN_L2_GEMM:
-                return {stageId, SVDQ_STAGE_LOWRANK_2, SVDQ_REGION_PROJECTION_2, SVDQ_REGION_PROJECTION_2,
+                return {stageId, SVDQ_STAGE_LOWRANK_2, SVDQ_REGION_LOWRANK_RANK_2, SVDQ_REGION_PROJECTION_2,
                     SVDQ_INVALID_ID, SVDQ_SYNC_LOWRANK_2_TO_MIXED_OUTPUT_EPILOGUE};
             default:
                 return {SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID,

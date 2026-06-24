@@ -103,6 +103,8 @@ static void BuildWorkspaceMap(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
     const uint64_t hiddenSize = static_cast<uint64_t>(info.hiddenSize);
     const uint64_t intermediateSize = static_cast<uint64_t>(info.intermediateSize);
     const uint64_t gateUpSize = intermediateSize * 2;
+    const uint64_t gateUpRankSize = static_cast<uint64_t>(info.gateRank) + static_cast<uint64_t>(info.upRank);
+    const uint64_t downRankSize = static_cast<uint64_t>(info.downRank);
     uint64_t offset = 0;
 
     SetWorkspaceRegion(tilingData, SVDQ_REGION_EXPANDED_ROW_IDX, offset, activeSlots * INT32_BYTES,
@@ -133,6 +135,10 @@ static void BuildWorkspaceMap(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
         SVDQ_DTYPE_FP32, SVDQ_STAGE_LOWRANK_2, SVDQ_STAGE_LOWRANK_2, 13);
     SetWorkspaceRegion(tilingData, SVDQ_REGION_PEER_OUTPUT, offset, routedRows * hiddenSize * BF16_BYTES,
         SVDQ_DTYPE_BF16, SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, SVDQ_STAGE_UNPERMUTE_COMBINE, 14);
+    SetWorkspaceRegion(tilingData, SVDQ_REGION_LOWRANK_RANK_1, offset, routedRows * gateUpRankSize * BF16_BYTES,
+        SVDQ_DTYPE_BF16, SVDQ_STAGE_LOWRANK_1, SVDQ_STAGE_LOWRANK_1, 15);
+    SetWorkspaceRegion(tilingData, SVDQ_REGION_LOWRANK_RANK_2, offset, routedRows * downRankSize * BF16_BYTES,
+        SVDQ_DTYPE_BF16, SVDQ_STAGE_LOWRANK_2, SVDQ_STAGE_LOWRANK_2, 16);
 
     info.workspaceBytes = offset;
 }
@@ -213,19 +219,19 @@ static void BuildBF16StageShapeTable(DispatchFFNCombineW4A8SVDQTilingData* tilin
     SetBF16StageShape(tilingData, SVDQ_BF16_STAGE_ROUTING, SVDQ_INVALID_ID,
         SVDQ_INVALID_ID, SVDQ_REGION_ROUTED_X, routedRows, info.hiddenSize, info.hiddenSize, 0, 0, 0);
     SetBF16StageShape(tilingData, SVDQ_BF16_STAGE_GATE_UP_L1_GEMM, SVDQ_FACTOR_GATE_UP_L1,
-        SVDQ_REGION_ROUTED_X, SVDQ_REGION_PROJECTION_1, routedRows, info.hiddenSize, gateUpRank, 0, 0, 0);
+        SVDQ_REGION_ROUTED_X, SVDQ_REGION_LOWRANK_RANK_1, routedRows, info.hiddenSize, gateUpRank, 0, 0, 0);
     SetBF16StageShape(tilingData, SVDQ_BF16_STAGE_GATE_UP_RANK_SPLIT, SVDQ_INVALID_ID,
-        SVDQ_REGION_PROJECTION_1, SVDQ_REGION_PROJECTION_1, routedRows, gateUpRank, gateUpRank, 0, 0, 0);
+        SVDQ_REGION_LOWRANK_RANK_1, SVDQ_REGION_LOWRANK_RANK_1, routedRows, gateUpRank, gateUpRank, 0, 0, 0);
     SetBF16StageShape(tilingData, SVDQ_BF16_STAGE_GATE_L2_GEMM, SVDQ_FACTOR_GATE_L2,
-        SVDQ_REGION_PROJECTION_1, SVDQ_REGION_PROJECTION_1, routedRows, info.gateRank, info.intermediateSize,
+        SVDQ_REGION_LOWRANK_RANK_1, SVDQ_REGION_PROJECTION_1, routedRows, info.gateRank, info.intermediateSize,
         info.gateRankOffset, gateOutputOffset, 0);
     SetBF16StageShape(tilingData, SVDQ_BF16_STAGE_UP_L2_GEMM, SVDQ_FACTOR_UP_L2,
-        SVDQ_REGION_PROJECTION_1, SVDQ_REGION_PROJECTION_1, routedRows, info.upRank, info.intermediateSize,
+        SVDQ_REGION_LOWRANK_RANK_1, SVDQ_REGION_PROJECTION_1, routedRows, info.upRank, info.intermediateSize,
         info.upRankOffset, upOutputOffset, 0);
     SetBF16StageShape(tilingData, SVDQ_BF16_STAGE_DOWN_L1_GEMM, SVDQ_FACTOR_DOWN_L1,
-        SVDQ_REGION_HIDDEN, SVDQ_REGION_PROJECTION_2, routedRows, info.intermediateSize, info.downRank, 0, 0, 0);
+        SVDQ_REGION_HIDDEN, SVDQ_REGION_LOWRANK_RANK_2, routedRows, info.intermediateSize, info.downRank, 0, 0, 0);
     SetBF16StageShape(tilingData, SVDQ_BF16_STAGE_DOWN_L2_GEMM, SVDQ_FACTOR_DOWN_L2,
-        SVDQ_REGION_PROJECTION_2, SVDQ_REGION_PROJECTION_2, routedRows, info.downRank, info.hiddenSize, 0, 0, 0);
+        SVDQ_REGION_LOWRANK_RANK_2, SVDQ_REGION_PROJECTION_2, routedRows, info.downRank, info.hiddenSize, 0, 0, 0);
 }
 
 static void SetResidualStageShape(
@@ -271,8 +277,8 @@ static void BuildResidualStageShapeTable(DispatchFFNCombineW4A8SVDQTilingData* t
 
 static void SetLowRankInvocation(
     DispatchFFNCombineW4A8SVDQTilingData* tilingData, uint32_t invocationId, uint32_t inputRegionId,
-    uint32_t outputRegionId, uint32_t downFactorId, uint32_t upFactorId, uint32_t secondUpFactorId,
-    uint32_t m, uint32_t inputColumns, uint32_t rankColumns, uint32_t secondRankColumns,
+    uint32_t rankRegionId, uint32_t outputRegionId, uint32_t downFactorId, uint32_t upFactorId,
+    uint32_t secondUpFactorId, uint32_t m, uint32_t inputColumns, uint32_t rankColumns, uint32_t secondRankColumns,
     uint32_t outputColumns, uint32_t inputColumnOffset, uint32_t outputColumnOffset,
     uint32_t secondInputColumnOffset, uint32_t secondOutputColumnOffset, uint32_t coreCount,
     uint32_t accumulatorRegionId)
@@ -280,6 +286,7 @@ static void SetLowRankInvocation(
     auto& invocation = tilingData->lowRankInvocations[invocationId];
     invocation.invocationId = invocationId;
     invocation.inputRegionId = inputRegionId;
+    invocation.rankRegionId = rankRegionId;
     invocation.outputRegionId = outputRegionId;
     invocation.downFactorId = downFactorId;
     invocation.upFactorId = upFactorId;
@@ -306,14 +313,14 @@ static void BuildLowRankInvocationTable(DispatchFFNCombineW4A8SVDQTilingData* ti
     const uint32_t routedRows = info.maxOutputSize;
 
     SetLowRankInvocation(tilingData, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_GATE_UP,
-        SVDQ_REGION_ROUTED_X, SVDQ_REGION_PROJECTION_1, SVDQ_FACTOR_GATE_UP_L1, SVDQ_FACTOR_GATE_L2,
-        SVDQ_FACTOR_UP_L2, routedRows, info.hiddenSize, info.gateRank, info.upRank,
+        SVDQ_REGION_ROUTED_X, SVDQ_REGION_LOWRANK_RANK_1, SVDQ_REGION_PROJECTION_1, SVDQ_FACTOR_GATE_UP_L1,
+        SVDQ_FACTOR_GATE_L2, SVDQ_FACTOR_UP_L2, routedRows, info.hiddenSize, info.gateRank, info.upRank,
         info.intermediateSize * 2, info.gateRankOffset, 0, info.upRankOffset, info.intermediateSize,
         info.lowRankCoreCount, SVDQ_REGION_LOWRANK_ACCUMULATOR_1);
     SetLowRankInvocation(tilingData, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_DOWN,
-        SVDQ_REGION_HIDDEN, SVDQ_REGION_PROJECTION_2, SVDQ_FACTOR_DOWN_L1, SVDQ_FACTOR_DOWN_L2,
-        SVDQ_INVALID_ID, routedRows, info.intermediateSize, info.downRank, 0, info.hiddenSize, 0, 0, 0, 0,
-        info.lowRankCoreCount, SVDQ_REGION_LOWRANK_ACCUMULATOR_2);
+        SVDQ_REGION_HIDDEN, SVDQ_REGION_LOWRANK_RANK_2, SVDQ_REGION_PROJECTION_2, SVDQ_FACTOR_DOWN_L1,
+        SVDQ_FACTOR_DOWN_L2, SVDQ_INVALID_ID, routedRows, info.intermediateSize, info.downRank, 0,
+        info.hiddenSize, 0, 0, 0, 0, info.lowRankCoreCount, SVDQ_REGION_LOWRANK_ACCUMULATOR_2);
 }
 
 static ge::graphStatus DispatchFFNCombineW4A8SVDQGetPlatformInfoAndSetTiling(

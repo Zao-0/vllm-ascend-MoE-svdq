@@ -246,6 +246,7 @@ struct SVDQFusedDownUpArgs {
     GM_ADDR downFactor;
     GM_ADDR upFactor;
     GM_ADDR secondUpFactor;
+    GM_ADDR rank;
     GM_ADDR output;
     GM_ADDR accumulator;
     GM_ADDR expertTokenNums;
@@ -265,6 +266,7 @@ public:
     __aicore__ inline bool HasCompleteContract() const
     {
         return args_.input != nullptr && args_.downFactor != nullptr && args_.upFactor != nullptr &&
+               args_.rank != nullptr &&
                args_.output != nullptr && args_.accumulator != nullptr && args_.expertTokenNums != nullptr &&
                args_.tiling.m > 0 && args_.tiling.inputColumns > 0 && args_.tiling.rankColumns > 0 &&
                args_.tiling.outputColumns > 0 && args_.tiling.downFactorId != SVDQ_INVALID_ID &&
@@ -338,10 +340,8 @@ public:
         const SVDQLowRankStagePlan stage = StagePlan(stageIndex);
         const uint32_t tokenStart = ExpertTokenStart(expertId);
         const uint32_t tokenCount = ExpertTokenCount(expertId);
-        GM_ADDR inputBase = args_.input;
-        if (stageIndex != 0) {
-            inputBase = args_.output;
-        }
+        GM_ADDR inputBase = stageIndex == 0 ? args_.input : args_.rank;
+        GM_ADDR outputBase = stageIndex == 0 ? args_.rank : args_.output;
         return SVDQLowRankExpertPlan{
             stage,
             expertId,
@@ -349,7 +349,7 @@ public:
             tokenCount,
             MatrixAddress(inputBase, tokenStart, stage.inputStrideColumns, stage.inputColumnOffset),
             FactorAddress(stage, expertId),
-            MatrixAddress(args_.output, tokenStart, stage.outputStrideColumns, stage.outputColumnOffset),
+            MatrixAddress(outputBase, tokenStart, stage.outputStrideColumns, stage.outputColumnOffset),
         };
     }
 
@@ -856,7 +856,7 @@ private:
             args_.tiling.inputColumns,
             TotalRankColumns(),
             args_.tiling.inputColumns,
-            args_.tiling.outputColumns,
+            TotalRankColumns(),
             args_.tiling.inputColumnOffset,
             0,
             0,
@@ -872,7 +872,7 @@ private:
             args_.upFactor,
             args_.tiling.rankColumns,
             PrimaryOutputColumns(),
-            args_.tiling.outputColumns,
+            TotalRankColumns(),
             args_.tiling.outputColumns,
             args_.tiling.inputColumnOffset,
             args_.tiling.outputColumnOffset,
@@ -889,7 +889,7 @@ private:
             args_.secondUpFactor,
             args_.tiling.secondRankColumns,
             args_.tiling.outputColumns - args_.tiling.secondOutputColumnOffset,
-            args_.tiling.outputColumns,
+            TotalRankColumns(),
             args_.tiling.outputColumns,
             args_.tiling.secondInputColumnOffset,
             args_.tiling.secondOutputColumnOffset,

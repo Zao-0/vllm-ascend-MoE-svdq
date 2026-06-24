@@ -25,6 +25,7 @@ enum SVDQLowRankInvocationId : uint32_t {
 struct SVDQFusedDownUpTiling {
     uint32_t invocationId;
     uint32_t inputRegionId;
+    uint32_t rankRegionId;
     uint32_t outputRegionId;
     uint32_t downFactorId;
     uint32_t upFactorId;

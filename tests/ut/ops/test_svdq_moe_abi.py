@@ -475,7 +475,7 @@ def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
     tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
     tiling_header = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h").read_text()
 
-    assert "SVDQ_WORKSPACE_REGION_COUNT = 14" in tiling_header
+    assert "SVDQ_WORKSPACE_REGION_COUNT = 16" in tiling_header
     assert "SVDQWorkspaceRegion workspaceRegions[SVDQ_WORKSPACE_REGION_COUNT]" in tiling_header
     assert "workspaceBytes" in tiling_header
     assert "BuildWorkspaceMap" in tiling
@@ -496,6 +496,8 @@ def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
         "SVDQ_REGION_LOWRANK_ACCUMULATOR_1",
         "SVDQ_REGION_LOWRANK_ACCUMULATOR_2",
         "SVDQ_REGION_PEER_OUTPUT",
+        "SVDQ_REGION_LOWRANK_RANK_1",
+        "SVDQ_REGION_LOWRANK_RANK_2",
     ):
         assert region in tiling_header
         assert region in tiling
@@ -740,7 +742,7 @@ def test_svdq_cann_tiling_records_bf16_stage_shapes_and_factor_bindings():
             "SVDQ_BF16_STAGE_GATE_UP_L1_GEMM",
             "SVDQ_FACTOR_GATE_UP_L1",
             "SVDQ_REGION_ROUTED_X",
-            "SVDQ_REGION_PROJECTION_1",
+            "SVDQ_REGION_LOWRANK_RANK_1",
             "routedRows",
             "info.hiddenSize",
             "gateUpRank",
@@ -751,7 +753,7 @@ def test_svdq_cann_tiling_records_bf16_stage_shapes_and_factor_bindings():
         (
             "SVDQ_BF16_STAGE_GATE_L2_GEMM",
             "SVDQ_FACTOR_GATE_L2",
-            "SVDQ_REGION_PROJECTION_1",
+            "SVDQ_REGION_LOWRANK_RANK_1",
             "SVDQ_REGION_PROJECTION_1",
             "routedRows",
             "info.gateRank",
@@ -763,7 +765,7 @@ def test_svdq_cann_tiling_records_bf16_stage_shapes_and_factor_bindings():
         (
             "SVDQ_BF16_STAGE_UP_L2_GEMM",
             "SVDQ_FACTOR_UP_L2",
-            "SVDQ_REGION_PROJECTION_1",
+            "SVDQ_REGION_LOWRANK_RANK_1",
             "SVDQ_REGION_PROJECTION_1",
             "routedRows",
             "info.upRank",
@@ -776,7 +778,7 @@ def test_svdq_cann_tiling_records_bf16_stage_shapes_and_factor_bindings():
             "SVDQ_BF16_STAGE_DOWN_L1_GEMM",
             "SVDQ_FACTOR_DOWN_L1",
             "SVDQ_REGION_HIDDEN",
-            "SVDQ_REGION_PROJECTION_2",
+            "SVDQ_REGION_LOWRANK_RANK_2",
             "routedRows",
             "info.intermediateSize",
             "info.downRank",
@@ -787,7 +789,7 @@ def test_svdq_cann_tiling_records_bf16_stage_shapes_and_factor_bindings():
         (
             "SVDQ_BF16_STAGE_DOWN_L2_GEMM",
             "SVDQ_FACTOR_DOWN_L2",
-            "SVDQ_REGION_PROJECTION_2",
+            "SVDQ_REGION_LOWRANK_RANK_2",
             "SVDQ_REGION_PROJECTION_2",
             "routedRows",
             "info.downRank",
@@ -1075,9 +1077,10 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "FactorAddress(const SVDQLowRankStagePlan& stage, uint32_t expertId)" in lowrank_header
     assert "AccumulatorAddress(" in lowrank_header
     assert "FactorTileAddress(" in lowrank_header
-    assert "GM_ADDR inputBase = args_.input" in lowrank_header
-    assert "if (stageIndex != 0)" in lowrank_header
-    assert "inputBase = args_.output" in lowrank_header
+    assert "GM_ADDR rank;" in lowrank_header
+    assert "args_.rank != nullptr" in lowrank_header
+    assert "GM_ADDR inputBase = stageIndex == 0 ? args_.input : args_.rank;" in lowrank_header
+    assert "GM_ADDR outputBase = stageIndex == 0 ? args_.rank : args_.output;" in lowrank_header
     assert "IsImplemented() const" in lowrank_header
     assert "return false" in lowrank_header
     assert "args_.tiling.invocationId < SVDQ_LOWRANK_INVOCATION_COUNT" in lowrank_header
@@ -1257,6 +1260,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "LowRankInvocation(uint32_t invocationId)" in contract
     assert "BuildLowRankArgs(uint32_t invocationId)" in contract
     assert "WorkspaceAddress(invocation.accumulatorRegionId)" in contract
+    assert "WorkspaceAddress(invocation.rankRegionId)" in contract
     assert "FactorAddress(invocation.secondUpFactorId)" in contract
     assert "tilingData_.info.expertPerRank" in contract
     assert "LowRankInvocationReady(uint32_t invocationId)" in contract
@@ -1272,16 +1276,16 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
 
     gate_up_call = (
         "SetLowRankInvocation(tilingData, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_GATE_UP,\n"
-        "        SVDQ_REGION_ROUTED_X, SVDQ_REGION_PROJECTION_1, SVDQ_FACTOR_GATE_UP_L1, SVDQ_FACTOR_GATE_L2,\n"
-        "        SVDQ_FACTOR_UP_L2, routedRows, info.hiddenSize, info.gateRank, info.upRank,\n"
+        "        SVDQ_REGION_ROUTED_X, SVDQ_REGION_LOWRANK_RANK_1, SVDQ_REGION_PROJECTION_1, SVDQ_FACTOR_GATE_UP_L1,\n"
+        "        SVDQ_FACTOR_GATE_L2, SVDQ_FACTOR_UP_L2, routedRows, info.hiddenSize, info.gateRank, info.upRank,\n"
         "        info.intermediateSize * 2, info.gateRankOffset, 0, info.upRankOffset, info.intermediateSize,\n"
         "        info.lowRankCoreCount, SVDQ_REGION_LOWRANK_ACCUMULATOR_1)"
     )
     down_call = (
         "SetLowRankInvocation(tilingData, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_DOWN,\n"
-        "        SVDQ_REGION_HIDDEN, SVDQ_REGION_PROJECTION_2, SVDQ_FACTOR_DOWN_L1, SVDQ_FACTOR_DOWN_L2,\n"
-        "        SVDQ_INVALID_ID, routedRows, info.intermediateSize, info.downRank, 0, info.hiddenSize, 0, 0, 0, 0,\n"
-        "        info.lowRankCoreCount, SVDQ_REGION_LOWRANK_ACCUMULATOR_2)"
+        "        SVDQ_REGION_HIDDEN, SVDQ_REGION_LOWRANK_RANK_2, SVDQ_REGION_PROJECTION_2, SVDQ_FACTOR_DOWN_L1,\n"
+        "        SVDQ_FACTOR_DOWN_L2, SVDQ_INVALID_ID, routedRows, info.intermediateSize, info.downRank, 0,\n"
+        "        info.hiddenSize, 0, 0, 0, 0, info.lowRankCoreCount, SVDQ_REGION_LOWRANK_ACCUMULATOR_2)"
     )
     assert gate_up_call in tiling
     assert down_call in tiling
@@ -1369,22 +1373,22 @@ def test_svdq_cann_kernel_contract_resolves_factors_workspace_and_bf16_stages():
             "SVDQ_BF16_STAGE_GATE_UP_L1_GEMM",
             "SVDQ_STAGE_LOWRANK_1",
             "SVDQ_REGION_ROUTED_X",
-            "SVDQ_REGION_PROJECTION_1",
+            "SVDQ_REGION_LOWRANK_RANK_1",
             "SVDQ_SYNC_DISPATCH_TO_LOWRANK_1",
             "SVDQ_INVALID_ID",
         ),
         (
             "SVDQ_BF16_STAGE_GATE_UP_RANK_SPLIT",
             "SVDQ_STAGE_LOWRANK_1",
-            "SVDQ_REGION_PROJECTION_1",
-            "SVDQ_REGION_PROJECTION_1",
+            "SVDQ_REGION_LOWRANK_RANK_1",
+            "SVDQ_REGION_LOWRANK_RANK_1",
             "SVDQ_INVALID_ID",
             "SVDQ_INVALID_ID",
         ),
         (
             "SVDQ_BF16_STAGE_GATE_L2_GEMM",
             "SVDQ_STAGE_LOWRANK_1",
-            "SVDQ_REGION_PROJECTION_1",
+            "SVDQ_REGION_LOWRANK_RANK_1",
             "SVDQ_REGION_PROJECTION_1",
             "SVDQ_INVALID_ID",
             "SVDQ_INVALID_ID",
@@ -1392,7 +1396,7 @@ def test_svdq_cann_kernel_contract_resolves_factors_workspace_and_bf16_stages():
         (
             "SVDQ_BF16_STAGE_UP_L2_GEMM",
             "SVDQ_STAGE_LOWRANK_1",
-            "SVDQ_REGION_PROJECTION_1",
+            "SVDQ_REGION_LOWRANK_RANK_1",
             "SVDQ_REGION_PROJECTION_1",
             "SVDQ_INVALID_ID",
             "SVDQ_SYNC_LOWRANK_1_TO_MIXED_EPILOGUE_1",
@@ -1401,14 +1405,14 @@ def test_svdq_cann_kernel_contract_resolves_factors_workspace_and_bf16_stages():
             "SVDQ_BF16_STAGE_DOWN_L1_GEMM",
             "SVDQ_STAGE_LOWRANK_2",
             "SVDQ_REGION_HIDDEN",
-            "SVDQ_REGION_PROJECTION_2",
+            "SVDQ_REGION_LOWRANK_RANK_2",
             "SVDQ_SYNC_MIXED_EPILOGUE_1_TO_LOWRANK_2",
             "SVDQ_INVALID_ID",
         ),
         (
             "SVDQ_BF16_STAGE_DOWN_L2_GEMM",
             "SVDQ_STAGE_LOWRANK_2",
-            "SVDQ_REGION_PROJECTION_2",
+            "SVDQ_REGION_LOWRANK_RANK_2",
             "SVDQ_REGION_PROJECTION_2",
             "SVDQ_INVALID_ID",
             "SVDQ_SYNC_LOWRANK_2_TO_MIXED_OUTPUT_EPILOGUE",
@@ -1474,7 +1478,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_files"]["build_aclnn"] == "csrc/build_aclnn.sh"
     assert loaded["counts"] == {
         "factor_abi": 5,
-        "workspace_regions": 14,
+        "workspace_regions": 16,
         "sync_flags": 14,
         "bf16_stages": 7,
         "residual_stages": 4,
@@ -1494,6 +1498,11 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["lowrank_is_implemented_returns_false"]
     assert loaded["production_fail_closed"]["w4a8_residual_unblocked"]
     assert loaded["production_fail_closed"]["w4a8_residual_contract_recorded"]
+    assert loaded["source_proof"]["lowrank_helper_uses_separate_rank_workspace"]
+    assert [region["name"] for region in loaded["workspace_regions"][-2:]] == [
+        "SVDQ_REGION_LOWRANK_RANK_1",
+        "SVDQ_REGION_LOWRANK_RANK_2",
+    ]
     assert [stage["name"] for stage in loaded["residual_stages"]] == [
         "SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT",
         "SVDQ_RESIDUAL_STAGE_W4A8_GMM1",
