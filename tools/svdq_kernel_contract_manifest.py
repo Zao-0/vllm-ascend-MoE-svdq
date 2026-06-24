@@ -927,6 +927,18 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             in sources["kernel_contract"]
             and "return true;" in sources["kernel_contract"]
         ),
+        "kernel_residual_gmm_scalar_helpers_absent": (
+            "RunResidualPackedW4A8ScalarGmmStage" not in sources["kernel_contract"]
+            and "LoadResidualGmmExpertTokenCount" not in sources["kernel_contract"]
+            and "ResolveResidualGmmExpert" not in sources["kernel_contract"]
+            and "LoadResidualGmmInputINT8" not in sources["kernel_contract"]
+            and "LoadResidualGmmActivationScale" not in sources["kernel_contract"]
+            and "LoadResidualGmmWeightINT4" not in sources["kernel_contract"]
+            and "LoadResidualGmmWeightScale" not in sources["kernel_contract"]
+            and "LoadResidualGmmBias" not in sources["kernel_contract"]
+            and "StoreResidualGmmOutputBF16" not in sources["kernel_contract"]
+            and "UInt32BitsToFloat" not in sources["kernel_contract"]
+        ),
         "kernel_residual_quant_launch_descriptor_recorded": (
             "SVDQ_RESIDUAL_QUANT_COUNT = 2" in sources["kernel_tiling"]
             and "struct SVDQResidualQuantShape" in sources["kernel_tiling"]
@@ -975,6 +987,14 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "const int32_t rounded = RoundQuantValue(value / scale)" in sources["kernel_contract"]
             and "ClampInt8QuantValue(rounded)" in sources["kernel_contract"]
             and "launch.scaleElements != launch.m" in sources["kernel_contract"]
+        ),
+        "kernel_residual_hidden_quant_scalar_helpers_absent": (
+            "RunResidualScalarDynamicQuantStage" not in sources["kernel_contract"]
+            and "LoadResidualQuantInputBF16" not in sources["kernel_contract"]
+            and "StoreResidualQuantOutputINT8" not in sources["kernel_contract"]
+            and "StoreResidualQuantScaleFP32" not in sources["kernel_contract"]
+            and "RoundQuantValue" not in sources["kernel_contract"]
+            and "ClampInt8QuantValue" not in sources["kernel_contract"]
         ),
         "kernel_residual_execution_dispatch_enabled": (
             "RunW4A8ResidualStages() const" in sources["kernel_contract"]
@@ -1055,6 +1075,15 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
                 "host_tiling"
             ]
         ),
+        "kernel_mixed_epilogue_scalar_helpers_absent": (
+            "RunMixedOutputEpilogueStage" not in sources["kernel_contract"]
+            and "RunMixedSwiGLUEpilogueStage" not in sources["kernel_contract"]
+            and "LoadMixedEpilogueResidualBF16" not in sources["kernel_contract"]
+            and "LoadMixedEpilogueLowRankBF16" not in sources["kernel_contract"]
+            and "StoreMixedEpilogueOutputBF16" not in sources["kernel_contract"]
+            and "SiluFloat" not in sources["kernel_contract"]
+            and "ExpApproxFloat" not in sources["kernel_contract"]
+        ),
         "kernel_records_final_combine_contract": (
             "SVDQFinalCombineContract" in sources["kernel_contract"]
             and "FinalCombineContract() const" in sources["kernel_contract"]
@@ -1106,6 +1135,13 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "StoreFinalCombineOutput(launch, tokenIndex, hiddenOffset, static_cast<bfloat16_t>(combined))"
             in sources["kernel_contract"]
             and "return true;" in sources["kernel_contract"]
+        ),
+        "kernel_final_combine_scalar_helpers_absent": (
+            "LoadFinalCombineRouteIndex" not in sources["kernel_contract"]
+            and "LoadFinalCombineProb" not in sources["kernel_contract"]
+            and "LoadFinalCombineInput" not in sources["kernel_contract"]
+            and "StoreFinalCombineOutput" not in sources["kernel_contract"]
+            and "AccumulateFinalCombineOutput" not in sources["kernel_contract"]
         ),
         "kernel_mixed_final_execution_dispatch_enabled": (
             "RunMixedEpilogueStages() const" in sources["kernel_contract"]
@@ -1380,6 +1416,11 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
                 "kernel_dispatch_routing_uses_official_tiling_contract",
                 "kernel_dispatch_routing_calls_official_bf16_helper",
                 "kernel_dispatch_routing_execution_enabled",
+                "kernel_residual_gmm_scalar_execution_enabled",
+                "kernel_residual_hidden_quant_scalar_execution_enabled",
+                "kernel_mixed_output_epilogue_scalar_execution_enabled",
+                "kernel_mixed_swiglu_epilogue_scalar_execution_enabled",
+                "kernel_final_combine_scalar_execution_enabled",
             }
         )
     if any(
@@ -1543,6 +1584,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "residual_hidden_quant_execution_enabled": source_proof[
                 "kernel_residual_hidden_quant_scalar_execution_enabled"
             ],
+            "residual_hidden_quant_scalar_helpers_absent": source_proof[
+                "kernel_residual_hidden_quant_scalar_helpers_absent"
+            ],
             "residual_quant_launch_descriptor_recorded": source_proof[
                 "kernel_residual_quant_launch_descriptor_recorded"
             ],
@@ -1551,6 +1595,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             ],
             "residual_gmm_execution_enabled": source_proof[
                 "kernel_residual_gmm_scalar_execution_enabled"
+            ],
+            "residual_gmm_scalar_helpers_absent": source_proof[
+                "kernel_residual_gmm_scalar_helpers_absent"
             ],
             "mixed_epilogue_launch_descriptor_recorded": source_proof[
                 "kernel_mixed_epilogue_launch_descriptor_recorded"
@@ -1561,11 +1608,17 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "mixed_swiglu_epilogue_execution_enabled": source_proof[
                 "kernel_mixed_swiglu_epilogue_scalar_execution_enabled"
             ],
+            "mixed_epilogue_scalar_helpers_absent": source_proof[
+                "kernel_mixed_epilogue_scalar_helpers_absent"
+            ],
             "final_combine_launch_descriptor_recorded": source_proof[
                 "kernel_final_combine_launch_descriptor_recorded"
             ],
             "final_combine_execution_enabled": source_proof[
                 "kernel_final_combine_scalar_execution_enabled"
+            ],
+            "final_combine_scalar_helpers_absent": source_proof[
+                "kernel_final_combine_scalar_helpers_absent"
             ],
             "w4a8_residual_execution_fail_closed": (
                 "production tiling is fail-closed" in host_tiling_source

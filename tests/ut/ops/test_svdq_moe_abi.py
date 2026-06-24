@@ -1148,26 +1148,26 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         )
     ]
     for token in (
-        "return RunResidualPackedW4A8ScalarGmmStage(launch)",
-        "RunResidualPackedW4A8ScalarGmmStage(const SVDQResidualGmmLaunch& launch) const",
-        "LoadResidualGmmExpertTokenCount(",
-        "ResolveResidualGmmExpert(launch, row)",
-        "LoadResidualGmmInputINT8(",
-        "LoadResidualGmmActivationScale(",
-        "LoadResidualGmmWeightINT4(",
-        "LoadResidualGmmWeightScale(",
-        "LoadResidualGmmBias(",
-        "StoreResidualGmmOutputBF16(",
-        "launch.n % 8 != 0",
-        "const uint32_t packedColumns = launch.n / 8",
-        "const uint32_t shift = (nColumn % 8) * 4",
-        "nibble >= 8 ? nibble - 16 : nibble",
-        "UInt32BitsToFloat(static_cast<uint32_t>(packedScale & 0xffffffffULL))",
-        "activation * activationScale * weightValue * weightScale",
-        "StoreResidualGmmOutputBF16(launch, row, column, static_cast<bfloat16_t>(accumulator))",
-        "return true",
+        "plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM",
+        "!ResidualGmmLaunchReady(stageId)",
+        "Residual W4A8 GMM must be implemented by the official AIC W4A8 kernel path.",
+        "return false;",
     ):
         assert token in gmm_execution_source
+
+    for token in (
+        "RunResidualPackedW4A8ScalarGmmStage",
+        "LoadResidualGmmExpertTokenCount",
+        "ResolveResidualGmmExpert",
+        "LoadResidualGmmInputINT8",
+        "LoadResidualGmmActivationScale",
+        "LoadResidualGmmWeightINT4",
+        "LoadResidualGmmWeightScale",
+        "LoadResidualGmmBias",
+        "StoreResidualGmmOutputBF16",
+        "UInt32BitsToFloat",
+    ):
+        assert token not in contract
 
     assert "stage.residualOnly = residualOnly" in tiling
     assert "true);" in tiling
@@ -1195,21 +1195,20 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         "launch.workspace",
         "&routingTiling.moeInitRoutingQuantV2TilingData",
         "routingTiling.initRoutingQuantTilingKey",
-        "return RunResidualScalarDynamicQuantStage(launch)",
-        "RunResidualScalarDynamicQuantStage(const SVDQResidualQuantLaunch& launch) const",
-        "LoadResidualQuantInputBF16(",
-        "StoreResidualQuantOutputINT8(",
-        "StoreResidualQuantScaleFP32(",
-        "for (uint32_t row = coreIdx; row < launch.m; row += coreCount)",
-        "const float scale = maxAbs / 127.0F",
-        "StoreResidualQuantScaleFP32(launch, row, scale)",
-        "StoreResidualQuantOutputINT8(launch, row, column, static_cast<int8_t>(0))",
-        "const int32_t rounded = RoundQuantValue(value / scale)",
-        "ClampInt8QuantValue(rounded)",
-        "launch.scaleElements != launch.m",
-        "return true;",
+        "Non-routing residual quantization must be implemented by the production AIV path.",
+        "return false;",
     ):
         assert token in residual_quant_source
+
+    for token in (
+        "RunResidualScalarDynamicQuantStage",
+        "LoadResidualQuantInputBF16",
+        "StoreResidualQuantOutputINT8",
+        "StoreResidualQuantScaleFP32",
+        "RoundQuantValue",
+        "ClampInt8QuantValue",
+    ):
+        assert token not in contract
 
     quant_ready_source = contract[
         contract.index("__aicore__ inline bool ResidualQuantLaunchReady") : contract.index(
@@ -1315,31 +1314,22 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
         "shape.outputColumns == tilingData_.info.hiddenSize",
         "shape.gateColumnOffset == SVDQ_INVALID_ID",
         "shape.upColumnOffset == SVDQ_INVALID_ID",
-        "if (launch.appliesSwiGLU)",
-        "return RunMixedSwiGLUEpilogueStage(launch)",
-        "return RunMixedOutputEpilogueStage(launch)",
-        "LoadMixedEpilogueResidualBF16(",
-        "LoadMixedEpilogueLowRankBF16(",
-        "StoreMixedEpilogueOutputBF16(",
-        "RunMixedOutputEpilogueStage(const SVDQMixedEpilogueLaunch& launch) const",
-        "launch.residualColumns != launch.outputColumns",
-        "launch.lowRankColumns != launch.outputColumns",
-        "const uint64_t outputElements = static_cast<uint64_t>(launch.m) * launch.outputColumns",
-        "const float residual = static_cast<float>(LoadMixedEpilogueResidualBF16(launch, row, column))",
-        "const float lowRank = static_cast<float>(LoadMixedEpilogueLowRankBF16(launch, row, column))",
-        "StoreMixedEpilogueOutputBF16(launch, row, column, static_cast<bfloat16_t>(residual + lowRank))",
-        "RunMixedSwiGLUEpilogueStage(const SVDQMixedEpilogueLaunch& launch) const",
-        "launch.residualColumns != launch.outputColumns * 2",
-        "launch.lowRankColumns != launch.outputColumns * 2",
-        "launch.gateColumnOffset != 0",
-        "launch.upColumnOffset != launch.outputColumns",
-        "const uint32_t gateColumn = launch.gateColumnOffset + column",
-        "const uint32_t upColumn = launch.upColumnOffset + column",
-        "SiluFloat(float value) const",
-        "ExpApproxFloat(-value)",
-        "SiluFloat(gate) * up",
+        "if (!MixedEpilogueReady(epilogueId))",
+        "Mixed residual/low-rank epilogues require an AIV implementation before production use.",
+        "return false;",
     ):
         assert token in epilogue_source
+
+    for token in (
+        "RunMixedSwiGLUEpilogueStage",
+        "RunMixedOutputEpilogueStage",
+        "LoadMixedEpilogueResidualBF16",
+        "LoadMixedEpilogueLowRankBF16",
+        "StoreMixedEpilogueOutputBF16",
+        "SiluFloat",
+        "ExpApproxFloat",
+    ):
+        assert token not in contract
 
     for token in (
         "SVDQFinalCombineContract",
@@ -1405,22 +1395,20 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
         "shape.routedRows >= shape.activeSlots",
         "launch.expertId != nullptr",
         "launch.probs != nullptr",
-        "LoadFinalCombineRouteIndex(",
-        "LoadFinalCombineProb(",
-        "LoadFinalCombineInput(",
-        "StoreFinalCombineOutput(",
-        "AccumulateFinalCombineOutput(",
-        "const uint32_t slotBase = tokenIndex * launch.topK",
-        "for (uint32_t topKOffset = 0; topKOffset < launch.topK; ++topKOffset)",
-        "const int32_t routedRow = LoadFinalCombineRouteIndex(launch, slot)",
-        "routedRow < 0 || static_cast<uint32_t>(routedRow) >= launch.routedRows",
-        "LoadFinalCombineInput(launch, static_cast<uint32_t>(routedRow), hiddenOffset)) * probability",
-        "const uint64_t outputElements = static_cast<uint64_t>(launch.m) * launch.hiddenSize",
-        "for (uint64_t elementIndex = coreIdx; elementIndex < outputElements; elementIndex += coreCount)",
-        "StoreFinalCombineOutput(launch, tokenIndex, hiddenOffset, static_cast<bfloat16_t>(combined))",
-        "return true;",
+        "if (!FinalCombineReady())",
+        "Final unpermute/combine must be implemented by a validated production AIV path.",
+        "return false;",
     ):
         assert token in final_combine_source
+
+    for token in (
+        "LoadFinalCombineRouteIndex",
+        "LoadFinalCombineProb",
+        "LoadFinalCombineInput",
+        "StoreFinalCombineOutput",
+        "AccumulateFinalCombineOutput",
+    ):
+        assert token not in contract
 
     process = contract[
         contract.index("__aicore__ inline void Process()") : contract.index(
@@ -2134,15 +2122,19 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["lowrank_is_implemented_uses_complete_contract"]
     assert not loaded["production_fail_closed"]["dispatch_routing_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_routed_input_quant_execution_enabled"]
-    assert loaded["production_fail_closed"]["residual_hidden_quant_execution_enabled"]
+    assert not loaded["production_fail_closed"]["residual_hidden_quant_execution_enabled"]
+    assert loaded["production_fail_closed"]["residual_hidden_quant_scalar_helpers_absent"]
     assert loaded["production_fail_closed"]["residual_quant_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_launch_descriptor_recorded"]
-    assert loaded["production_fail_closed"]["residual_gmm_execution_enabled"]
+    assert not loaded["production_fail_closed"]["residual_gmm_execution_enabled"]
+    assert loaded["production_fail_closed"]["residual_gmm_scalar_helpers_absent"]
     assert loaded["production_fail_closed"]["mixed_epilogue_launch_descriptor_recorded"]
-    assert loaded["production_fail_closed"]["mixed_output_epilogue_execution_enabled"]
-    assert loaded["production_fail_closed"]["mixed_swiglu_epilogue_execution_enabled"]
+    assert not loaded["production_fail_closed"]["mixed_output_epilogue_execution_enabled"]
+    assert not loaded["production_fail_closed"]["mixed_swiglu_epilogue_execution_enabled"]
+    assert loaded["production_fail_closed"]["mixed_epilogue_scalar_helpers_absent"]
     assert loaded["production_fail_closed"]["final_combine_launch_descriptor_recorded"]
-    assert loaded["production_fail_closed"]["final_combine_execution_enabled"]
+    assert not loaded["production_fail_closed"]["final_combine_execution_enabled"]
+    assert loaded["production_fail_closed"]["final_combine_scalar_helpers_absent"]
     assert loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
     assert loaded["production_fail_closed"]["mixed_epilogue_execution_fail_closed"]
     assert loaded["production_fail_closed"]["final_combine_execution_fail_closed"]
@@ -2163,17 +2155,21 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_residual_dispatches_dynamic_quant_and_gmm"]
     assert loaded["source_proof"]["kernel_residual_quant_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_launch_descriptor_recorded"]
-    assert loaded["source_proof"]["kernel_residual_gmm_scalar_execution_enabled"]
+    assert not loaded["source_proof"]["kernel_residual_gmm_scalar_execution_enabled"]
+    assert loaded["source_proof"]["kernel_residual_gmm_scalar_helpers_absent"]
     assert loaded["source_proof"]["kernel_residual_routed_input_quant_execution_enabled"]
-    assert loaded["source_proof"]["kernel_residual_hidden_quant_scalar_execution_enabled"]
+    assert not loaded["source_proof"]["kernel_residual_hidden_quant_scalar_execution_enabled"]
+    assert loaded["source_proof"]["kernel_residual_hidden_quant_scalar_helpers_absent"]
     assert loaded["source_proof"]["kernel_residual_execution_dispatch_enabled"]
     assert loaded["source_proof"]["kernel_records_mixed_epilogue_contracts"]
     assert loaded["source_proof"]["kernel_mixed_epilogue_launch_descriptor_recorded"]
-    assert loaded["source_proof"]["kernel_mixed_output_epilogue_scalar_execution_enabled"]
-    assert loaded["source_proof"]["kernel_mixed_swiglu_epilogue_scalar_execution_enabled"]
+    assert not loaded["source_proof"]["kernel_mixed_output_epilogue_scalar_execution_enabled"]
+    assert not loaded["source_proof"]["kernel_mixed_swiglu_epilogue_scalar_execution_enabled"]
+    assert loaded["source_proof"]["kernel_mixed_epilogue_scalar_helpers_absent"]
     assert loaded["source_proof"]["kernel_records_final_combine_contract"]
     assert loaded["source_proof"]["kernel_final_combine_launch_descriptor_recorded"]
-    assert loaded["source_proof"]["kernel_final_combine_scalar_execution_enabled"]
+    assert not loaded["source_proof"]["kernel_final_combine_scalar_execution_enabled"]
+    assert loaded["source_proof"]["kernel_final_combine_scalar_helpers_absent"]
     assert loaded["source_proof"]["kernel_mixed_final_execution_dispatch_enabled"]
     assert loaded["source_proof"]["lowrank_helper_enabled_by_contract"]
     assert loaded["source_proof"]["lowrank_helper_uses_separate_rank_workspace"]
@@ -2295,6 +2291,11 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "kernel_dispatch_routing_calls_official_bf16_helper",
         "kernel_dispatch_routing_execution_enabled",
         "host_tiling_graph_success_enabled",
+        "kernel_residual_gmm_scalar_execution_enabled",
+        "kernel_residual_hidden_quant_scalar_execution_enabled",
+        "kernel_mixed_output_epilogue_scalar_execution_enabled",
+        "kernel_mixed_swiglu_epilogue_scalar_execution_enabled",
+        "kernel_final_combine_scalar_execution_enabled",
     }
     assert {
         name for name, passed in loaded["source_proof"].items() if not passed

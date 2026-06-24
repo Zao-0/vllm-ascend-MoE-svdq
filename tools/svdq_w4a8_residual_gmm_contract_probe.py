@@ -229,13 +229,23 @@ def _svdq_fail_closed_contract(host_tiling: str, kernel_h: str) -> dict[str, Any
             (
                 "__aicore__ inline bool DispatchRoutingReady() const",
                 "__aicore__ inline bool RunDispatchRoutingStage() const",
+                "__aicore__ inline bool RunResidualDynamicQuantStage",
+                "__aicore__ inline bool RunResidualGmmStage",
                 "return false;",
-                "RunResidualScalarDynamicQuantStage",
-                "RunResidualPackedW4A8ScalarGmmStage",
                 "RunMixedEpilogueStage",
                 "RunFinalCombine",
             ),
         )
+    )
+    checks.update(
+        {
+            "no_scalar_residual_dynamic_quant_helper": "RunResidualScalarDynamicQuantStage" not in kernel_h,
+            "no_scalar_w4a8_gmm_helper": "RunResidualPackedW4A8ScalarGmmStage" not in kernel_h,
+            "no_scalar_int4_decode_helper": "LoadResidualGmmWeightINT4" not in kernel_h,
+            "no_scalar_mixed_swiglu_helper": "RunMixedSwiGLUEpilogueStage" not in kernel_h,
+            "no_scalar_mixed_output_helper": "RunMixedOutputEpilogueStage" not in kernel_h,
+            "no_scalar_final_combine_accumulator": "AccumulateFinalCombineOutput" not in kernel_h,
+        }
     )
     fail_closed_idx = host_tiling.index("DispatchFFNCombineW4A8SVDQ production tiling is fail-closed")
     failed_return_idx = host_tiling.index("return ge::GRAPH_FAILED;", fail_closed_idx)
@@ -244,15 +254,15 @@ def _svdq_fail_closed_contract(host_tiling: str, kernel_h: str) -> dict[str, Any
         failed_return_idx,
     )
     return _contract(
-        "svdq_production_fail_closed_and_scalar_placeholders_disabled",
+        "svdq_production_fail_closed_and_scalar_placeholders_removed",
         [SVDQ_HOST_TILING, SVDQ_KERNEL_H],
         checks,
         production_host_tiling_fail_closed=True,
         debug_lowrank_tiling_enabled=True,
         scalar_placeholder_status=(
-            "Scalar residual/mixed/final helper names remain in source but production tiling and routing "
-            "are fail-closed. They are not acceptance evidence and must be removed or replaced by official "
-            "AIC/AIV ports before production can open."
+            "Scalar residual/mixed/final helper bodies are absent from the SVDQ production kernel source. "
+            "The remaining stage methods are fail-closed until official AIC/AIV ports are implemented and "
+            "validated on NPU."
         ),
     )
 
