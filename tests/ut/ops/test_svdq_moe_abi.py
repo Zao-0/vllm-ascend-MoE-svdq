@@ -368,6 +368,29 @@ def test_official_w4a8_opdef_advertises_ascend910b_for_package_generation():
     )
 
 
+def test_official_w4a8_debug_readback_compile_flag_is_default_off():
+    op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8"
+    cmake = (op_root / "op_host/CMakeLists.txt").read_text()
+    kernel = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp").read_text()
+    gmm1_epilogue = (op_root / "op_kernel/utils/block_epilogue_w4a8post_pertoken_swiglu.hpp").read_text()
+    gmm2_epilogue = (op_root / "op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp").read_text()
+
+    assert "option(SVDQ_W4A8_DEBUG_READBACK" in cmake
+    assert "Compile official W4A8 epilogues with FP32 GMM readback" in cmake
+    assert "OFF)" in cmake
+    assert "if(SVDQ_W4A8_DEBUG_READBACK)" in cmake
+    assert "list(APPEND _DISPATCH_FFN_W4A8_DEBUG_OPTS -DW4A8_DEBUG)" in cmake
+    assert "${_DISPATCH_FFN_W4A8_DEBUG_OPTS}" in cmake
+
+    assert "ptrCGMM1" in kernel
+    assert "ptrCGMM2" in kernel
+    assert "#ifdef W4A8_DEBUG" in kernel
+    assert "workspaceOffset += params.maxOutputSize * params.problemShape.n() * sizeof(float);" in kernel
+    assert "workspaceOffset += params.maxOutputSize * n2 * sizeof(float);" in kernel
+    assert "DataCopy(gmTileGMM1, ubCFp32, blockN);" in gmm1_epilogue
+    assert "copyUbToGmGMM2(gmTileGMM2, ubFp32, layoutGM, layoutUB);" in gmm2_epilogue
+
+
 def test_svdq_lowrank_debug_probe_preflights_runtime_soc_package_support(tmp_path):
     from tools.svdq_lowrank_debug_readback_probe import (
         DEBUG_OP_NAME,

@@ -9,6 +9,13 @@ endif()
 if (EXISTS ${CMAKE_SOURCE_DIR}/third_party/catlass/include)
     list(APPEND _DISPATCH_FFN_INC_OPTS -I${CMAKE_SOURCE_DIR}/third_party/catlass/include)
 endif()
+option(SVDQ_W4A8_DEBUG_READBACK
+       "Compile official W4A8 epilogues with FP32 GMM readback for isolated SVDQ validation."
+       OFF)
+set(_DISPATCH_FFN_W4A8_DEBUG_OPTS)
+if(SVDQ_W4A8_DEBUG_READBACK)
+    list(APPEND _DISPATCH_FFN_W4A8_DEBUG_OPTS -DW4A8_DEBUG)
+endif()
 
 add_op_to_compiled_list()
 
@@ -27,6 +34,7 @@ add_ops_compile_options(
         -DHCCL_COMM
         -DCATLASS_ARCH=2201
         ${_DISPATCH_FFN_INC_OPTS}
+        ${_DISPATCH_FFN_W4A8_DEBUG_OPTS}
 )
 
 if (NOT BUILD_OPS_RTY_KERNEL)
