@@ -242,7 +242,8 @@ def test_svdq_cann_op_host_surface_uses_canonical_five_factor_abi():
     assert 'this->Output("gateUpAccumulator")' in debug_op_def
     assert 'this->Output("downAccumulator")' in debug_op_def
     assert "IMPL_OP_OPTILING(DispatchFFNCombineW4A8SVDQ)" in tiling
-    assert "AscendC kernel is not implemented yet" in tiling
+    assert "DispatchFFNCombineW4A8SVDQ AscendC kernel is not implemented yet" not in tiling
+    assert "return ge::GRAPH_SUCCESS;" in tiling
 
     canonical_order = (
         "gateUpSvdqL1",
@@ -413,7 +414,8 @@ def test_svdq_w4a8_residual_gmm_contract_probe_matches_official_call_surface():
         "SVDQ_RESIDUAL_STAGE_W4A8_GMM2",
         "SVDQ_REGION_ACCUMULATOR_1",
         "SVDQ_REGION_ACCUMULATOR_2",
-        "GRAPH_FAILED",
+        "production_host_tiling_enabled",
+        "return ge::GRAPH_SUCCESS;",
         "phase_f_residual_gmm_contract_probe_summary.json",
     ):
         assert token in probe
@@ -576,7 +578,8 @@ def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
     assert "routedRows * hiddenSize * FP32_BYTES" in tiling
     assert "SVDQ_REGION_ACCUMULATOR_1, offset, routedRows * gateUpSize * BF16_BYTES" in tiling
     assert "SVDQ_REGION_ACCUMULATOR_2, offset, routedRows * hiddenSize * BF16_BYTES" in tiling
-    assert "AscendC kernel is not implemented yet" in tiling
+    assert "DispatchFFNCombineW4A8SVDQ AscendC kernel is not implemented yet" not in tiling
+    assert "return ge::GRAPH_SUCCESS;" in tiling
 
 
 def test_svdq_cann_tiling_validates_dtype_and_all_factor_shapes():
@@ -637,7 +640,8 @@ def test_svdq_cann_tiling_sync_flags_match_required_dataflow():
     assert "SetSyncFlag" in tiling
     assert "tilingData->info.syncFlagCount = SVDQ_SYNC_FLAG_COUNT" in tiling
     assert "BuildSyncFlagTable(tilingData)" in tiling
-    assert "AscendC kernel is not implemented yet" in tiling
+    assert "DispatchFFNCombineW4A8SVDQ AscendC kernel is not implemented yet" not in tiling
+    assert "return ge::GRAPH_SUCCESS;" in tiling
 
     expected_flags = (
         (
@@ -1129,7 +1133,8 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
 
     assert "stage.residualOnly = residualOnly" in tiling
     assert "true);" in tiling
-    assert "AscendC kernel is not implemented yet" in tiling
+    assert "DispatchFFNCombineW4A8SVDQ AscendC kernel is not implemented yet" not in tiling
+    assert "return ge::GRAPH_SUCCESS;" in tiling
 
     assert (
         "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2.cpp"
@@ -2068,7 +2073,8 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert "gate_up_svdq_l2" not in json.dumps(loaded)
     assert loaded["rank_split_contract"]["split_source"] == "explicit gateRank/upRank offsets"
     assert loaded["rank_split_contract"]["up_rank_offset"] == "gateRank"
-    assert loaded["production_fail_closed"]["host_tiling_returns_graph_failed"]
+    assert not loaded["production_fail_closed"]["host_tiling_returns_graph_failed"]
+    assert loaded["production_fail_closed"]["host_tiling_success_enabled"]
     assert loaded["production_fail_closed"]["lowrank_is_implemented_uses_complete_contract"]
     assert loaded["production_fail_closed"]["dispatch_routing_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_routed_input_quant_execution_enabled"]
@@ -2102,7 +2108,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_residual_gmm_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_routed_input_quant_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_hidden_quant_scalar_execution_enabled"]
-    assert loaded["source_proof"]["kernel_residual_execution_fail_closed"]
+    assert loaded["source_proof"]["kernel_residual_execution_dispatch_enabled"]
     assert loaded["source_proof"]["kernel_records_mixed_epilogue_contracts"]
     assert loaded["source_proof"]["kernel_mixed_epilogue_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_mixed_output_epilogue_scalar_execution_enabled"]
@@ -2110,7 +2116,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_records_final_combine_contract"]
     assert loaded["source_proof"]["kernel_final_combine_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_final_combine_scalar_execution_enabled"]
-    assert loaded["source_proof"]["kernel_mixed_final_execution_fail_closed"]
+    assert loaded["source_proof"]["kernel_mixed_final_execution_dispatch_enabled"]
     assert loaded["source_proof"]["lowrank_helper_enabled_by_contract"]
     assert loaded["source_proof"]["lowrank_helper_uses_separate_rank_workspace"]
     assert loaded["source_proof"]["lowrank_helper_stage_orders_rank_consumers"]

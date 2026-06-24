@@ -786,8 +786,7 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
                     tilingData->dispatchRouting.bf16RoutingWorkspaceBytes +
                     tilingData->dispatchRouting.routingWorkspaceBytes;
 
-    OP_LOGE(nodeName, "DispatchFFNCombineW4A8SVDQ AscendC kernel is not implemented yet.");
-    return ge::GRAPH_FAILED;
+    return ge::GRAPH_SUCCESS;
 }
 
 struct DispatchFFNCombineW4A8SVDQCompileInfo {};

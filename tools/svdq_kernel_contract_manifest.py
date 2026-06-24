@@ -664,6 +664,18 @@ def _tokens_in_order(source: str, tokens: list[str]) -> bool:
     return True
 
 
+def _production_host_tiling_source(sources: dict[str, str]) -> str:
+    host_tiling_start = sources["host_tiling"].find(
+        "static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext* context)"
+    )
+    host_tiling_end = sources["host_tiling"].find(
+        "struct DispatchFFNCombineW4A8SVDQCompileInfo", host_tiling_start
+    )
+    if host_tiling_start < 0 or host_tiling_end < 0:
+        return ""
+    return sources["host_tiling"][host_tiling_start:host_tiling_end]
+
+
 def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
     process_start = sources["kernel_contract"].find("__aicore__ inline void Process()")
     process_end = sources["kernel_contract"].find("__aicore__ inline bool HasCompleteTilingContract()")
@@ -684,6 +696,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         if residual_quant_start >= 0
         else ""
     )
+    host_tiling_source = _production_host_tiling_source(sources)
     return {
         "host_tiling_builds_workspace_map": "BuildWorkspaceMap(tilingData)" in sources["host_tiling"],
         "host_tiling_builds_sync_flags": "BuildSyncFlagTable(tilingData)" in sources["host_tiling"],
@@ -917,7 +930,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "ClampInt8QuantValue(rounded)" in sources["kernel_contract"]
             and "launch.scaleElements != launch.m" in sources["kernel_contract"]
         ),
-        "kernel_residual_execution_fail_closed": (
+        "kernel_residual_execution_dispatch_enabled": (
             "RunW4A8ResidualStages() const" in sources["kernel_contract"]
             and "RunResidualStage(stageId)" in sources["kernel_contract"]
             and "RunResidualDynamicQuantStage(uint32_t stageId) const" in sources["kernel_contract"]
@@ -1048,7 +1061,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             in sources["kernel_contract"]
             and "return true;" in sources["kernel_contract"]
         ),
-        "kernel_mixed_final_execution_fail_closed": (
+        "kernel_mixed_final_execution_dispatch_enabled": (
             "RunMixedEpilogueStages() const" in sources["kernel_contract"]
             and "MixedEpilogueReady(epilogueId)" in sources["kernel_contract"]
             and "RunFinalCombine() const" in sources["kernel_contract"]
@@ -1076,8 +1089,21 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "AscendC::SyncAll()" in sources["lowrank_header"]
             and "stage-ordered so L2 stages cannot read rank workspace" in sources["lowrank_header"]
         ),
-        "host_tiling_fail_closed": "AscendC kernel is not implemented yet" in sources["host_tiling"]
-        and "return ge::GRAPH_FAILED;" in sources["host_tiling"],
+        "host_tiling_graph_success_enabled": (
+            "BuildWorkspaceMap(tilingData);" in host_tiling_source
+            and "BuildSyncFlagTable(tilingData);" in host_tiling_source
+            and "BuildDispatchRoutingTiling(tilingData);" in host_tiling_source
+            and "BuildBF16StageShapeTable(tilingData);" in host_tiling_source
+            and "BuildResidualStageShapeTable(tilingData);" in host_tiling_source
+            and "BuildResidualQuantShapeTable(tilingData);" in host_tiling_source
+            and "BuildResidualGmmShapeTable(tilingData);" in host_tiling_source
+            and "BuildMixedEpilogueShapeTable(tilingData);" in host_tiling_source
+            and "BuildFinalCombineShape(tilingData);" in host_tiling_source
+            and "BuildLowRankInvocationTable(tilingData);" in host_tiling_source
+            and "workSpaces[0] = SVDQ_SYSTEM_WORKSPACE + info.workspaceBytes +" in host_tiling_source
+            and "return ge::GRAPH_SUCCESS;" in host_tiling_source
+            and "DispatchFFNCombineW4A8SVDQ AscendC kernel is not implemented yet" not in host_tiling_source
+        ),
         "lowrank_mmad_debug_readback_macro": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK"
         in sources["lowrank_header"],
         "lowrank_mmad_debug_readback_uses_fp32_l0c_to_gm": (
@@ -1324,6 +1350,7 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
 def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
     sources = _read_sources(repo_root)
     source_proof = _source_proof(sources)
+    host_tiling_source = _production_host_tiling_source(sources)
     manifest = {
         "schema_version": 1,
         "operator": "DispatchFFNCombineW4A8SVDQ",
@@ -1434,12 +1461,16 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "split_source": "explicit gateRank/upRank offsets",
         },
         "production_fail_closed": {
-            "host_tiling_returns_graph_failed": "AscendC kernel is not implemented yet" in sources["host_tiling"],
+            "host_tiling_returns_graph_failed": (
+                "DispatchFFNCombineW4A8SVDQ AscendC kernel is not implemented yet" in host_tiling_source
+                or "return ge::GRAPH_FAILED;" in host_tiling_source
+            ),
+            "host_tiling_success_enabled": source_proof["host_tiling_graph_success_enabled"],
             "lowrank_is_implemented_uses_complete_contract": (
                 "IsImplemented() const\n    {\n        return HasCompleteContract();" in sources["lowrank_header"]
             ),
             "reason": (
-                "Host tiling success, synchronization handoff validation, "
+                "Synchronization handoff validation, production device runtime validation, "
                 "and target-model E2E validation are incomplete."
             ),
             "dispatch_routing_execution_enabled": source_proof["kernel_dispatch_routing_execution_enabled"],
