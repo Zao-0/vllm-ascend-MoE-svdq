@@ -371,6 +371,24 @@ def test_svdq_w4a8_residual_gmm_contract_probe_matches_official_call_surface():
         assert token in probe
 
 
+def test_svdq_w4a8_residual_gmm_device_probe_executes_official_stage_shapes():
+    probe = (REPO_ROOT / "tools/svdq_w4a8_residual_gmm_device_probe.py").read_text()
+
+    for token in (
+        "torch_npu.npu_grouped_matmul",
+        "_pack_modelslim_per_channel_scale",
+        "w4a8_residual_gmm1",
+        "w4a8_residual_gmm2",
+        "(2 * intermediate_size) // 8",
+        "hidden_size // 8",
+        "group_list_type=1",
+        "output_dtype=torch.bfloat16",
+        "phase_f_residual_gmm_device_probe_summary.json",
+        "--require-npu",
+    ):
+        assert token in probe
+
+
 def test_cann_host_library_build_path_honors_soc_selection():
     build_script = (REPO_ROOT / "csrc/build.sh").read_text()
     create_lib_branch = build_script[build_script.index('elif [[ "$ENABLE_CREATE_LIB" == "TRUE" ]];') :]
