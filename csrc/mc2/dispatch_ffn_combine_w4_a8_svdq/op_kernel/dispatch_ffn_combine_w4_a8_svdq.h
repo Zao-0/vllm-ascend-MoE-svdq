@@ -943,8 +943,56 @@ public:
             return false;
         }
         SVDQMixedEpilogueLaunch launch = BuildMixedEpilogueLaunch(epilogueId);
-        (void)launch;
-        return false;
+        if (launch.appliesSwiGLU) {
+            return false;
+        }
+        return RunMixedOutputEpilogueStage(launch);
+    }
+
+    __aicore__ inline bfloat16_t LoadMixedEpilogueResidualBF16(
+        const SVDQMixedEpilogueLaunch& launch, uint32_t row, uint32_t column) const
+    {
+        AscendC::GlobalTensor<bfloat16_t> residual;
+        residual.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(launch.residualAccumulator));
+        return residual.GetValue(static_cast<uint64_t>(row) * launch.residualColumns + column);
+    }
+
+    __aicore__ inline bfloat16_t LoadMixedEpilogueLowRankBF16(
+        const SVDQMixedEpilogueLaunch& launch, uint32_t row, uint32_t column) const
+    {
+        AscendC::GlobalTensor<bfloat16_t> lowRank;
+        lowRank.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(launch.lowRankOutput));
+        return lowRank.GetValue(static_cast<uint64_t>(row) * launch.lowRankColumns + column);
+    }
+
+    __aicore__ inline void StoreMixedEpilogueOutputBF16(
+        const SVDQMixedEpilogueLaunch& launch, uint32_t row, uint32_t column, bfloat16_t value) const
+    {
+        AscendC::GlobalTensor<bfloat16_t> output;
+        output.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(launch.output));
+        output.SetValue(static_cast<uint64_t>(row) * launch.outputColumns + column, value);
+    }
+
+    __aicore__ inline bool RunMixedOutputEpilogueStage(const SVDQMixedEpilogueLaunch& launch) const
+    {
+        if (launch.appliesSwiGLU || launch.residualColumns != launch.outputColumns ||
+            launch.lowRankColumns != launch.outputColumns || launch.m == 0 || launch.outputColumns == 0) {
+            return false;
+        }
+        const uint32_t coreIdx = AscendC::GetBlockIdx();
+        const uint32_t coreCount = AscendC::GetBlockNum();
+        if (coreCount == 0) {
+            return false;
+        }
+        const uint64_t outputElements = static_cast<uint64_t>(launch.m) * launch.outputColumns;
+        for (uint64_t elementIndex = coreIdx; elementIndex < outputElements; elementIndex += coreCount) {
+            const uint32_t row = static_cast<uint32_t>(elementIndex / launch.outputColumns);
+            const uint32_t column = static_cast<uint32_t>(elementIndex % launch.outputColumns);
+            const float residual = static_cast<float>(LoadMixedEpilogueResidualBF16(launch, row, column));
+            const float lowRank = static_cast<float>(LoadMixedEpilogueLowRankBF16(launch, row, column));
+            StoreMixedEpilogueOutputBF16(launch, row, column, static_cast<bfloat16_t>(residual + lowRank));
+        }
+        return true;
     }
 
     __aicore__ inline bool RunMixedEpilogueStages() const
@@ -954,7 +1002,7 @@ public:
                 return false;
             }
         }
-        return false;
+        return true;
     }
 
     __aicore__ inline SVDQFinalCombineContract FinalCombineContract() const

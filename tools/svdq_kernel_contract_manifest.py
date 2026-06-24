@@ -103,12 +103,12 @@ WORKSPACE_REGIONS = [
     {
         "id": 5,
         "name": "SVDQ_REGION_ACCUMULATOR_1",
-        "dtype": "SVDQ_DTYPE_INT32",
-        "size_expr": "maxOutputSize * intermediateSize * 2 * INT32_BYTES",
+        "dtype": "SVDQ_DTYPE_BF16",
+        "size_expr": "maxOutputSize * intermediateSize * 2 * BF16_BYTES",
         "producer_stage": "SVDQ_STAGE_W4A8_GEMM_1",
         "consumer_stage": "SVDQ_STAGE_MIXED_EPILOGUE_1",
         "lifetime_id": 6,
-        "purpose": "future W4A8 gate/up residual accumulator",
+        "purpose": "future W4A8 gate/up residual BF16 projection",
     },
     {
         "id": 6,
@@ -153,12 +153,12 @@ WORKSPACE_REGIONS = [
     {
         "id": 10,
         "name": "SVDQ_REGION_ACCUMULATOR_2",
-        "dtype": "SVDQ_DTYPE_INT32",
-        "size_expr": "maxOutputSize * hiddenSize * INT32_BYTES",
+        "dtype": "SVDQ_DTYPE_BF16",
+        "size_expr": "maxOutputSize * hiddenSize * BF16_BYTES",
         "producer_stage": "SVDQ_STAGE_W4A8_GEMM_2",
         "consumer_stage": "SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE",
         "lifetime_id": 11,
-        "purpose": "future W4A8 down residual accumulator",
+        "purpose": "future W4A8 down residual BF16 projection",
     },
     {
         "id": 11,
@@ -932,6 +932,28 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "shape.gateColumnOffset == SVDQ_INVALID_ID" in sources["kernel_contract"]
             and "shape.upColumnOffset == SVDQ_INVALID_ID" in sources["kernel_contract"]
         ),
+        "kernel_mixed_output_epilogue_scalar_execution_enabled": (
+            "RunMixedOutputEpilogueStage(const SVDQMixedEpilogueLaunch& launch) const"
+            in sources["kernel_contract"]
+            and "if (launch.appliesSwiGLU)" in sources["kernel_contract"]
+            and "return RunMixedOutputEpilogueStage(launch);" in sources["kernel_contract"]
+            and "LoadMixedEpilogueResidualBF16(" in sources["kernel_contract"]
+            and "LoadMixedEpilogueLowRankBF16(" in sources["kernel_contract"]
+            and "StoreMixedEpilogueOutputBF16(" in sources["kernel_contract"]
+            and "launch.residualColumns != launch.outputColumns" in sources["kernel_contract"]
+            and "launch.lowRankColumns != launch.outputColumns" in sources["kernel_contract"]
+            and "const uint64_t outputElements = static_cast<uint64_t>(launch.m) * launch.outputColumns"
+            in sources["kernel_contract"]
+            and "const float residual = static_cast<float>(LoadMixedEpilogueResidualBF16(launch, row, column))"
+            in sources["kernel_contract"]
+            and "const float lowRank = static_cast<float>(LoadMixedEpilogueLowRankBF16(launch, row, column))"
+            in sources["kernel_contract"]
+            and "StoreMixedEpilogueOutputBF16(launch, row, column, static_cast<bfloat16_t>(residual + lowRank))"
+            in sources["kernel_contract"]
+            and "SVDQ_REGION_ACCUMULATOR_2, offset, routedRows * hiddenSize * BF16_BYTES" in sources[
+                "host_tiling"
+            ]
+        ),
         "kernel_records_final_combine_contract": (
             "SVDQFinalCombineContract" in sources["kernel_contract"]
             and "FinalCombineContract() const" in sources["kernel_contract"]
@@ -1392,6 +1414,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             ],
             "mixed_epilogue_launch_descriptor_recorded": source_proof[
                 "kernel_mixed_epilogue_launch_descriptor_recorded"
+            ],
+            "mixed_output_epilogue_execution_enabled": source_proof[
+                "kernel_mixed_output_epilogue_scalar_execution_enabled"
             ],
             "final_combine_launch_descriptor_recorded": source_proof[
                 "kernel_final_combine_launch_descriptor_recorded"

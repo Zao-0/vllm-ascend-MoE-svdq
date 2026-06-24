@@ -572,9 +572,10 @@ def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
     assert "SVDQ_WORKSPACE_ALIGNMENT = 512" in tiling
     assert "routedRows * gateUpSize * BF16_BYTES" in tiling
     assert "routedRows * gateUpSize * FP32_BYTES" in tiling
-    assert "routedRows * gateUpSize * INT32_BYTES" in tiling
     assert "routedRows * hiddenSize * BF16_BYTES" in tiling
     assert "routedRows * hiddenSize * FP32_BYTES" in tiling
+    assert "SVDQ_REGION_ACCUMULATOR_1, offset, routedRows * gateUpSize * BF16_BYTES" in tiling
+    assert "SVDQ_REGION_ACCUMULATOR_2, offset, routedRows * hiddenSize * BF16_BYTES" in tiling
     assert "AscendC kernel is not implemented yet" in tiling
 
 
@@ -1244,7 +1245,18 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
         "shape.outputColumns == tilingData_.info.hiddenSize",
         "shape.gateColumnOffset == SVDQ_INVALID_ID",
         "shape.upColumnOffset == SVDQ_INVALID_ID",
-        "(void)launch",
+        "if (launch.appliesSwiGLU)",
+        "return RunMixedOutputEpilogueStage(launch)",
+        "LoadMixedEpilogueResidualBF16(",
+        "LoadMixedEpilogueLowRankBF16(",
+        "StoreMixedEpilogueOutputBF16(",
+        "RunMixedOutputEpilogueStage(const SVDQMixedEpilogueLaunch& launch) const",
+        "launch.residualColumns != launch.outputColumns",
+        "launch.lowRankColumns != launch.outputColumns",
+        "const uint64_t outputElements = static_cast<uint64_t>(launch.m) * launch.outputColumns",
+        "const float residual = static_cast<float>(LoadMixedEpilogueResidualBF16(launch, row, column))",
+        "const float lowRank = static_cast<float>(LoadMixedEpilogueLowRankBF16(launch, row, column))",
+        "StoreMixedEpilogueOutputBF16(launch, row, column, static_cast<bfloat16_t>(residual + lowRank))",
     ):
         assert token in epilogue_source
 
@@ -2026,6 +2038,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["residual_quant_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["mixed_epilogue_launch_descriptor_recorded"]
+    assert loaded["production_fail_closed"]["mixed_output_epilogue_execution_enabled"]
     assert loaded["production_fail_closed"]["final_combine_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["final_combine_execution_enabled"]
     assert loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
@@ -2051,6 +2064,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_residual_execution_fail_closed"]
     assert loaded["source_proof"]["kernel_records_mixed_epilogue_contracts"]
     assert loaded["source_proof"]["kernel_mixed_epilogue_launch_descriptor_recorded"]
+    assert loaded["source_proof"]["kernel_mixed_output_epilogue_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_records_final_combine_contract"]
     assert loaded["source_proof"]["kernel_final_combine_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_final_combine_scalar_execution_enabled"]
