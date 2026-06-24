@@ -5,7 +5,7 @@
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 #
-"""Validate SVDQ mixed epilogue math on NPU tensor operators.
+"""Validate the isolated SVDQ mixed epilogue debug op on NPU.
 
 The production fused SVDQ operator is still fail-closed. This probe validates
 the mixed epilogue boundary it must implement: residual and BF16 low-rank
@@ -16,6 +16,7 @@ plus low-rank down outputs are added before final combine.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import sys
@@ -38,8 +39,11 @@ from svdq_loader_pre_kernel_validate import (  # noqa: E402
 )
 
 from vllm_ascend.quantization.methods.svdq_post_load import build_svdq_mixed_epilogue_reference  # noqa: E402
+from vllm_ascend.utils import bootstrap_custom_op_env, enable_custom_op  # noqa: E402
 
 DEFAULT_SUMMARY_NAME = "phase_k_mixed_epilogue_device_probe_summary.json"
+DEBUG_OP_NAME = "SVDQMixedEpilogueDebugReadback"
+CUSTOM_OPAPI_LIB = REPO_ROOT / "vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib/libcust_opapi.so"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -67,14 +71,12 @@ def _npu_environment(device_id: int) -> dict[str, Any]:
         "npu_available": False,
         "npu_device_count": 0,
         "selected_device": device_id,
-        "has_npu_dynamic_quant": False,
     }
     try:
         import torch_npu  # type: ignore[import-untyped]
 
         info["torch_npu_imported"] = True
         info["torch_npu_version"] = getattr(torch_npu, "__version__", None)
-        info["has_npu_dynamic_quant"] = hasattr(torch_npu, "npu_dynamic_quant")
     except Exception as exc:
         info["torch_npu_import_error"] = f"{type(exc).__name__}: {exc}"
 
@@ -126,12 +128,18 @@ def _make_bf16_tensor(shape: tuple[int, ...], *, seed: int, scale: float) -> tor
     return (values * scale).to(torch.bfloat16)
 
 
+def _make_fp32_tensor(shape: tuple[int, ...], *, seed: int, scale: float) -> torch.Tensor:
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    values = torch.randint(-96, 97, shape, dtype=torch.int16, generator=generator).float()
+    return (values * scale).float()
+
+
 def _make_inputs(*, num_tokens: int, hidden_size: int, intermediate_size: int, seed: int) -> dict[str, torch.Tensor]:
     return {
-        "residual_gate_up": _make_bf16_tensor((num_tokens, intermediate_size * 2), seed=seed, scale=1.0 / 64.0),
+        "residual_gate_up": _make_fp32_tensor((num_tokens, intermediate_size * 2), seed=seed, scale=1.0 / 64.0),
         "gate_lowrank": _make_bf16_tensor((num_tokens, intermediate_size), seed=seed + 1, scale=1.0 / 128.0),
         "up_lowrank": _make_bf16_tensor((num_tokens, intermediate_size), seed=seed + 2, scale=1.0 / 128.0),
-        "residual_down": _make_bf16_tensor((num_tokens, hidden_size), seed=seed + 3, scale=1.0 / 64.0),
+        "residual_down": _make_fp32_tensor((num_tokens, hidden_size), seed=seed + 3, scale=1.0 / 64.0),
         "down_lowrank": _make_bf16_tensor((num_tokens, hidden_size), seed=seed + 4, scale=1.0 / 128.0),
     }
 
@@ -157,32 +165,62 @@ def _tensor_error(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, flo
     }
 
 
+def _preload_custom_opapi() -> bool:
+    if not CUSTOM_OPAPI_LIB.exists():
+        return False
+    ctypes.CDLL(str(CUSTOM_OPAPI_LIB), mode=ctypes.RTLD_GLOBAL)
+    return True
+
+
+def _has_registered_mixed_debug_op() -> bool:
+    bootstrap_custom_op_env(include_vendor_lib=True)
+    _preload_custom_opapi()
+    enable_custom_op()
+    return getattr(torch.ops._C_ascend, "svdq_mixed_epilogue_debug_readback", None) is not None
+
+
 def _run_npu_mixed_epilogue(
     *,
     inputs: dict[str, torch.Tensor],
     device: torch.device,
     swiglu_limit: float,
 ) -> dict[str, torch.Tensor]:
-    import torch_npu  # type: ignore[import-untyped]
+    bootstrap_custom_op_env(include_vendor_lib=True)
+    _preload_custom_opapi()
+    enable_custom_op()
+    op = getattr(torch.ops._C_ascend, "svdq_mixed_epilogue_debug_readback", None)
+    if op is None:
+        raise RuntimeError(
+            "torch.ops._C_ascend.svdq_mixed_epilogue_debug_readback is not registered. "
+            "Rebuild/install vllm-ascend after adding the debug binding."
+        )
 
-    residual_gate_up = inputs["residual_gate_up"].to(device=device)
-    residual_gate, residual_up = residual_gate_up.float().chunk(2, dim=1)
-    gate_mixed = residual_gate + inputs["gate_lowrank"].to(device=device).float()
-    up_mixed = residual_up + inputs["up_lowrank"].to(device=device).float()
-    if swiglu_limit > 0:
-        gate_mixed = gate_mixed.clamp(min=-float(swiglu_limit), max=float(swiglu_limit))
-        up_mixed = up_mixed.clamp(min=-float(swiglu_limit), max=float(swiglu_limit))
-    hidden_bf16 = (torch.nn.functional.silu(gate_mixed) * up_mixed).to(torch.bfloat16)
-    hidden_q, hidden_scale = torch_npu.npu_dynamic_quant(hidden_bf16)
-    down_mixed = inputs["residual_down"].to(device=device).float() + inputs["down_lowrank"].to(device=device).float()
+    gate_up_low_rank = torch.cat((inputs["gate_lowrank"], inputs["up_lowrank"]), dim=1).contiguous()
+    (
+        gate_up_total,
+        hidden_bf16,
+        hidden_q,
+        hidden_scale,
+        down_total,
+        out_bf16,
+    ) = op(
+        inputs["residual_gate_up"].to(device=device, dtype=torch.float32).contiguous(),
+        gate_up_low_rank.to(device=device, dtype=torch.bfloat16).contiguous(),
+        inputs["residual_down"].to(device=device, dtype=torch.float32).contiguous(),
+        inputs["down_lowrank"].to(device=device, dtype=torch.bfloat16).contiguous(),
+        float(swiglu_limit),
+    )
     torch.npu.synchronize()
+    gate_mixed, up_mixed = gate_up_total.detach().float().cpu().chunk(2, dim=1)
     return {
-        "gate_mixed": gate_mixed.detach().cpu(),
-        "up_mixed": up_mixed.detach().cpu(),
+        "gate_up_total": gate_up_total.detach().float().cpu(),
+        "gate_mixed": gate_mixed,
+        "up_mixed": up_mixed,
         "hidden_bf16": hidden_bf16.detach().cpu(),
         "hidden_q": hidden_q.detach().cpu(),
         "hidden_scale": hidden_scale.detach().cpu().float(),
-        "down_mixed": down_mixed.detach().cpu(),
+        "down_mixed": down_total.detach().float().cpu(),
+        "out_bf16": out_bf16.detach().cpu(),
     }
 
 
@@ -221,6 +259,7 @@ def _run_probe(
         "hidden_bf16": _tensor_error(actual["hidden_bf16"], reference["stages"]["hidden_bf16"]),
         "hidden_scale": _tensor_error(actual["hidden_scale"], reference["stages"]["hidden_scale"]),
         "down_mixed": _tensor_error(actual["down_mixed"], reference["stages"]["down_mixed"]),
+        "out_bf16": _tensor_error(actual["out_bf16"], reference["stages"]["down_mixed"].to(torch.bfloat16)),
     }
     q_diff = (actual["hidden_q"].to(torch.int16) - reference["stages"]["hidden_q"].to(torch.int16)).abs()
     stage_passed = {
@@ -235,9 +274,12 @@ def _run_probe(
         ),
         "hidden_q": bool(torch.equal(actual["hidden_q"], reference["stages"]["hidden_q"])),
         "down_mixed": _stage_passed(stage_errors["down_mixed"], max_abs_tol=max_abs_tol, mean_abs_tol=mean_abs_tol),
+        "out_bf16": _stage_passed(stage_errors["out_bf16"], max_abs_tol=max_abs_tol, mean_abs_tol=mean_abs_tol),
     }
     return {
-        "stage": "mixed_epilogue_npu_math",
+        "stage": "mixed_epilogue_debug_readback",
+        "debug_op": "torch.ops._C_ascend.svdq_mixed_epilogue_debug_readback",
+        "debug_op_name": DEBUG_OP_NAME,
         "input_shapes": {name: list(tensor.shape) for name, tensor in inputs.items()},
         "oracle_stage_shapes": reference["stage_shapes"],
         "actual_stage_shapes": {name: list(tensor.shape) for name, tensor in actual.items()},
@@ -271,13 +313,14 @@ def main() -> int:
         "model_path": args.model_path,
         "dimensions": dimensions,
         "environment": env,
+        "debug_op_name": DEBUG_OP_NAME,
         "stages": [],
         "passed": False,
         "skipped": False,
     }
-    if not (env["torch_npu_imported"] and env["has_npu_dynamic_quant"] and env["npu_available"]):
+    if not (env["torch_npu_imported"] and env["npu_available"]):
         summary["skipped"] = not args.require_npu
-        summary["skip_reason"] = "torch_npu.npu_dynamic_quant and an available NPU are required."
+        summary["skip_reason"] = "torch_npu import and an available NPU are required."
         path = _write_summary(args.evidence_dir, args.summary_name, summary)
         print(json.dumps({"summary_path": path, "passed": False, "skipped": summary["skipped"]}, indent=2))
         return 2 if args.require_npu else 0
@@ -290,6 +333,20 @@ def main() -> int:
         return 2 if args.require_npu else 0
 
     torch.npu.set_device(args.device_id)
+    try:
+        registered = _has_registered_mixed_debug_op()
+    except Exception as exc:
+        summary["failure_reason"] = f"failed to enable custom ops: {type(exc).__name__}: {exc}"
+        path = _write_summary(args.evidence_dir, args.summary_name, summary)
+        print(json.dumps({"summary_path": path, "passed": False, "skipped": False}, indent=2))
+        return 1
+    summary["torch_op_registered"] = registered
+    if not registered:
+        summary["failure_reason"] = "torch.ops._C_ascend.svdq_mixed_epilogue_debug_readback is not registered."
+        path = _write_summary(args.evidence_dir, args.summary_name, summary)
+        print(json.dumps({"summary_path": path, "passed": False, "skipped": False}, indent=2))
+        return 1
+
     device = torch.device(f"npu:{args.device_id}")
     stage = _run_probe(
         dimensions=dimensions,

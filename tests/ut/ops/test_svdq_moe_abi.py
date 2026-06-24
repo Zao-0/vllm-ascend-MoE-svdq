@@ -823,17 +823,27 @@ def test_svdq_mixed_epilogue_device_probe_matches_reference_oracle():
 
     for token in (
         "build_svdq_mixed_epilogue_reference",
-        "torch_npu.npu_dynamic_quant",
-        "residual_gate, residual_up = residual_gate_up.float().chunk(2, dim=1)",
-        "gate_mixed = residual_gate + inputs[\"gate_lowrank\"].to(device=device).float()",
-        "up_mixed = residual_up + inputs[\"up_lowrank\"].to(device=device).float()",
-        "hidden_bf16 = (torch.nn.functional.silu(gate_mixed) * up_mixed).to(torch.bfloat16)",
-        "down_mixed = inputs[\"residual_down\"].to(device=device).float() +",
+        "torch.ops._C_ascend.svdq_mixed_epilogue_debug_readback",
+        "bootstrap_custom_op_env(include_vendor_lib=True)",
+        "CUSTOM_OPAPI_LIB",
+        "_preload_custom_opapi()",
+        "enable_custom_op()",
+        "gate_up_low_rank = torch.cat((inputs[\"gate_lowrank\"], inputs[\"up_lowrank\"]), dim=1).contiguous()",
+        "gate_up_total,",
+        "hidden_bf16,",
+        "hidden_q,",
+        "hidden_scale,",
+        "down_total,",
+        "out_bf16,",
+        "\"stage\": \"mixed_epilogue_debug_readback\"",
+        "\"debug_op\": \"torch.ops._C_ascend.svdq_mixed_epilogue_debug_readback\"",
         "hidden_q_exact_match",
         "phase_k_mixed_epilogue_device_probe_summary.json",
         "--require-npu",
     ):
         assert token in probe
+    assert "npu_grouped_matmul" not in probe
+    assert "torch_npu.npu_dynamic_quant" not in probe
 
 
 def test_svdq_composed_pipeline_device_probe_validates_stage_order():

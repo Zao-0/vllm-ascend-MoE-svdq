@@ -85,6 +85,27 @@ public:
     }
 
 private:
+    __aicore__ inline void SyncMte2ToV() const
+    {
+        event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE2_V));
+        SetFlag<HardEvent::MTE2_V>(eventId);
+        WaitFlag<HardEvent::MTE2_V>(eventId);
+    }
+
+    __aicore__ inline void SyncVToMte3() const
+    {
+        event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_MTE3));
+        SetFlag<HardEvent::V_MTE3>(eventId);
+        WaitFlag<HardEvent::V_MTE3>(eventId);
+    }
+
+    __aicore__ inline void SyncMte3ToV() const
+    {
+        event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_V));
+        SetFlag<HardEvent::MTE3_V>(eventId);
+        WaitFlag<HardEvent::MTE3_V>(eventId);
+    }
+
     __aicore__ inline bool HasCompleteContract() const
     {
         return tilingData_.rows > 0 && tilingData_.intermediateSize > 0 && tilingData_.hiddenSize > 0 &&
@@ -110,7 +131,7 @@ private:
 
             DataCopy(gate, residualGateUpGm_[gateOffset], tilingData_.vectorTile);
             DataCopy(lowRankBf16, gateUpLowRankGm_[gateOffset], tilingData_.vectorTile);
-            PipeBarrier<PIPE_V>();
+            SyncMte2ToV();
             Cast(tmp, lowRankBf16, RoundMode::CAST_NONE, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
             Add(gate, gate, tmp, tilingData_.vectorTile);
@@ -118,7 +139,7 @@ private:
 
             DataCopy(up, residualGateUpGm_[upOffset], tilingData_.vectorTile);
             DataCopy(lowRankBf16, gateUpLowRankGm_[upOffset], tilingData_.vectorTile);
-            PipeBarrier<PIPE_V>();
+            SyncMte2ToV();
             Cast(tmp, lowRankBf16, RoundMode::CAST_NONE, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
             Add(up, up, tmp, tilingData_.vectorTile);
@@ -135,8 +156,10 @@ private:
                 PipeBarrier<PIPE_V>();
             }
 
+            SyncVToMte3();
             DataCopy(gateUpTotalGm_[gateOffset], gate, tilingData_.vectorTile);
             DataCopy(gateUpTotalGm_[upOffset], up, tilingData_.vectorTile);
+            SyncMte3ToV();
 
             Muls(tmp, gate, -1.0f, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
@@ -150,7 +173,9 @@ private:
             PipeBarrier<PIPE_V>();
             Cast(hiddenOut, hiddenFp32, RoundMode::CAST_RINT, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
+            SyncVToMte3();
             DataCopy(hiddenBf16Gm_[row * intermediate + column], hiddenOut, tilingData_.vectorTile);
+            SyncMte3ToV();
         }
     }
 
@@ -168,7 +193,7 @@ private:
         float maxAbs = 0.0f;
         for (uint32_t column = 0; column < tilingData_.intermediateSize; column += tilingData_.vectorTile) {
             DataCopy(hiddenBf16, hiddenBf16Gm_[row * tilingData_.intermediateSize + column], tilingData_.vectorTile);
-            PipeBarrier<PIPE_V>();
+            SyncMte2ToV();
             Cast(hiddenFp32, hiddenBf16, RoundMode::CAST_NONE, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
             Abs(absHidden, hiddenFp32, tilingData_.vectorTile);
@@ -197,14 +222,16 @@ private:
                 PipeBarrier<PIPE_V>();
                 Cast(hiddenI8, quantHalf, RoundMode::CAST_RINT, tilingData_.vectorTile);
                 PipeBarrier<PIPE_V>();
+                SyncVToMte3();
                 DataCopy(hiddenInt8Gm_[row * tilingData_.intermediateSize + column], hiddenI8, tilingData_.vectorTile);
+                SyncMte3ToV();
             }
             return;
         }
 
         for (uint32_t column = 0; column < tilingData_.intermediateSize; column += tilingData_.vectorTile) {
             DataCopy(hiddenBf16, hiddenBf16Gm_[row * tilingData_.intermediateSize + column], tilingData_.vectorTile);
-            PipeBarrier<PIPE_V>();
+            SyncMte2ToV();
             Cast(hiddenFp32, hiddenBf16, RoundMode::CAST_NONE, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
             Muls(hiddenFp32, hiddenFp32, 1.0f / scale, tilingData_.vectorTile);
@@ -217,7 +244,9 @@ private:
             PipeBarrier<PIPE_V>();
             Cast(hiddenI8, quantHalf, RoundMode::CAST_RINT, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
+            SyncVToMte3();
             DataCopy(hiddenInt8Gm_[row * tilingData_.intermediateSize + column], hiddenI8, tilingData_.vectorTile);
+            SyncMte3ToV();
         }
     }
 
@@ -233,15 +262,19 @@ private:
             const uint32_t offset = row * tilingData_.hiddenSize + column;
             DataCopy(down, residualDownGm_[offset], tilingData_.vectorTile);
             DataCopy(lowRankBf16, downLowRankGm_[offset], tilingData_.vectorTile);
-            PipeBarrier<PIPE_V>();
+            SyncMte2ToV();
             Cast(lowRankFp32, lowRankBf16, RoundMode::CAST_NONE, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
             Add(down, down, lowRankFp32, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
+            SyncVToMte3();
             DataCopy(downTotalGm_[offset], down, tilingData_.vectorTile);
+            SyncMte3ToV();
             Cast(outBf16, down, RoundMode::CAST_RINT, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
+            SyncVToMte3();
             DataCopy(outBf16Gm_[offset], outBf16, tilingData_.vectorTile);
+            SyncMte3ToV();
         }
     }
 
