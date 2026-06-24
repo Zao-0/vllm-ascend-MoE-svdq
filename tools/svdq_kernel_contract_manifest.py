@@ -538,7 +538,20 @@ def _residual_stage_records() -> list[dict[str, Any]]:
     return [dict(stage) for stage in RESIDUAL_STAGES]
 
 
+def _tokens_in_order(source: str, tokens: list[str]) -> bool:
+    offset = 0
+    for token in tokens:
+        index = source.find(token, offset)
+        if index < 0:
+            return False
+        offset = index + len(token)
+    return True
+
+
 def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
+    process_start = sources["kernel_contract"].find("__aicore__ inline void Process()")
+    process_end = sources["kernel_contract"].find("__aicore__ inline bool HasCompleteTilingContract()")
+    process_source = sources["kernel_contract"][process_start:process_end] if process_start >= 0 else ""
     return {
         "host_tiling_builds_workspace_map": "BuildWorkspaceMap(tilingData)" in sources["host_tiling"],
         "host_tiling_builds_sync_flags": "BuildSyncFlagTable(tilingData)" in sources["host_tiling"],
@@ -631,7 +644,22 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         "kernel_dispatch_routing_execution_fail_closed": (
             "RunDispatchRoutingStage() const" in sources["kernel_contract"]
             and "DispatchRoutingReady()" in sources["kernel_contract"]
-            and "RunBF16LowRankStages()" in sources["kernel_contract"]
+            and "ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_GATE_UP)" in process_source
+        ),
+        "kernel_process_orders_svdq_data_dependencies": _tokens_in_order(
+            process_source,
+            [
+                "RunDispatchRoutingStage()",
+                "ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_GATE_UP)",
+                "RunResidualStage(SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT)",
+                "RunResidualStage(SVDQ_RESIDUAL_STAGE_W4A8_GMM1)",
+                "RunMixedEpilogueStage(0)",
+                "ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_DOWN)",
+                "RunResidualStage(SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN)",
+                "RunResidualStage(SVDQ_RESIDUAL_STAGE_W4A8_GMM2)",
+                "RunMixedEpilogueStage(1)",
+                "RunFinalCombine()",
+            ],
         ),
         "kernel_exposes_residual_stage_contracts": (
             "ResidualStageShape(uint32_t stageId)" in sources["kernel_contract"]

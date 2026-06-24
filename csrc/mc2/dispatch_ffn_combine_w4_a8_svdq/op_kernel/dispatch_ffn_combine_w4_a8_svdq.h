@@ -204,13 +204,28 @@ public:
         if (!RunDispatchRoutingStage()) {
             return;
         }
-        if (!RunBF16LowRankStages()) {
+        if (!ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_GATE_UP)) {
             return;
         }
-        if (!RunW4A8ResidualStages()) {
+        if (!RunResidualStage(SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT)) {
             return;
         }
-        if (!RunMixedEpilogueStages()) {
+        if (!RunResidualStage(SVDQ_RESIDUAL_STAGE_W4A8_GMM1)) {
+            return;
+        }
+        if (!RunMixedEpilogueStage(0)) {
+            return;
+        }
+        if (!ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_DOWN)) {
+            return;
+        }
+        if (!RunResidualStage(SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN)) {
+            return;
+        }
+        if (!RunResidualStage(SVDQ_RESIDUAL_STAGE_W4A8_GMM2)) {
+            return;
+        }
+        if (!RunMixedEpilogueStage(1)) {
             return;
         }
         if (!RunFinalCombine()) {
@@ -599,10 +614,18 @@ public:
         return true;
     }
 
+    __aicore__ inline bool RunMixedEpilogueStage(uint32_t epilogueId) const
+    {
+        if (!MixedEpilogueReady(epilogueId)) {
+            return false;
+        }
+        return false;
+    }
+
     __aicore__ inline bool RunMixedEpilogueStages() const
     {
         for (uint32_t epilogueId = 0; epilogueId < SVDQ_MIXED_EPILOGUE_COUNT; ++epilogueId) {
-            if (!MixedEpilogueReady(epilogueId)) {
+            if (!RunMixedEpilogueStage(epilogueId)) {
                 return false;
             }
         }

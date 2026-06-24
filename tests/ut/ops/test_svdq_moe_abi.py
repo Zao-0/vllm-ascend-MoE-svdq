@@ -1001,6 +1001,7 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
         "SVDQMixedEpilogueContract",
         "MixedEpilogueContract(uint32_t epilogueId)",
         "MixedEpilogueReady(uint32_t epilogueId)",
+        "RunMixedEpilogueStage(uint32_t epilogueId)",
         "RunMixedEpilogueStages() const",
         "SVDQ_STAGE_MIXED_EPILOGUE_1",
         "SVDQ_REGION_ACCUMULATOR_1",
@@ -1040,8 +1041,28 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
     ):
         assert token in contract
 
-    assert contract.index("RunW4A8ResidualStages()") < contract.index("RunMixedEpilogueStages()")
-    assert contract.index("RunMixedEpilogueStages()") < contract.index("RunFinalCombine()")
+    process = contract[
+        contract.index("__aicore__ inline void Process()") : contract.index(
+            "__aicore__ inline bool HasCompleteTilingContract()"
+        )
+    ]
+    expected_process_order = (
+        "RunDispatchRoutingStage()",
+        "ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_GATE_UP)",
+        "RunResidualStage(SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT)",
+        "RunResidualStage(SVDQ_RESIDUAL_STAGE_W4A8_GMM1)",
+        "RunMixedEpilogueStage(0)",
+        "ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_DOWN)",
+        "RunResidualStage(SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN)",
+        "RunResidualStage(SVDQ_RESIDUAL_STAGE_W4A8_GMM2)",
+        "RunMixedEpilogueStage(1)",
+        "RunFinalCombine()",
+    )
+    offset = 0
+    for token in expected_process_order:
+        index = process.find(token, offset)
+        assert index >= 0, token
+        offset = index + len(token)
 
 
 def test_svdq_kernel_records_dispatch_routing_contract_before_lowrank():
@@ -1457,7 +1478,18 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "lowRankOp.Process()" in contract
     assert "ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_GATE_UP)" in contract
     assert "ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_DOWN)" in contract
-    assert "if (!RunBF16LowRankStages())" in contract
+    process = contract[
+        contract.index("__aicore__ inline void Process()") : contract.index(
+            "__aicore__ inline bool HasCompleteTilingContract()"
+        )
+    ]
+    assert "if (!RunBF16LowRankStages())" not in process
+    assert process.index("ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_GATE_UP)") < process.index(
+        "RunMixedEpilogueStage(0)"
+    )
+    assert process.index("RunMixedEpilogueStage(0)") < process.index(
+        "ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_DOWN)"
+    )
 
     gate_up_call = (
         "SetLowRankInvocation(tilingData, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_GATE_UP,\n"
@@ -1695,6 +1727,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_dispatch_routing_uses_official_tiling_contract"]
     assert loaded["source_proof"]["kernel_dispatch_routing_calls_official_bf16_helper"]
     assert loaded["source_proof"]["kernel_dispatch_routing_execution_fail_closed"]
+    assert loaded["source_proof"]["kernel_process_orders_svdq_data_dependencies"]
     assert loaded["source_proof"]["kernel_binds_residual_weight_scale_slots"]
     assert loaded["source_proof"]["kernel_residual_dispatches_dynamic_quant_and_gmm"]
     assert loaded["source_proof"]["kernel_residual_execution_fail_closed"]
