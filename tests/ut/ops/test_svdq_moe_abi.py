@@ -425,6 +425,32 @@ def test_svdq_mixed_epilogue_device_probe_matches_reference_oracle():
         assert token in probe
 
 
+def test_svdq_composed_pipeline_device_probe_validates_stage_order():
+    probe = (REPO_ROOT / "tools/svdq_composed_pipeline_device_probe.py").read_text()
+
+    for token in (
+        "build_svdq_mixed_epilogue_reference",
+        "build_svdq_final_combine_reference",
+        "torch_npu.npu_dynamic_quant",
+        "torch_npu.npu_moe_token_unpermute",
+        "gate_rank_offset = 0",
+        "up_rank_offset = gate_rank",
+        "gate_up_svdq_l1 = torch.cat((gate_l1, up_l1), dim=0).contiguous()",
+        "npu_gate_up = _npu_lowrank_gate_up(",
+        "first_mixed_reference = build_svdq_mixed_epilogue_reference(",
+        "hidden_q, hidden_scale = torch_npu.npu_dynamic_quant",
+        "npu_down = _npu_down_lowrank(",
+        "output_epilogue_reference = build_svdq_mixed_epilogue_reference(",
+        "final_reference = build_svdq_final_combine_reference(",
+        "final_output = torch_npu.npu_moe_token_unpermute(",
+        "hidden_q_mismatch_tolerance",
+        "--hidden-q-mismatch-tol",
+        "phase_l_composed_pipeline_device_probe_summary.json",
+        "--require-npu",
+    ):
+        assert token in probe
+
+
 def test_cann_host_library_build_path_honors_soc_selection():
     build_script = (REPO_ROOT / "csrc/build.sh").read_text()
     create_lib_branch = build_script[build_script.index('elif [[ "$ENABLE_CREATE_LIB" == "TRUE" ]];') :]
