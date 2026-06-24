@@ -15,8 +15,10 @@ from vllm_ascend.ops.fused_moe.moe_runtime_args import build_fused_experts_input
 from vllm_ascend.quantization.methods.svdq_post_load import (
     FINAL_SVDQ_FACTOR_NAMES,
     SVDQ_BF16_DEBUG_STAGE_NAMES,
+    SVDQ_MIXED_EPILOGUE_STAGE_NAMES,
     audit_svdq_operator_factors,
     build_svdq_bf16_stage_reference,
+    build_svdq_mixed_epilogue_reference,
     build_svdq_operator_factors,
 )
 from vllm_ascend.quantization.methods.w4a8 import AscendW4A8DynamicFusedMoEMethod
@@ -271,6 +273,52 @@ def test_svdq_bf16_stage_reference_exposes_e2_e7_intermediates():
             "mean_abs": 0.0,
         },
     }
+
+
+def test_svdq_mixed_epilogue_reference_adds_residual_and_lowrank_before_swiglu():
+    residual_gate_up = torch.tensor(
+        [
+            [1.0, -2.0, 3.0, 4.0, -5.0, 6.0],
+            [0.0, 0.5, -0.5, 2.0, -2.0, 1.0],
+        ],
+        dtype=torch.bfloat16,
+    )
+    gate_lowrank = torch.tensor([[0.25, 0.5, -1.0], [1.0, -0.25, 0.75]], dtype=torch.bfloat16)
+    up_lowrank = torch.tensor([[0.5, -0.5, 1.0], [-1.0, 0.25, -0.75]], dtype=torch.bfloat16)
+    residual_down = torch.tensor([[1.0, 2.0, -3.0, 4.0], [0.5, -0.5, 1.5, -1.5]], dtype=torch.bfloat16)
+    down_lowrank = torch.tensor([[0.25, -1.0, 0.5, 2.0], [-0.5, 0.25, -1.0, 1.0]], dtype=torch.bfloat16)
+
+    reference = build_svdq_mixed_epilogue_reference(
+        residual_gate_up=residual_gate_up,
+        gate_lowrank=gate_lowrank,
+        up_lowrank=up_lowrank,
+        residual_down=residual_down,
+        down_lowrank=down_lowrank,
+    )
+    stages = reference["stages"]
+
+    assert set(stages) == set(SVDQ_MIXED_EPILOGUE_STAGE_NAMES)
+    assert reference["stage_shapes"] == {
+        "gate_mixed": [2, 3],
+        "up_mixed": [2, 3],
+        "hidden_bf16": [2, 3],
+        "hidden_q": [2, 3],
+        "hidden_scale": [2],
+        "down_mixed": [2, 4],
+    }
+    expected_gate = residual_gate_up.float()[:, :3] + gate_lowrank.float()
+    expected_up = residual_gate_up.float()[:, 3:] + up_lowrank.float()
+    expected_hidden = (torch.nn.functional.silu(expected_gate) * expected_up).to(torch.bfloat16)
+    expected_down = residual_down.float() + down_lowrank.float()
+
+    torch.testing.assert_close(stages["gate_mixed"], expected_gate)
+    torch.testing.assert_close(stages["up_mixed"], expected_up)
+    torch.testing.assert_close(stages["hidden_bf16"], expected_hidden)
+    torch.testing.assert_close(stages["down_mixed"], expected_down)
+    assert stages["hidden_q"].dtype == torch.int8
+    assert stages["hidden_scale"].dtype == torch.float32
+    assert torch.equal(stages["hidden_scale"], expected_hidden.float().abs().amax(dim=1) / 127.0)
+    assert reference["all_finite"]
 
 
 def test_svdq_runtime_payload_requires_complete_factor_contract():

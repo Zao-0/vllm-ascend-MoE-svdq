@@ -34,6 +34,15 @@ SVDQ_BF16_DEBUG_STAGE_NAMES = (
     "down_l2_output",
 )
 
+SVDQ_MIXED_EPILOGUE_STAGE_NAMES = (
+    "gate_mixed",
+    "up_mixed",
+    "hidden_bf16",
+    "hidden_q",
+    "hidden_scale",
+    "down_mixed",
+)
+
 
 def _as_tensor(value: torch.Tensor | torch.nn.Parameter) -> torch.Tensor:
     return value.data if isinstance(value, torch.nn.Parameter) else value
@@ -76,7 +85,9 @@ def build_svdq_operator_factors(layer: torch.nn.Module) -> dict[str, torch.Tenso
 
     local_experts, gate_rank, hidden_size = gate_l1.shape
     if up_l1.shape[0] != local_experts or up_l1.shape[2] != hidden_size:
-        raise ValueError(f"up_svd_l1_raw shape {tuple(up_l1.shape)} is incompatible with gate L1 {tuple(gate_l1.shape)}.")
+        raise ValueError(
+            f"up_svd_l1_raw shape {tuple(up_l1.shape)} is incompatible with gate L1 {tuple(gate_l1.shape)}."
+        )
     if gate_l2.shape[:1] != (local_experts,) or gate_l2.shape[2] != gate_rank:
         raise ValueError(f"gate_svd_l2_raw shape {tuple(gate_l2.shape)} is incompatible with gate rank {gate_rank}.")
     up_rank = up_l1.shape[1]
@@ -290,6 +301,84 @@ def _evaluate_svdq_bf16_debug_stages(
 
 def _stage_shape_metadata(stages: dict[str, torch.Tensor]) -> dict[str, list[int]]:
     return {name: list(stages[name].shape) for name in SVDQ_BF16_DEBUG_STAGE_NAMES}
+
+
+def _cpu_dynamic_quant_reference(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    x_fp32 = x.detach().float().cpu()
+    max_abs = x_fp32.abs().amax(dim=1)
+    scale = (max_abs / 127.0).float()
+    safe_scale = torch.where(scale == 0, torch.ones_like(scale), scale)
+    q = torch.round(x_fp32 / safe_scale[:, None]).clamp(-127, 127).to(torch.int8)
+    q = torch.where((scale == 0)[:, None], torch.zeros_like(q), q)
+    return q, scale
+
+
+def build_svdq_mixed_epilogue_reference(
+    *,
+    residual_gate_up: torch.Tensor,
+    gate_lowrank: torch.Tensor,
+    up_lowrank: torch.Tensor,
+    residual_down: torch.Tensor,
+    down_lowrank: torch.Tensor,
+    swiglu_limit: float = 0.0,
+) -> dict[str, Any]:
+    """Build the mixed BF16/W4A8 epilogue reference for one expert slice.
+
+    The W4A8 residual branch and BF16 low-rank branch are added before SwiGLU
+    and before final down output emission. The hidden activation quantization
+    uses the same per-row dynamic quantization formula validated for the NPU
+    activation quantization probe.
+    """
+    if residual_gate_up.ndim != 2:
+        raise ValueError(
+            f"residual_gate_up must be rank-2 [tokens, 2 * intermediate], got {tuple(residual_gate_up.shape)}."
+        )
+    if residual_gate_up.shape[1] % 2 != 0:
+        raise ValueError(f"residual_gate_up width must be even, got {residual_gate_up.shape[1]}.")
+
+    tokens = int(residual_gate_up.shape[0])
+    intermediate_size = int(residual_gate_up.shape[1] // 2)
+    if tuple(gate_lowrank.shape) != (tokens, intermediate_size):
+        raise ValueError(f"gate_lowrank expected shape {(tokens, intermediate_size)}, got {tuple(gate_lowrank.shape)}.")
+    if tuple(up_lowrank.shape) != (tokens, intermediate_size):
+        raise ValueError(f"up_lowrank expected shape {(tokens, intermediate_size)}, got {tuple(up_lowrank.shape)}.")
+    if residual_down.shape != down_lowrank.shape:
+        raise ValueError(
+            "residual_down and down_lowrank must share shape, "
+            f"got {tuple(residual_down.shape)} and {tuple(down_lowrank.shape)}."
+        )
+    if int(residual_down.shape[0]) != tokens:
+        raise ValueError(f"down branch token count {residual_down.shape[0]} does not match gate/up tokens {tokens}.")
+    if swiglu_limit < 0:
+        raise ValueError(f"swiglu_limit must be non-negative, got {swiglu_limit}.")
+
+    residual_gate, residual_up = residual_gate_up.detach().float().cpu().chunk(2, dim=1)
+    gate_mixed = residual_gate + gate_lowrank.detach().float().cpu()
+    up_mixed = residual_up + up_lowrank.detach().float().cpu()
+    if swiglu_limit > 0:
+        gate_mixed = gate_mixed.clamp(min=-float(swiglu_limit), max=float(swiglu_limit))
+        up_mixed = up_mixed.clamp(min=-float(swiglu_limit), max=float(swiglu_limit))
+    hidden_bf16 = (torch.nn.functional.silu(gate_mixed) * up_mixed).to(torch.bfloat16)
+    hidden_q, hidden_scale = _cpu_dynamic_quant_reference(hidden_bf16)
+    down_mixed = residual_down.detach().float().cpu() + down_lowrank.detach().float().cpu()
+    stages = {
+        "gate_mixed": gate_mixed,
+        "up_mixed": up_mixed,
+        "hidden_bf16": hidden_bf16,
+        "hidden_q": hidden_q,
+        "hidden_scale": hidden_scale,
+        "down_mixed": down_mixed,
+    }
+    return {
+        "stages": stages,
+        "stage_shapes": {name: list(stages[name].shape) for name in SVDQ_MIXED_EPILOGUE_STAGE_NAMES},
+        "all_finite": all(
+            bool(torch.isfinite(tensor.float()).all().item())
+            for tensor in stages.values()
+            if tensor.dtype != torch.int8
+        ),
+        "swiglu_limit": float(swiglu_limit),
+    }
 
 
 def _branch_isolation_errors(
