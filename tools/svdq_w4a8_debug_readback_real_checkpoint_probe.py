@@ -10,12 +10,13 @@
 This is an isolated Appendix-1 probe for the official
 ``dispatch_ffn_combine_w4_a8`` path. It loads real residual W4A8 tensors through
 the official W4A8 post-load implementation, launches only
-``torch.ops._C_ascend.svdq_w4a8_debug_readback``, and verifies zero-input
-readback health on real post-loaded weights.
+``torch.ops._C_ascend.svdq_w4a8_debug_readback``, and verifies debug readback
+health on real post-loaded weights with zero or deterministic nonzero inputs.
 
-The zero-input health gate proves the real-checkpoint launch/readback path,
-finite debug buffers, routed token counts, and zero final output. It is not the
-final nonzero real-checkpoint GMM numerical gate.
+The health gate proves the real-checkpoint launch/readback path, finite debug
+buffers, and routed token counts. It is not the final nonzero real-checkpoint
+GMM numerical gate because it does not yet compare against an unfused numerical
+reference.
 """
 
 from __future__ import annotations
@@ -74,6 +75,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--route-experts", type=int, nargs="*", default=None)
     parser.add_argument("--local-num-experts", type=int, default=None)
     parser.add_argument("--max-output-size", type=int, default=512)
+    parser.add_argument("--input-mode", choices=("zero", "linear"), default="zero")
+    parser.add_argument("--linear-input-scale", type=float, default=0.01)
     parser.add_argument("--out-zero-abs-tol", type=float, default=1e-6)
     parser.add_argument("--require-npu", action="store_true")
     return parser.parse_args()
@@ -220,7 +223,21 @@ def _make_expert_idx(routed_experts: list[int], num_tokens: int, *, device: torc
     return route.contiguous().to(device=device)
 
 
-def _run_zero_input_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]:
+def _make_input(args: argparse.Namespace, hidden_size: int, *, device: torch.device) -> torch.Tensor:
+    shape = (args.num_tokens, hidden_size)
+    if args.input_mode == "zero":
+        return torch.zeros(shape, dtype=torch.bfloat16, device=device)
+    values = torch.linspace(
+        -args.linear_input_scale,
+        args.linear_input_scale,
+        steps=args.num_tokens * hidden_size,
+        dtype=torch.float32,
+        device=device,
+    ).reshape(shape)
+    return values.to(torch.bfloat16).contiguous()
+
+
+def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]:
     device = torch.device(f"npu:{args.device_id}")
     routed_experts = _routed_experts(args)
     local_num_experts = _local_num_experts(args, routed_experts)
@@ -237,7 +254,7 @@ def _run_zero_input_real_checkpoint(args: argparse.Namespace, group: str) -> dic
     if max(routed_experts) >= spec.num_experts or min(routed_experts) < 0:
         raise ValueError(f"route-experts={routed_experts} must be within [0, {spec.num_experts}).")
 
-    x = torch.zeros((args.num_tokens, spec.hidden_size), dtype=torch.bfloat16, device=device)
+    x = _make_input(args, spec.hidden_size, device=device)
     expert_idx = _make_expert_idx(routed_experts, args.num_tokens, device=device)
     probs = torch.full((args.num_tokens, args.top_k), 1.0 / args.top_k, dtype=torch.float32, device=device)
     x_active_mask = torch.ones((args.num_tokens,), dtype=torch.bool, device=device)
@@ -261,6 +278,7 @@ def _run_zero_input_real_checkpoint(args: argparse.Namespace, group: str) -> dic
 
     active_rows = args.num_tokens * args.top_k
     output_stats = {
+        "input": _float_stats(x),
         "out": _float_stats(out),
         "gmm1_post_dequant_active": _float_stats(gmm1_post_dequant[:active_rows]),
         "gmm2_post_dequant_active": _float_stats(gmm2_post_dequant[:active_rows]),
@@ -271,25 +289,26 @@ def _run_zero_input_real_checkpoint(args: argparse.Namespace, group: str) -> dic
             "sum": int(expert_token_nums.detach().cpu().sum().item()),
         },
     }
-    zero_reference = {
-        "type": "zero_input_health_oracle",
+    health_reference = {
+        "type": f"{args.input_mode}_input_health_oracle",
         "expected_gmm1_post_dequant": (
             "finite official debug tap; not assumed zero because the official epilogue adds weight auxiliary/"
             "scale-bias before per-token scaling"
         ),
         "expected_gmm2_post_dequant": "finite official debug tap",
-        "expected_out": "all zeros",
+        "expected_out": "finite output",
     }
     out_zero_match = output_stats["out"]["max_abs"] <= args.out_zero_abs_tol
+    output_health = output_stats["out"]["finite"] and (args.input_mode != "zero" or out_zero_match)
     readback_finite = (
         output_stats["gmm1_post_dequant_active"]["finite"]
         and output_stats["gmm2_post_dequant_active"]["finite"]
         and output_stats["out"]["finite"]
     )
     routed_rows_match = output_stats["expert_token_nums"]["sum"] == active_rows
-    zero_input_health_gate_passed = readback_finite and routed_rows_match and out_zero_match
+    input_health_gate_passed = readback_finite and routed_rows_match and output_health
     return {
-        "stage": "real_checkpoint_w4a8_debug_readback_zero_input_health",
+        "stage": f"real_checkpoint_w4a8_debug_readback_{args.input_mode}_input_health",
         "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_debug_readback -> aclnnSVDQW4A8DebugReadback",
         "official_source_of_truth": "dispatch_ffn_combine_w4_a8 AIC producer and AIV dequant debug taps",
         "public_grouped_matmul_used": False,
@@ -308,21 +327,23 @@ def _run_zero_input_real_checkpoint(args: argparse.Namespace, group: str) -> dic
             "top_k": args.top_k,
             "max_output_size": args.max_output_size,
             "active_rows": active_rows,
+            "input_mode": args.input_mode,
         },
         "official_postload": {
             "loader": "AscendW4A8DynamicFusedMoEMethod.process_weights_after_loading_modelslim",
             "metadata": _postload_metadata(layer),
         },
-        "unfused_reference": zero_reference,
+        "unfused_reference": health_reference,
         "out_zero_abs_tolerance": args.out_zero_abs_tol,
         "checks": {
-            "zero_input_health_gate_passed": zero_input_health_gate_passed,
+            "input_health_gate_passed": input_health_gate_passed,
             "readback_finite": readback_finite,
             "routed_rows_match": routed_rows_match,
+            "output_health": output_health,
             "out_zero_match": out_zero_match,
         },
         "outputs": output_stats,
-        "passed": zero_input_health_gate_passed,
+        "passed": input_health_gate_passed,
     }
 
 
@@ -374,7 +395,7 @@ def main() -> int:
     try:
         group_info = _init_single_rank_hccl(args.device_id)
         summary["hccl_group"] = group_info
-        stage = _run_zero_input_real_checkpoint(args, str(group_info["group"]))
+        stage = _run_real_checkpoint(args, str(group_info["group"]))
         summary["stage"] = stage
         summary["passed"] = bool(stage["passed"])
     except Exception as exc:
