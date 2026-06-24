@@ -431,6 +431,49 @@ RESIDUAL_STAGES = [
     },
 ]
 
+RESIDUAL_GMM_LAUNCHES = [
+    {
+        "id": 0,
+        "name": "SVDQ_RESIDUAL_STAGE_W4A8_GMM1",
+        "input_region": "SVDQ_REGION_X_Q",
+        "activation_scale_region": "SVDQ_REGION_X_SCALE",
+        "output_region": "SVDQ_REGION_ACCUMULATOR_1",
+        "m": "routedRows",
+        "k": "info.hiddenSize",
+        "n": "info.intermediateSize * 2",
+        "residual_weight_slot": "weight1",
+        "residual_scale_slot": "scale1",
+        "residual_bias_slot": "bias1",
+        "list_len": "info.expertPerRank",
+        "group_list_type": 1,
+        "group_type": 0,
+        "split_item": 2,
+        "trans_b": False,
+        "weight_nz": True,
+        "residual_only": True,
+    },
+    {
+        "id": 1,
+        "name": "SVDQ_RESIDUAL_STAGE_W4A8_GMM2",
+        "input_region": "SVDQ_REGION_HIDDEN_Q",
+        "activation_scale_region": "SVDQ_REGION_HIDDEN_SCALE",
+        "output_region": "SVDQ_REGION_ACCUMULATOR_2",
+        "m": "routedRows",
+        "k": "info.intermediateSize",
+        "n": "info.hiddenSize",
+        "residual_weight_slot": "weight2",
+        "residual_scale_slot": "scale2",
+        "residual_bias_slot": "bias2",
+        "list_len": "info.expertPerRank",
+        "group_list_type": 1,
+        "group_type": 0,
+        "split_item": 2,
+        "trans_b": False,
+        "weight_nz": True,
+        "residual_only": True,
+    },
+]
+
 LOWRANK_INVOCATIONS = [
     {
         "id": 0,
@@ -709,6 +752,26 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "SVDQ_RESIDUAL_BIAS1_SLOT" in sources["kernel_contract"]
             and "SVDQ_RESIDUAL_BIAS2_SLOT" in sources["kernel_contract"]
         ),
+        "kernel_residual_gmm_launch_descriptor_recorded": (
+            "SVDQ_RESIDUAL_GMM_COUNT = 2" in sources["kernel_tiling"]
+            and "struct SVDQResidualGmmShape" in sources["kernel_tiling"]
+            and "SVDQResidualGmmShape residualGmmShapes[SVDQ_RESIDUAL_GMM_COUNT]" in sources["kernel_tiling"]
+            and "SetResidualGmmShape" in sources["host_tiling"]
+            and "BuildResidualGmmShapeTable" in sources["host_tiling"]
+            and "BuildResidualGmmShapeTable(tilingData)" in sources["host_tiling"]
+            and "SVDQ_RESIDUAL_STAGE_W4A8_GMM1" in sources["host_tiling"]
+            and "SVDQ_RESIDUAL_STAGE_W4A8_GMM2" in sources["host_tiling"]
+            and "gmm.groupListType = 1" in sources["host_tiling"]
+            and "gmm.groupType = 0" in sources["host_tiling"]
+            and "gmm.splitItem = 2" in sources["host_tiling"]
+            and "gmm.weightNz = true" in sources["host_tiling"]
+            and "SVDQResidualGmmLaunch" in sources["kernel_contract"]
+            and "ResidualGmmShape(uint32_t gmmId)" in sources["kernel_contract"]
+            and "ResidualGmmIdForStage(uint32_t stageId)" in sources["kernel_contract"]
+            and "BuildResidualGmmLaunch(uint32_t stageId)" in sources["kernel_contract"]
+            and "ResidualGmmLaunchReady(uint32_t stageId)" in sources["kernel_contract"]
+            and "BuildResidualGmmLaunch(stageId)" in sources["kernel_contract"]
+        ),
         "kernel_residual_routed_input_quant_execution_enabled": (
             '../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2.cpp'
             in sources["kernel_contract"]
@@ -942,6 +1005,19 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
         if f"case {stage['name']}:" not in sources["kernel_contract"]:
             raise ValueError(f"residual stage {stage['name']} missing from kernel contract switch.")
 
+    for launch in manifest["residual_gmm_launches"]:
+        for token in (
+            launch["name"],
+            launch["input_region"],
+            launch["activation_scale_region"],
+            launch["output_region"],
+        ):
+            if token not in sources["host_tiling"] or token not in sources["kernel_contract"]:
+                raise ValueError(f"residual GMM launch token {token} missing from source.")
+        for token in ("SVDQResidualGmmShape", "BuildResidualGmmLaunch", "ResidualGmmLaunchReady"):
+            if token not in sources["kernel_contract"]:
+                raise ValueError(f"residual GMM launch helper {token} missing from kernel contract.")
+
     for invocation in manifest["lowrank_invocations"]:
         for token in (
             invocation["name"],
@@ -1010,6 +1086,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
         "sync_flags": _sync_flag_records(),
         "bf16_stages": _bf16_stage_records(),
         "residual_stages": _residual_stage_records(),
+        "residual_gmm_launches": RESIDUAL_GMM_LAUNCHES,
         "lowrank_invocations": LOWRANK_INVOCATIONS,
         "lowrank_tile_shape": {"m": 16, "n": 64, "k": 64},
         "debug_readback_contract": {
@@ -1096,6 +1173,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "residual_routed_input_quant_execution_enabled": source_proof[
                 "kernel_residual_routed_input_quant_execution_enabled"
             ],
+            "residual_gmm_launch_descriptor_recorded": source_proof[
+                "kernel_residual_gmm_launch_descriptor_recorded"
+            ],
             "w4a8_residual_execution_fail_closed": (
                 "RunW4A8ResidualStages() const" in sources["kernel_contract"]
                 and "RunMixedEpilogueStages() const" in sources["kernel_contract"]
@@ -1119,6 +1199,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "sync_flags": len(SYNC_FLAGS),
             "bf16_stages": len(BF16_STAGES),
             "residual_stages": len(RESIDUAL_STAGES),
+            "residual_gmm_launches": len(RESIDUAL_GMM_LAUNCHES),
             "lowrank_invocations": len(LOWRANK_INVOCATIONS),
         },
     }

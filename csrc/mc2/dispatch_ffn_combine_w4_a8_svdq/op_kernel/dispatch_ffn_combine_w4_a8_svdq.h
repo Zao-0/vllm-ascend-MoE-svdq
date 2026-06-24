@@ -139,6 +139,27 @@ struct SVDQResidualExecutionPlan {
     bool residualOnly;
 };
 
+struct SVDQResidualGmmLaunch {
+    uint32_t stageId;
+    GM_ADDR input;
+    GM_ADDR activationScale;
+    GM_ADDR output;
+    GM_ADDR weight;
+    GM_ADDR weightScale;
+    GM_ADDR bias;
+    GM_ADDR expertTokenNums;
+    uint32_t m;
+    uint32_t k;
+    uint32_t n;
+    uint32_t listLen;
+    uint32_t groupListType;
+    uint32_t groupType;
+    uint32_t splitItem;
+    bool transB;
+    bool weightNz;
+    bool residualOnly;
+};
+
 struct SVDQMixedEpilogueContract {
     uint32_t stageId;
     uint32_t residualRegionId;
@@ -263,6 +284,11 @@ public:
     __aicore__ inline SVDQResidualStageShape ResidualStageShape(uint32_t stageId) const
     {
         return tilingData_.residualStageShapes[stageId];
+    }
+
+    __aicore__ inline SVDQResidualGmmShape ResidualGmmShape(uint32_t gmmId) const
+    {
+        return tilingData_.residualGmmShapes[gmmId];
     }
 
     __aicore__ inline SVDQDispatchRoutingTiling DispatchRoutingTiling() const
@@ -496,6 +522,33 @@ public:
         }
     }
 
+    __aicore__ inline uint32_t ResidualGmmIdForStage(uint32_t stageId) const
+    {
+        switch (stageId) {
+            case SVDQ_RESIDUAL_STAGE_W4A8_GMM1:
+                return 0;
+            case SVDQ_RESIDUAL_STAGE_W4A8_GMM2:
+                return 1;
+            default:
+                return SVDQ_INVALID_ID;
+        }
+    }
+
+    __aicore__ inline SVDQResidualGmmLaunch BuildResidualGmmLaunch(uint32_t stageId) const
+    {
+        uint32_t gmmId = ResidualGmmIdForStage(stageId);
+        if (gmmId == SVDQ_INVALID_ID) {
+            return {SVDQ_INVALID_ID, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                0, 0, 0, 0, 0, 0, 0, false, false, false};
+        }
+        SVDQResidualGmmShape shape = ResidualGmmShape(gmmId);
+        return {shape.stageId, WorkspaceAddress(shape.inputRegionId), WorkspaceAddress(shape.activationScaleRegionId),
+            WorkspaceAddress(shape.outputRegionId), ResidualWeightAddress(shape.residualWeightSlot),
+            ResidualScaleAddress(shape.residualScaleSlot), ResidualBiasAddress(shape.residualBiasSlot),
+            runtime_.expertTokenNums, shape.m, shape.k, shape.n, shape.listLen, shape.groupListType, shape.groupType,
+            shape.splitItem, shape.transB, shape.weightNz, shape.residualOnly};
+    }
+
     __aicore__ inline bool ResidualStageReady(uint32_t stageId) const
     {
         SVDQResidualStageShape shape = ResidualStageShape(stageId);
@@ -545,6 +598,29 @@ public:
         return false;
     }
 
+    __aicore__ inline bool ResidualGmmLaunchReady(uint32_t stageId) const
+    {
+        SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
+        uint32_t gmmId = ResidualGmmIdForStage(stageId);
+        if (plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM || gmmId == SVDQ_INVALID_ID ||
+            !ResidualExecutionPlanReady(stageId)) {
+            return false;
+        }
+        SVDQResidualGmmShape shape = ResidualGmmShape(gmmId);
+        SVDQResidualGmmLaunch launch = BuildResidualGmmLaunch(stageId);
+        return shape.stageId == stageId && shape.inputRegionId == plan.inputRegionId &&
+               shape.activationScaleRegionId == plan.activationScaleRegionId &&
+               shape.outputRegionId == plan.outputRegionId &&
+               shape.residualWeightSlot == plan.residualWeightSlot &&
+               shape.residualScaleSlot == plan.residualScaleSlot &&
+               shape.residualBiasSlot == plan.residualBiasSlot && shape.m > 0 && shape.k > 0 && shape.n > 0 &&
+               shape.listLen == tilingData_.info.expertPerRank && shape.groupListType == 1 &&
+               shape.groupType == 0 && shape.splitItem == 2 && !shape.transB && shape.weightNz &&
+               shape.residualOnly && launch.input != nullptr && launch.activationScale != nullptr &&
+               launch.output != nullptr && launch.weight != nullptr && launch.weightScale != nullptr &&
+               launch.bias != nullptr && launch.expertTokenNums != nullptr;
+    }
+
     __aicore__ inline bool RunResidualDynamicQuantStage(uint32_t stageId) const
     {
         SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
@@ -573,9 +649,11 @@ public:
     __aicore__ inline bool RunResidualGmmStage(uint32_t stageId) const
     {
         SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
-        if (plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM || !ResidualExecutionPlanReady(stageId)) {
+        if (plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM || !ResidualGmmLaunchReady(stageId)) {
             return false;
         }
+        SVDQResidualGmmLaunch launch = BuildResidualGmmLaunch(stageId);
+        (void)launch;
         return false;
     }
 

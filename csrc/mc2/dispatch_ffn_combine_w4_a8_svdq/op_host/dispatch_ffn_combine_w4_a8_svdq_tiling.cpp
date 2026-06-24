@@ -348,6 +348,53 @@ static void BuildResidualStageShapeTable(DispatchFFNCombineW4A8SVDQTilingData* t
         routedRows, info.intermediateSize, info.hiddenSize, weight2Slot, scale2Slot, true);
 }
 
+static void SetResidualGmmShape(
+    DispatchFFNCombineW4A8SVDQTilingData* tilingData, uint32_t gmmId, uint32_t stageId,
+    uint32_t inputRegionId, uint32_t activationScaleRegionId, uint32_t outputRegionId,
+    uint32_t m, uint32_t k, uint32_t n, uint32_t residualWeightSlot, uint32_t residualScaleSlot,
+    uint32_t residualBiasSlot, uint32_t listLen)
+{
+    auto& gmm = tilingData->residualGmmShapes[gmmId];
+    gmm.stageId = stageId;
+    gmm.inputRegionId = inputRegionId;
+    gmm.activationScaleRegionId = activationScaleRegionId;
+    gmm.outputRegionId = outputRegionId;
+    gmm.m = m;
+    gmm.k = k;
+    gmm.n = n;
+    gmm.residualWeightSlot = residualWeightSlot;
+    gmm.residualScaleSlot = residualScaleSlot;
+    gmm.residualBiasSlot = residualBiasSlot;
+    gmm.listLen = listLen;
+    gmm.groupListType = 1;
+    gmm.groupType = 0;
+    gmm.splitItem = 2;
+    gmm.transB = false;
+    gmm.weightNz = true;
+    gmm.residualOnly = true;
+}
+
+static void BuildResidualGmmShapeTable(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
+{
+    auto& info = tilingData->info;
+    const uint32_t routedRows = info.maxOutputSize;
+    constexpr uint32_t weight1Slot = 1;
+    constexpr uint32_t weight2Slot = 2;
+    constexpr uint32_t scale1Slot = 4;
+    constexpr uint32_t scale2Slot = 5;
+    constexpr uint32_t bias1Slot = 6;
+    constexpr uint32_t bias2Slot = 7;
+
+    SetResidualGmmShape(tilingData, 0, SVDQ_RESIDUAL_STAGE_W4A8_GMM1,
+        SVDQ_REGION_X_Q, SVDQ_REGION_X_SCALE, SVDQ_REGION_ACCUMULATOR_1,
+        routedRows, info.hiddenSize, info.intermediateSize * 2,
+        weight1Slot, scale1Slot, bias1Slot, info.expertPerRank);
+    SetResidualGmmShape(tilingData, 1, SVDQ_RESIDUAL_STAGE_W4A8_GMM2,
+        SVDQ_REGION_HIDDEN_Q, SVDQ_REGION_HIDDEN_SCALE, SVDQ_REGION_ACCUMULATOR_2,
+        routedRows, info.intermediateSize, info.hiddenSize,
+        weight2Slot, scale2Slot, bias2Slot, info.expertPerRank);
+}
+
 static void SetLowRankInvocation(
     DispatchFFNCombineW4A8SVDQTilingData* tilingData, uint32_t invocationId, uint32_t inputRegionId,
     uint32_t rankRegionId, uint32_t outputRegionId, uint32_t downFactorId, uint32_t upFactorId,
@@ -646,6 +693,7 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
     BuildDispatchRoutingTiling(tilingData);
     BuildBF16StageShapeTable(tilingData);
     BuildResidualStageShapeTable(tilingData);
+    BuildResidualGmmShapeTable(tilingData);
     BuildLowRankInvocationTable(tilingData);
     size_t* workSpaces = context->GetWorkspaceSizes(1);
     OP_TILING_CHECK(workSpaces == nullptr,
