@@ -330,6 +330,24 @@ def test_svdq_lowrank_debug_install_validator_checks_static_package_surfaces():
     assert "libcust_opapi.so" in validator
 
 
+def test_svdq_w4a8_activation_quant_probe_matches_residual_stage_contract():
+    probe = (REPO_ROOT / "tools/svdq_w4a8_activation_quant_probe.py").read_text()
+
+    assert "torch_npu.npu_dynamic_quant" in probe
+    assert "routed_input" in probe
+    assert "hidden_input" in probe
+    assert "_cpu_dynamic_quant_reference" in probe
+    assert ".amax(dim=1)" in probe
+    assert "/ 127.0" in probe
+    assert ".clamp(-127, 127)" in probe
+    assert "--require-npu" in probe
+    assert "phase_f_activation_quant_probe_summary.json" in probe
+    assert '"q_exact_match"' in probe
+    assert '"q_mismatch_count"' in probe
+    assert '"scale_error"' in probe
+    assert '"npu_dequant_vs_input_error"' in probe
+
+
 def test_cann_host_library_build_path_honors_soc_selection():
     build_script = (REPO_ROOT / "csrc/build.sh").read_text()
     create_lib_branch = build_script[build_script.index('elif [[ "$ENABLE_CREATE_LIB" == "TRUE" ]];') :]
