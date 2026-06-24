@@ -14,6 +14,7 @@
 #include <cstdint>
 
 #include "lowrank/svdq_fused_down_up_tiling.h"
+#include "moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"
 
 constexpr uint32_t SVDQ_WORKSPACE_REGION_COUNT = 16;
 constexpr uint32_t SVDQ_SYNC_FLAG_COUNT = 14;
@@ -165,8 +166,16 @@ struct DispatchFFNCombineW4A8SVDQInfo {
     float swigluLimit;
 };
 
+struct SVDQDispatchRoutingTiling {
+    uint64_t initRoutingQuantTilingKey;
+    uint64_t routingWorkspaceBytes;
+    uint32_t aivNum;
+    optiling::MoeInitRoutingQuantV2TilingData moeInitRoutingQuantV2TilingData;
+};
+
 struct DispatchFFNCombineW4A8SVDQTilingData {
     DispatchFFNCombineW4A8SVDQInfo info;
+    SVDQDispatchRoutingTiling dispatchRouting;
     SVDQWorkspaceRegion workspaceRegions[SVDQ_WORKSPACE_REGION_COUNT];
     SVDQSyncFlag syncFlags[SVDQ_SYNC_FLAG_COUNT];
     SVDQBF16StageShape bf16StageShapes[SVDQ_BF16_STAGE_COUNT];

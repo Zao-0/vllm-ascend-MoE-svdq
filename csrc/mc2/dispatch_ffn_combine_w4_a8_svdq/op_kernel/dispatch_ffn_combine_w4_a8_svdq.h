@@ -229,6 +229,16 @@ public:
         return tilingData_.residualStageShapes[stageId];
     }
 
+    __aicore__ inline SVDQDispatchRoutingTiling DispatchRoutingTiling() const
+    {
+        return tilingData_.dispatchRouting;
+    }
+
+    __aicore__ inline GM_ADDR DispatchRoutingTempWorkspace() const
+    {
+        return runtime_.workspace + tilingData_.info.workspaceBytes;
+    }
+
     __aicore__ inline GM_ADDR FactorAddress(uint32_t factorId) const
     {
         switch (factorId) {
@@ -357,9 +367,12 @@ public:
     __aicore__ inline bool DispatchRoutingReady() const
     {
         SVDQDispatchRoutingContract contract = DispatchRoutingContract();
+        SVDQDispatchRoutingTiling routingTiling = DispatchRoutingTiling();
         return runtime_.x != nullptr && runtime_.expertId != nullptr && runtime_.probs != nullptr &&
                runtime_.expertTokenNums != nullptr && WorkspaceAddress(contract.routedOutputRegionId) != nullptr &&
-               WorkspaceAddress(contract.routeIndexRegionId) != nullptr;
+               WorkspaceAddress(contract.routeIndexRegionId) != nullptr &&
+               DispatchRoutingTempWorkspace() != nullptr && routingTiling.initRoutingQuantTilingKey != 0 &&
+               routingTiling.routingWorkspaceBytes > 0 && routingTiling.aivNum > 0;
     }
 
     __aicore__ inline bool RunDispatchRoutingStage() const

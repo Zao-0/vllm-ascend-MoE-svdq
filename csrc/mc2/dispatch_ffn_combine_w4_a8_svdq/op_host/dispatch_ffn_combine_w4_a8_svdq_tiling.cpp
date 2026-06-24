@@ -12,6 +12,7 @@
 
 #include "dispatch_ffn_combine_w4_a8_svdq_tiling.h"
 #include "lowrank/svdq_lowrank_debug_readback_tiling.h"
+#include "moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"
 #include "register/op_def_registry.h"
 #include "register/tilingdata_base.h"
 #include "tiling/tiling_api.h"
@@ -72,6 +73,8 @@ constexpr uint64_t FP32_BYTES = 4;
 constexpr uint32_t SVDQ_LOWRANK_ROW_TILE = 16;
 constexpr uint32_t SVDQ_LOWRANK_OUTPUT_COLUMN_TILE = 64;
 constexpr uint32_t SVDQ_LOWRANK_K_TILE = 64;
+constexpr uint32_t SVDQ_ROUTING_BLOCK_NUM = 20;
+constexpr uint64_t SVDQ_ROUTING_UB_SIZE = 196352;
 }  // namespace
 
 namespace optiling {
@@ -188,6 +191,47 @@ static void BuildSyncFlagTable(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
         SVDQ_STAGE_UNPERMUTE_COMBINE, SVDQ_REGION_EXPANDED_ROW_IDX, 13);
 
     tilingData->info.syncFlagCount = SVDQ_SYNC_FLAG_COUNT;
+}
+
+static void CopyMoeInitRoutingQuantV2TilingData(
+    SVDQDispatchRoutingTiling& dispatchRouting, const optiling::MoeInitRoutingQuantV2TilingBase& routingBase)
+{
+    dispatchRouting.moeInitRoutingQuantV2TilingData = routingBase.quantTilingData;
+    dispatchRouting.moeInitRoutingQuantV2TilingData.vbsComputeParamsOp =
+        routingBase.quantTilingData.vbsComputeParamsOp;
+    dispatchRouting.moeInitRoutingQuantV2TilingData.vmsMiddle = routingBase.quantTilingData.vmsMiddle;
+    dispatchRouting.moeInitRoutingQuantV2TilingData.sortOut = routingBase.quantTilingData.sortOut;
+    dispatchRouting.moeInitRoutingQuantV2TilingData.srcToDst = routingBase.quantTilingData.srcToDst;
+    dispatchRouting.moeInitRoutingQuantV2TilingData.srcToDstCapacity =
+        routingBase.quantTilingData.srcToDstCapacity;
+    dispatchRouting.moeInitRoutingQuantV2TilingData.gatherOut = routingBase.quantTilingData.gatherOut;
+}
+
+static void BuildDispatchRoutingTiling(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
+{
+    auto& info = tilingData->info;
+    auto& dispatchRouting = tilingData->dispatchRouting;
+    optiling::MoeInitRoutingQuantV2TilingBase routingBase;
+
+    constexpr int64_t inputDtypeSize = sizeof(int16_t);
+    constexpr int64_t scaleDim0 = 0;
+    constexpr int64_t expertCapacity = 0;
+    constexpr int64_t dropPadMode = 0;
+    constexpr int64_t expertTokensCountOrCumsumFlag = 2;
+    constexpr bool expertTokensBeforeCapacityFlag = false;
+    constexpr int64_t quantMode = 1;
+    constexpr uint32_t aivNumInitRouting = 2 * SVDQ_ROUTING_BLOCK_NUM;
+    const int64_t expertNum =
+        static_cast<int64_t>(info.expertPerRank) * static_cast<int64_t>(info.worldSize) + 1;
+    const int64_t activeNum = static_cast<int64_t>(info.m) * static_cast<int64_t>(info.topK);
+
+    routingBase.DoTiling(info.m, info.hiddenSize, info.topK, expertCapacity, expertNum, activeNum, dropPadMode,
+        expertTokensCountOrCumsumFlag, expertTokensBeforeCapacityFlag, inputDtypeSize, quantMode, scaleDim0,
+        aivNumInitRouting, SVDQ_ROUTING_UB_SIZE);
+    dispatchRouting.initRoutingQuantTilingKey = routingBase.tilingKey_;
+    dispatchRouting.routingWorkspaceBytes = routingBase.workspaceSize_;
+    dispatchRouting.aivNum = aivNumInitRouting;
+    CopyMoeInitRoutingQuantV2TilingData(dispatchRouting, routingBase);
 }
 
 static void SetBF16StageShape(
@@ -570,13 +614,14 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
 
     BuildWorkspaceMap(tilingData);
     BuildSyncFlagTable(tilingData);
+    BuildDispatchRoutingTiling(tilingData);
     BuildBF16StageShapeTable(tilingData);
     BuildResidualStageShapeTable(tilingData);
     BuildLowRankInvocationTable(tilingData);
     size_t* workSpaces = context->GetWorkspaceSizes(1);
     OP_TILING_CHECK(workSpaces == nullptr,
         OP_LOGE(nodeName, "workSpaces is nullptr."), return ge::GRAPH_FAILED);
-    workSpaces[0] = SVDQ_SYSTEM_WORKSPACE + info.workspaceBytes;
+    workSpaces[0] = SVDQ_SYSTEM_WORKSPACE + info.workspaceBytes + tilingData->dispatchRouting.routingWorkspaceBytes;
 
     OP_LOGE(nodeName, "DispatchFFNCombineW4A8SVDQ AscendC kernel is not implemented yet.");
     return ge::GRAPH_FAILED;

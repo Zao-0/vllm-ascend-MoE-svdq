@@ -547,6 +547,17 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             "BuildResidualStageShapeTable(tilingData)" in sources["host_tiling"]
         ),
         "host_tiling_builds_lowrank_invocations": "BuildLowRankInvocationTable(tilingData)" in sources["host_tiling"],
+        "host_tiling_builds_dispatch_routing_subtiling": (
+            "BuildDispatchRoutingTiling(tilingData)" in sources["host_tiling"]
+            and "MoeInitRoutingQuantV2TilingBase routingBase" in sources["host_tiling"]
+            and "routingBase.DoTiling" in sources["host_tiling"]
+            and "routingBase.tilingKey_" in sources["host_tiling"]
+            and "routingBase.workspaceSize_" in sources["host_tiling"]
+            and "routingBase.quantTilingData" in sources["host_tiling"]
+            and "SVDQ_ROUTING_BLOCK_NUM" in sources["host_tiling"]
+            and "SVDQ_ROUTING_UB_SIZE" in sources["host_tiling"]
+            and "tilingData->dispatchRouting.routingWorkspaceBytes" in sources["host_tiling"]
+        ),
         "op_cmake_has_local_debug_readback_option": (
             "option(SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK" in sources["op_cmake"]
         ),
@@ -575,6 +586,23 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "SVDQ_SYNC_DISPATCH_TO_QUANT_1" in sources["kernel_contract"]
             and "SVDQ_SYNC_DISPATCH_TO_LOWRANK_1" in sources["kernel_contract"]
             and "SVDQ_SYNC_DISPATCH_METADATA_TO_UNPERMUTE" in sources["kernel_contract"]
+        ),
+        "kernel_tiling_contains_dispatch_routing_subtiling": (
+            '#include "moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"'
+            in sources["kernel_tiling"]
+            and "struct SVDQDispatchRoutingTiling" in sources["kernel_tiling"]
+            and "initRoutingQuantTilingKey" in sources["kernel_tiling"]
+            and "routingWorkspaceBytes" in sources["kernel_tiling"]
+            and "MoeInitRoutingQuantV2TilingData moeInitRoutingQuantV2TilingData" in sources["kernel_tiling"]
+            and "SVDQDispatchRoutingTiling dispatchRouting" in sources["kernel_tiling"]
+        ),
+        "kernel_dispatch_routing_uses_official_tiling_contract": (
+            "DispatchRoutingTiling() const" in sources["kernel_contract"]
+            and "DispatchRoutingTempWorkspace() const" in sources["kernel_contract"]
+            and "tilingData_.dispatchRouting" in sources["kernel_contract"]
+            and "routingTiling.initRoutingQuantTilingKey != 0" in sources["kernel_contract"]
+            and "routingTiling.routingWorkspaceBytes > 0" in sources["kernel_contract"]
+            and "routingTiling.aivNum > 0" in sources["kernel_contract"]
         ),
         "kernel_dispatch_routing_execution_fail_closed": (
             "RunDispatchRoutingStage() const" in sources["kernel_contract"]
