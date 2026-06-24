@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from safetensors import safe_open
 
@@ -78,6 +79,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--input-mode", choices=("zero", "linear"), default="zero")
     parser.add_argument("--linear-input-scale", type=float, default=0.01)
     parser.add_argument("--out-zero-abs-tol", type=float, default=1e-6)
+    parser.add_argument("--compare-gmm1-reference", action="store_true")
+    parser.add_argument("--gmm1-reference-max-rows", type=int, default=64)
+    parser.add_argument("--gmm1-reference-max-abs-tol", type=float, default=2e-2)
+    parser.add_argument("--gmm1-reference-mean-abs-tol", type=float, default=2e-3)
     parser.add_argument("--require-npu", action="store_true")
     return parser.parse_args()
 
@@ -176,6 +181,109 @@ def _float_stats(tensor: torch.Tensor) -> dict[str, Any]:
             }
         )
     return stats
+
+
+def _tensor_error(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, Any]:
+    actual_cpu = actual.detach().cpu().float()
+    expected_cpu = expected.detach().cpu().float()
+    diff = (actual_cpu - expected_cpu).abs()
+    diff_finite = bool(torch.isfinite(diff).all().item()) if diff.numel() else True
+    return {
+        "actual_shape": list(actual_cpu.shape),
+        "expected_shape": list(expected_cpu.shape),
+        "actual_finite": bool(torch.isfinite(actual_cpu).all().item()) if actual_cpu.numel() else True,
+        "expected_finite": bool(torch.isfinite(expected_cpu).all().item()) if expected_cpu.numel() else True,
+        "diff_finite": diff_finite,
+        "max_abs": float(diff.max().item()) if diff.numel() and diff_finite else float("inf"),
+        "mean_abs": float(diff.mean().item()) if diff.numel() and diff_finite else float("inf"),
+        "numel": int(diff.numel()),
+        "actual_sample": actual_cpu.flatten()[:8].tolist(),
+        "expected_sample": expected_cpu.flatten()[:8].tolist(),
+        "diff_sample": diff.flatten()[:8].tolist(),
+    }
+
+
+def _int64_float_bits_to_fp32(scale: torch.Tensor) -> torch.Tensor:
+    scale_cpu = scale.detach().contiguous().cpu().numpy().astype(np.uint64).astype(np.uint32)
+    scale_fp32 = torch.from_numpy(scale_cpu.view(np.float32).copy()).float()
+    if scale_fp32.dim() == 3 and scale_fp32.shape[1] == 1:
+        return scale_fp32[:, 0, :]
+    return scale_fp32
+
+
+def _unpack_postloaded_w4_columns(weight: torch.Tensor, output_columns: int) -> torch.Tensor:
+    words = weight.detach().cpu().contiguous().to(torch.int32)
+    shifts = (torch.arange(8, dtype=torch.int32) * 4).reshape(1, 1, 1, 8)
+    unpacked = ((words.unsqueeze(-1) >> shifts) & 0xF).reshape(words.shape[0], words.shape[1], output_columns)
+    return torch.where(unpacked >= 8, unpacked - 16, unpacked).to(torch.int32)
+
+
+def _official_int8_to_int4_parts(x_int8: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    x_cpu = x_int8.detach().cpu().to(torch.int16)
+    # Mirrors FetchAndPreprocessInt8ToInt4: high=floor(x/16), low=(x & 0x0f)-8.
+    x_high = torch.floor(x_cpu.float() / 16.0).to(torch.int32)
+    x_low = ((x_cpu & 0x0F) - 8).to(torch.int32)
+    return x_high, x_low
+
+
+def _clip_group_counts(counts: torch.Tensor, row_limit: int) -> torch.Tensor:
+    remaining = int(row_limit)
+    clipped = []
+    flat_counts = counts.detach().cpu().to(torch.int64).flatten().tolist()
+    for count in flat_counts:
+        take = min(int(count), remaining)
+        clipped.append(take)
+        remaining -= take
+        if remaining <= 0:
+            clipped.extend([0] * (len(flat_counts) - len(clipped)))
+            break
+    return torch.tensor(clipped, dtype=torch.int64)
+
+
+def _official_gmm1_unfused_reference(
+    *,
+    routed_x_int8: torch.Tensor,
+    routed_x_scale: torch.Tensor,
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    scale_bias: torch.Tensor,
+    expert_token_nums: torch.Tensor,
+    output_columns: int,
+    max_rows: int,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    row_count = min(int(routed_x_int8.shape[0]), int(max_rows))
+    counts = _clip_group_counts(expert_token_nums, row_count)
+    x_high, x_low = _official_int8_to_int4_parts(routed_x_int8[:row_count])
+    per_token_scale = routed_x_scale[:row_count].detach().cpu().float()
+    weight_scale_fp32 = _int64_float_bits_to_fp32(weight_scale)
+    bias = scale_bias.detach().cpu().float().contiguous()
+    unpacked_weight = _unpack_postloaded_w4_columns(weight, output_columns)
+
+    outputs: list[torch.Tensor] = []
+    row_start = 0
+    for expert_id, count in enumerate(counts.tolist()):
+        count = int(count)
+        if count <= 0:
+            continue
+        row_end = row_start + count
+        weight_e = unpacked_weight[expert_id]
+        high_acc = x_high[row_start:row_end].matmul(weight_e)
+        low_acc = x_low[row_start:row_end].matmul(weight_e)
+        combined = (high_acc * 16 + low_acc).float()
+        dequant = combined * weight_scale_fp32[expert_id].reshape(1, -1) + bias[expert_id].reshape(1, -1)
+        outputs.append(dequant * per_token_scale[row_start:row_end].reshape(-1, 1))
+        row_start = row_end
+    if outputs:
+        reference = torch.cat(outputs, dim=0)
+    else:
+        reference = torch.empty((0, output_columns), dtype=torch.float32)
+    return reference, {
+        "source": "official dispatch_ffn_combine_w4_a8 AIC/AIV contract",
+        "activation_split": "FetchAndPreprocessInt8ToInt4 high=floor(x/16), low=(x&0x0f)-8",
+        "epilogue_formula": "(high_acc * 16 + low_acc) * postloaded_weight_scale + scale_bias, then * routed_x_scale",
+        "compared_rows": int(reference.shape[0]),
+        "group_counts": counts.tolist(),
+    }
 
 
 def _postload_metadata(layer: torch.nn.Module) -> dict[str, Any]:
@@ -344,6 +452,42 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
         debug_boundary_classification = "gmm1_post_dequant_finite_hidden_prequant_nonfinite"
     else:
         debug_boundary_classification = "gmm1_post_dequant_and_hidden_prequant_nonfinite"
+    gmm1_reference: dict[str, Any] | None = None
+    gmm1_reference_passed = None
+    if args.compare_gmm1_reference:
+        reference, reference_contract = _official_gmm1_unfused_reference(
+            routed_x_int8=routed_x_int8[:active_rows],
+            routed_x_scale=routed_x_scale[:active_rows],
+            weight=layer.w13_weight,
+            weight_scale=layer.w13_weight_scale,
+            scale_bias=layer.w13_scale_bias,
+            expert_token_nums=expert_token_nums,
+            output_columns=2 * spec.intermediate_size,
+            max_rows=args.gmm1_reference_max_rows,
+        )
+        actual = gmm1_post_dequant[: reference.shape[0], : reference.shape[1]]
+        error = _tensor_error(actual, reference)
+        gmm1_reference_passed = (
+            error["actual_finite"]
+            and error["expected_finite"]
+            and error["diff_finite"]
+            and error["max_abs"] <= args.gmm1_reference_max_abs_tol
+            and error["mean_abs"] <= args.gmm1_reference_mean_abs_tol
+        )
+        gmm1_reference = {
+            "enabled": True,
+            "passed": gmm1_reference_passed,
+            "contract": reference_contract,
+            "error": error,
+            "max_abs_tolerance": args.gmm1_reference_max_abs_tol,
+            "mean_abs_tolerance": args.gmm1_reference_mean_abs_tol,
+        }
+        input_health_gate_passed = input_health_gate_passed and gmm1_reference_passed
+    else:
+        gmm1_reference = {
+            "enabled": False,
+            "reason": "pass --compare-gmm1-reference to run the official-source unfused GMM1 comparator",
+        }
     return {
         "stage": f"real_checkpoint_w4a8_debug_readback_{args.input_mode}_input_health",
         "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_debug_readback -> aclnnSVDQW4A8DebugReadback",
@@ -351,6 +495,10 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
         "public_grouped_matmul_used": False,
         "real_checkpoint_validation": True,
         "nonzero_real_checkpoint_numerical_gate": False,
+        "gmm1_real_checkpoint_numerical_gate": (
+            bool(gmm1_reference_passed) if gmm1_reference_passed is not None else False
+        ),
+        "gmm2_real_checkpoint_numerical_gate": False,
         "production_svdq_host_tiling_fail_closed": True,
         "layer_index": args.layer,
         "layer_name": spec.prefix,
@@ -371,11 +519,21 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
             "metadata": _postload_metadata(layer),
         },
         "unfused_reference": health_reference,
+        "gmm1_unfused_reference": gmm1_reference,
+        "gmm2_unfused_reference": {
+            "enabled": False,
+            "reason": (
+                "The current debug ABI does not expose official hidden INT8 and hidden per-token scale, "
+                "which are required to compare GMM2 without re-deriving hidden quantization."
+            ),
+        },
         "out_zero_abs_tolerance": args.out_zero_abs_tol,
         "checks": {
             "input_health_gate_passed": input_health_gate_passed,
             "routed_quant_health": routed_quant_health,
             "readback_finite": readback_finite,
+            "gmm1_reference_passed": gmm1_reference_passed,
+            "gmm2_reference_passed": None,
             "hidden_prequant_health": hidden_prequant_health,
             "debug_boundary_classification": debug_boundary_classification,
             "routed_rows_match": routed_rows_match,
