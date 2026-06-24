@@ -653,6 +653,30 @@ def test_svdq_official_w4a8_dispatch_probe_uses_official_aclnn_path():
         assert token in probe
 
 
+def test_svdq_w4a8_debug_readback_real_checkpoint_probe_uses_official_debug_path():
+    probe = (REPO_ROOT / "tools/svdq_w4a8_debug_readback_real_checkpoint_probe.py").read_text()
+
+    for token in (
+        "torch.ops._C_ascend.svdq_w4a8_debug_readback",
+        "aclnnSVDQW4A8DebugReadback",
+        "_make_official_w4a8_method",
+        "_make_residual_validation_layer",
+        "_load_residual_checkpoint_tensor",
+        "AscendW4A8DynamicFusedMoEMethod.process_weights_after_loading_modelslim",
+        "real_checkpoint_w4a8_debug_readback_zero_input",
+        "unfused_zero_input_oracle",
+        "gmm1_post_dequant_active",
+        "gmm2_post_dequant_active",
+        "public_grouped_matmul_used",
+        "False",
+        "nonzero_real_checkpoint_numerical_gate",
+        "phase_bb_w4a8_debug_readback_real_checkpoint_summary.json",
+        "--require-npu",
+    ):
+        assert token in probe
+    assert "npu_grouped_matmul" not in probe
+
+
 def test_svdq_final_combine_device_probe_executes_official_token_unpermute_surface():
     probe = (REPO_ROOT / "tools/svdq_final_combine_device_probe.py").read_text()
 
