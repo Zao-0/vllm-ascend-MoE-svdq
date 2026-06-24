@@ -1007,6 +1007,20 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "_load_validation_layer(" in lowrank_debug_probe
     assert "build_svdq_bf16_stage_reference" in lowrank_debug_probe
     assert "--require-accumulator-readback" in lowrank_debug_probe
+    assert 'DEFAULT_SUMMARY_NAME = "phase_j_lowrank_debug_readback_probe_summary.json"' in lowrank_debug_probe
+    assert "_aggregate_stage_errors(results)" in lowrank_debug_probe
+    assert '"aggregate_stage_errors": _aggregate_stage_errors(results)' in lowrank_debug_probe
+    for aggregate_field in (
+        "layer_count",
+        "expert_count",
+        "stage_comparison_count",
+        "max_abs_by_stage",
+        "mean_abs_by_stage",
+        "all_stage_outputs_finite",
+        "max_abs_overall",
+        "mean_abs_overall",
+    ):
+        assert aggregate_field in lowrank_debug_probe
     assert "BuildDownStagePlan() const" in lowrank_header
     assert "BuildPrimaryUpStagePlan() const" in lowrank_header
     assert "BuildSecondUpStagePlan() const" in lowrank_header

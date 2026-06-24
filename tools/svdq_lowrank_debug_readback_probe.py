@@ -44,6 +44,7 @@ from vllm_ascend.quantization.methods.svdq_post_load import (  # noqa: E402
 from vllm_ascend.utils import enable_custom_op  # noqa: E402
 
 DEBUG_OP_NAME = "SVDQLowRankDebugReadback"
+DEFAULT_SUMMARY_NAME = "phase_j_lowrank_debug_readback_probe_summary.json"
 CUSTOM_OP_CONFIG_ROOT = (
     REPO_ROOT
     / "vllm_ascend"
@@ -62,7 +63,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
     parser.add_argument("--evidence-dir", default=DEFAULT_EVIDENCE_DIR)
-    parser.add_argument("--summary-name", default="phase_z_lowrank_debug_readback_probe_summary.json")
+    parser.add_argument("--summary-name", default=DEFAULT_SUMMARY_NAME)
     parser.add_argument("--layers", type=int, nargs="+", default=[0, 39])
     parser.add_argument("--experts", type=int, nargs="+", default=[0, 1])
     parser.add_argument("--num-tokens", type=int, default=2)
@@ -429,6 +430,48 @@ def _probe_layer(
     }
 
 
+def _aggregate_stage_errors(results: list[dict[str, Any]]) -> dict[str, Any]:
+    aggregate: dict[str, Any] = {
+        "layer_count": len(results),
+        "expert_count": 0,
+        "stage_comparison_count": 0,
+        "max_abs_by_stage": {},
+        "mean_abs_by_stage": {},
+        "all_stage_outputs_finite": True,
+    }
+    max_abs_by_stage: dict[str, float] = {}
+    mean_abs_by_stage: dict[str, float] = {}
+    for layer_result in results:
+        for expert_result in layer_result["experts"]:
+            aggregate["expert_count"] += 1
+            for stage_name, stage_error in expert_result["stage_errors"].items():
+                if "max_abs" not in stage_error or "mean_abs" not in stage_error:
+                    aggregate["all_stage_outputs_finite"] = (
+                        aggregate["all_stage_outputs_finite"] and bool(stage_error.get("actual_finite", False))
+                    )
+                    continue
+                aggregate["stage_comparison_count"] += 1
+                max_abs_by_stage[stage_name] = max(
+                    max_abs_by_stage.get(stage_name, 0.0),
+                    float(stage_error["max_abs"]),
+                )
+                mean_abs_by_stage[stage_name] = max(
+                    mean_abs_by_stage.get(stage_name, 0.0),
+                    float(stage_error["mean_abs"]),
+                )
+                aggregate["all_stage_outputs_finite"] = (
+                    aggregate["all_stage_outputs_finite"]
+                    and bool(stage_error["actual_finite"])
+                    and bool(stage_error["expected_finite"])
+                    and bool(stage_error["diff_finite"])
+                )
+    aggregate["max_abs_by_stage"] = max_abs_by_stage
+    aggregate["mean_abs_by_stage"] = mean_abs_by_stage
+    aggregate["max_abs_overall"] = max(max_abs_by_stage.values(), default=0.0)
+    aggregate["mean_abs_overall"] = max(mean_abs_by_stage.values(), default=0.0)
+    return aggregate
+
+
 def main() -> None:
     args = _parse_args()
     os.makedirs(args.evidence_dir, exist_ok=True)
@@ -504,6 +547,7 @@ def main() -> None:
         "npu_environment": npu_env,
         "runtime_soc": runtime_soc,
         "custom_package_debug_op_support": package_support,
+        "aggregate_stage_errors": _aggregate_stage_errors(results),
         "results": results,
         "passed": all(result["passed"] for result in results),
     }
