@@ -570,6 +570,13 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "_load_validation_layer(" in sources["lowrank_debug_probe"]
             and "build_svdq_bf16_stage_reference" in sources["lowrank_debug_probe"]
         ),
+        "lowrank_debug_probe_preflights_runtime_soc_package": (
+            "DEBUG_OP_NAME = \"SVDQLowRankDebugReadback\"" in sources["lowrank_debug_probe"]
+            and "_custom_package_debug_op_support" in sources["lowrank_debug_probe"]
+            and "_runtime_soc(args.device_id)" in sources["lowrank_debug_probe"]
+            and "_package_supports_runtime_soc(" in sources["lowrank_debug_probe"]
+            and "binary_info_config.json" in sources["lowrank_debug_probe"]
+        ),
         "lowrank_debug_op_in_a3_aclnn_package": (
             '"dispatch_ffn_combine_w4_a8_svdq"' in sources["build_aclnn"]
             and '"svdq_low_rank_debug_readback"' in sources["build_aclnn"]
@@ -738,6 +745,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "lowrank_debug_torch_adapter_registered",
                 "lowrank_debug_meta_registered",
                 "lowrank_debug_probe_launches_real_op",
+                "lowrank_debug_probe_preflights_runtime_soc_package",
                 "lowrank_debug_op_in_a3_aclnn_package",
             ],
         },

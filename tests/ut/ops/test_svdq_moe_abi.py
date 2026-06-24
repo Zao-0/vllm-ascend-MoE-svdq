@@ -285,6 +285,33 @@ def test_svdq_cann_op_is_selected_by_a3_aclnn_build_script():
     assert a3_ops.index('"svdq_low_rank_debug_readback"') < a3_ops.index('"dispatch_ffn_combine_bf16"')
 
 
+def test_svdq_lowrank_debug_probe_preflights_runtime_soc_package_support(tmp_path):
+    from tools.svdq_lowrank_debug_readback_probe import (
+        DEBUG_OP_NAME,
+        _custom_package_debug_op_support,
+        _normalize_soc_name,
+        _package_supports_runtime_soc,
+    )
+
+    config_root = tmp_path / "config"
+    a3_config = config_root / "ascend910_93" / "binary_info_config.json"
+    a3_config.parent.mkdir(parents=True)
+    a3_config.write_text(json.dumps({DEBUG_OP_NAME: {}, "OtherOp": {}}), encoding="utf-8")
+    a2_config = config_root / "ascend910b" / "binary_info_config.json"
+    a2_config.parent.mkdir(parents=True)
+    a2_config.write_text(json.dumps({"OtherOp": {}}), encoding="utf-8")
+
+    support = _custom_package_debug_op_support(config_root)
+
+    assert _normalize_soc_name("Ascend910B4") == "ascend910b"
+    assert _normalize_soc_name("Ascend910_9391") == "ascend910_93"
+    assert support["debug_op_supported_socs"] == ["ascend910_93"]
+    assert support["by_soc"]["ascend910_93"]["has_debug_op"]
+    assert not support["by_soc"]["ascend910b"]["has_debug_op"]
+    assert _package_supports_runtime_soc(package_support=support, runtime_soc="ascend910_93")
+    assert not _package_supports_runtime_soc(package_support=support, runtime_soc="ascend910b")
+
+
 def test_cann_host_library_build_path_honors_soc_selection():
     build_script = (REPO_ROOT / "csrc/build.sh").read_text()
     create_lib_branch = build_script[build_script.index('elif [[ "$ENABLE_CREATE_LIB" == "TRUE" ]];') :]
@@ -1296,6 +1323,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
             "lowrank_debug_torch_adapter_registered",
             "lowrank_debug_meta_registered",
             "lowrank_debug_probe_launches_real_op",
+            "lowrank_debug_probe_preflights_runtime_soc_package",
             "lowrank_debug_op_in_a3_aclnn_package",
         ],
     }

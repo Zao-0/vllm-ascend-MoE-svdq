@@ -43,6 +43,20 @@ from vllm_ascend.quantization.methods.svdq_post_load import (  # noqa: E402
 )
 from vllm_ascend.utils import enable_custom_op  # noqa: E402
 
+DEBUG_OP_NAME = "SVDQLowRankDebugReadback"
+CUSTOM_OP_CONFIG_ROOT = (
+    REPO_ROOT
+    / "vllm_ascend"
+    / "_cann_ops_custom"
+    / "vendors"
+    / "custom_transformer"
+    / "op_impl"
+    / "ai_core"
+    / "tbe"
+    / "kernel"
+    / "config"
+)
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -67,6 +81,111 @@ def _parse_args() -> argparse.Namespace:
         "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK=ON.",
     )
     return parser.parse_args()
+
+
+def _normalize_soc_name(raw_name: object) -> str | None:
+    if raw_name is None:
+        return None
+    text = str(raw_name).strip().lower().replace("-", "_")
+    if not text:
+        return None
+    if "910b" in text:
+        return "ascend910b"
+    if "910_93" in text or "910c" in text or "ascend910_939" in text or "ascend910_938" in text:
+        return "ascend910_93"
+    if "310p" in text:
+        return "ascend310p"
+    if "950" in text:
+        return "ascend950"
+    if "kirinx90" in text:
+        return "kirinx90"
+    if text.startswith("ascend"):
+        return text
+    return None
+
+
+def _runtime_soc(device_id: int) -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "device_id": device_id,
+        "device_name": None,
+        "soc_version": None,
+        "normalized_soc": None,
+    }
+    if not hasattr(torch, "npu"):
+        return info
+    try:
+        info["device_name"] = torch.npu.get_device_name(device_id)
+    except Exception as exc:
+        info["device_name_error"] = f"{type(exc).__name__}: {exc}"
+    try:
+        info["soc_version"] = torch.npu.get_soc_version()
+    except Exception as exc:
+        info["soc_version_error"] = f"{type(exc).__name__}: {exc}"
+    info["normalized_soc"] = _normalize_soc_name(info["device_name"])
+    return info
+
+
+def _custom_package_debug_op_support(config_root: Path = CUSTOM_OP_CONFIG_ROOT) -> dict[str, Any]:
+    config_files = sorted(config_root.glob("*/binary_info_config.json"))
+    by_soc: dict[str, dict[str, Any]] = {}
+    for config_file in config_files:
+        soc = config_file.parent.name
+        entry: dict[str, Any] = {
+            "config_path": str(config_file),
+            "has_debug_op": False,
+            "op_count": 0,
+        }
+        try:
+            payload = json.loads(config_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            entry["read_error"] = f"{type(exc).__name__}: {exc}"
+        else:
+            entry["op_count"] = len(payload) if isinstance(payload, dict) else 0
+            entry["has_debug_op"] = isinstance(payload, dict) and DEBUG_OP_NAME in payload
+        by_soc[soc] = entry
+    return {
+        "config_root": str(config_root),
+        "config_files": [str(path) for path in config_files],
+        "supported_socs": sorted(by_soc),
+        "debug_op_name": DEBUG_OP_NAME,
+        "debug_op_supported_socs": sorted(soc for soc, entry in by_soc.items() if entry["has_debug_op"]),
+        "by_soc": by_soc,
+    }
+
+
+def _package_supports_runtime_soc(*, package_support: dict[str, Any], runtime_soc: str | None) -> bool:
+    if runtime_soc is None:
+        return False
+    return runtime_soc in set(package_support.get("debug_op_supported_socs", ()))
+
+
+def _write_preflight_failure(
+    *,
+    summary_path: str,
+    args: argparse.Namespace,
+    npu_env: dict[str, Any],
+    runtime_soc: dict[str, Any],
+    package_support: dict[str, Any],
+) -> None:
+    normalized_soc = runtime_soc.get("normalized_soc")
+    supported_socs = package_support.get("debug_op_supported_socs", [])
+    summary = {
+        "model_path": args.model_path,
+        "evidence_dir": args.evidence_dir,
+        "passed": False,
+        "skipped": False,
+        "preflight_failed": True,
+        "failure_reason": (
+            f"{DEBUG_OP_NAME} is not advertised for runtime SOC {normalized_soc!r}; "
+            f"installed package support={supported_socs}."
+        ),
+        "npu_environment": npu_env,
+        "runtime_soc": runtime_soc,
+        "custom_package_debug_op_support": package_support,
+    }
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+    print(json.dumps(summary, indent=2))
 
 
 def _stage_passed(error: dict[str, float | bool | int], *, max_abs_tol: float, mean_abs_tol: float) -> bool:
@@ -334,6 +453,21 @@ def main() -> None:
         return
 
     torch.npu.set_device(args.device_id)
+    runtime_soc = _runtime_soc(args.device_id)
+    package_support = _custom_package_debug_op_support()
+    if not _package_supports_runtime_soc(
+        package_support=package_support,
+        runtime_soc=runtime_soc.get("normalized_soc"),
+    ):
+        _write_preflight_failure(
+            summary_path=summary_path,
+            args=args,
+            npu_env=npu_env,
+            runtime_soc=runtime_soc,
+            package_support=package_support,
+        )
+        raise SystemExit(1)
+
     device = torch.device(f"npu:{args.device_id}")
     quant_description = _read_json(os.path.join(args.model_path, "quant_model_description.json"))
     weights = _weight_map(args.model_path)
@@ -368,6 +502,8 @@ def main() -> None:
         "mean_abs_tol": args.mean_abs_tol,
         "require_accumulator_readback": args.require_accumulator_readback,
         "npu_environment": npu_env,
+        "runtime_soc": runtime_soc,
+        "custom_package_debug_op_support": package_support,
         "results": results,
         "passed": all(result["passed"] for result in results),
     }
