@@ -228,6 +228,47 @@ static void BuildBF16StageShapeTable(DispatchFFNCombineW4A8SVDQTilingData* tilin
         SVDQ_REGION_PROJECTION_2, SVDQ_REGION_PROJECTION_2, routedRows, info.downRank, info.hiddenSize, 0, 0, 0);
 }
 
+static void SetResidualStageShape(
+    DispatchFFNCombineW4A8SVDQTilingData* tilingData, uint32_t stageId, uint32_t inputRegionId,
+    uint32_t scaleRegionId, uint32_t outputRegionId, uint32_t m, uint32_t k, uint32_t n,
+    uint32_t residualWeightSlot, uint32_t residualScaleSlot, bool residualOnly)
+{
+    auto& stage = tilingData->residualStageShapes[stageId];
+    stage.stageId = stageId;
+    stage.inputRegionId = inputRegionId;
+    stage.scaleRegionId = scaleRegionId;
+    stage.outputRegionId = outputRegionId;
+    stage.m = m;
+    stage.k = k;
+    stage.n = n;
+    stage.residualWeightSlot = residualWeightSlot;
+    stage.residualScaleSlot = residualScaleSlot;
+    stage.residualOnly = residualOnly;
+}
+
+static void BuildResidualStageShapeTable(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
+{
+    auto& info = tilingData->info;
+    const uint32_t routedRows = info.maxOutputSize;
+    constexpr uint32_t weight1Slot = 1;
+    constexpr uint32_t weight2Slot = 2;
+    constexpr uint32_t scale1Slot = 4;
+    constexpr uint32_t scale2Slot = 5;
+
+    SetResidualStageShape(tilingData, SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT,
+        SVDQ_REGION_ROUTED_X, SVDQ_REGION_X_SCALE, SVDQ_REGION_X_Q,
+        routedRows, info.hiddenSize, info.hiddenSize, SVDQ_INVALID_ID, SVDQ_INVALID_ID, true);
+    SetResidualStageShape(tilingData, SVDQ_RESIDUAL_STAGE_W4A8_GMM1,
+        SVDQ_REGION_X_Q, SVDQ_REGION_X_SCALE, SVDQ_REGION_ACCUMULATOR_1,
+        routedRows, info.hiddenSize, info.intermediateSize * 2, weight1Slot, scale1Slot, true);
+    SetResidualStageShape(tilingData, SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN,
+        SVDQ_REGION_HIDDEN, SVDQ_REGION_HIDDEN_SCALE, SVDQ_REGION_HIDDEN_Q,
+        routedRows, info.intermediateSize, info.intermediateSize, SVDQ_INVALID_ID, SVDQ_INVALID_ID, true);
+    SetResidualStageShape(tilingData, SVDQ_RESIDUAL_STAGE_W4A8_GMM2,
+        SVDQ_REGION_HIDDEN_Q, SVDQ_REGION_HIDDEN_SCALE, SVDQ_REGION_ACCUMULATOR_2,
+        routedRows, info.intermediateSize, info.hiddenSize, weight2Slot, scale2Slot, true);
+}
+
 static void SetLowRankInvocation(
     DispatchFFNCombineW4A8SVDQTilingData* tilingData, uint32_t invocationId, uint32_t inputRegionId,
     uint32_t outputRegionId, uint32_t downFactorId, uint32_t upFactorId, uint32_t secondUpFactorId,
@@ -523,6 +564,7 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
     BuildWorkspaceMap(tilingData);
     BuildSyncFlagTable(tilingData);
     BuildBF16StageShapeTable(tilingData);
+    BuildResidualStageShapeTable(tilingData);
     BuildLowRankInvocationTable(tilingData);
     size_t* workSpaces = context->GetWorkspaceSizes(1);
     OP_TILING_CHECK(workSpaces == nullptr,

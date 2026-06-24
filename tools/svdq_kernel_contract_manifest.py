@@ -356,6 +356,61 @@ BF16_STAGES = [
     ),
 ]
 
+RESIDUAL_STAGES = [
+    {
+        "id": 0,
+        "name": "SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT",
+        "input_region": "SVDQ_REGION_ROUTED_X",
+        "scale_region": "SVDQ_REGION_X_SCALE",
+        "output_region": "SVDQ_REGION_X_Q",
+        "m": "routedRows",
+        "k": "info.hiddenSize",
+        "n": "info.hiddenSize",
+        "residual_weight_slot": "SVDQ_INVALID_ID",
+        "residual_scale_slot": "SVDQ_INVALID_ID",
+        "residual_only": True,
+    },
+    {
+        "id": 1,
+        "name": "SVDQ_RESIDUAL_STAGE_W4A8_GMM1",
+        "input_region": "SVDQ_REGION_X_Q",
+        "scale_region": "SVDQ_REGION_X_SCALE",
+        "output_region": "SVDQ_REGION_ACCUMULATOR_1",
+        "m": "routedRows",
+        "k": "info.hiddenSize",
+        "n": "info.intermediateSize * 2",
+        "residual_weight_slot": "weight1",
+        "residual_scale_slot": "scale1",
+        "residual_only": True,
+    },
+    {
+        "id": 2,
+        "name": "SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN",
+        "input_region": "SVDQ_REGION_HIDDEN",
+        "scale_region": "SVDQ_REGION_HIDDEN_SCALE",
+        "output_region": "SVDQ_REGION_HIDDEN_Q",
+        "m": "routedRows",
+        "k": "info.intermediateSize",
+        "n": "info.intermediateSize",
+        "residual_weight_slot": "SVDQ_INVALID_ID",
+        "residual_scale_slot": "SVDQ_INVALID_ID",
+        "residual_only": True,
+    },
+    {
+        "id": 3,
+        "name": "SVDQ_RESIDUAL_STAGE_W4A8_GMM2",
+        "input_region": "SVDQ_REGION_HIDDEN_Q",
+        "scale_region": "SVDQ_REGION_HIDDEN_SCALE",
+        "output_region": "SVDQ_REGION_ACCUMULATOR_2",
+        "m": "routedRows",
+        "k": "info.intermediateSize",
+        "n": "info.hiddenSize",
+        "residual_weight_slot": "weight2",
+        "residual_scale_slot": "scale2",
+        "residual_only": True,
+    },
+]
+
 LOWRANK_INVOCATIONS = [
     {
         "id": 0,
@@ -457,11 +512,18 @@ def _bf16_stage_records() -> list[dict[str, Any]]:
     ]
 
 
+def _residual_stage_records() -> list[dict[str, Any]]:
+    return [dict(stage) for stage in RESIDUAL_STAGES]
+
+
 def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
     return {
         "host_tiling_builds_workspace_map": "BuildWorkspaceMap(tilingData)" in sources["host_tiling"],
         "host_tiling_builds_sync_flags": "BuildSyncFlagTable(tilingData)" in sources["host_tiling"],
         "host_tiling_builds_bf16_stage_shapes": "BuildBF16StageShapeTable(tilingData)" in sources["host_tiling"],
+        "host_tiling_builds_residual_stage_shapes": (
+            "BuildResidualStageShapeTable(tilingData)" in sources["host_tiling"]
+        ),
         "host_tiling_builds_lowrank_invocations": "BuildLowRankInvocationTable(tilingData)" in sources["host_tiling"],
         "op_cmake_has_local_debug_readback_option": (
             "option(SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK" in sources["op_cmake"]
@@ -476,6 +538,14 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         ),
         "kernel_resolves_workspace_addresses": "WorkspaceAddress(uint32_t regionId)" in sources["kernel_contract"],
         "kernel_exposes_bf16_stage_contracts": "BF16StageContract(uint32_t stageId)" in sources["kernel_contract"],
+        "kernel_exposes_residual_stage_contracts": (
+            "ResidualStageShape(uint32_t stageId)" in sources["kernel_contract"]
+        ),
+        "residual_stage_contract_is_residual_only": (
+            "stage.residualOnly = residualOnly" in sources["host_tiling"]
+            and "SVDQ_RESIDUAL_STAGE_W4A8_GMM1" in sources["host_tiling"]
+            and "SVDQ_RESIDUAL_STAGE_W4A8_GMM2" in sources["host_tiling"]
+        ),
         "lowrank_helper_fail_closed": "IsImplemented() const\n    {\n        return false;"
         in sources["lowrank_header"],
         "host_tiling_fail_closed": "AscendC kernel is not implemented yet" in sources["host_tiling"]
@@ -629,6 +699,14 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
         if f"case {stage['name']}:" not in sources["kernel_contract"]:
             raise ValueError(f"BF16 stage {stage['name']} missing from kernel contract switch.")
 
+    for stage in manifest["residual_stages"]:
+        for source_name in ("host_tiling", "kernel_tiling"):
+            for token in (stage["name"], stage["input_region"], stage["scale_region"], stage["output_region"]):
+                if token != "SVDQ_INVALID_ID" and token not in sources[source_name]:
+                    raise ValueError(f"residual stage token {token} missing from {source_name}.")
+        if "ResidualStageShape(uint32_t stageId)" not in sources["kernel_contract"]:
+            raise ValueError("residual stages are not exposed by the kernel contract.")
+
     for invocation in manifest["lowrank_invocations"]:
         for token in (
             invocation["name"],
@@ -694,6 +772,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
         "workspace_regions": WORKSPACE_REGIONS,
         "sync_flags": _sync_flag_records(),
         "bf16_stages": _bf16_stage_records(),
+        "residual_stages": _residual_stage_records(),
         "lowrank_invocations": LOWRANK_INVOCATIONS,
         "lowrank_tile_shape": {"m": 16, "n": 64, "k": 64},
         "debug_readback_contract": {
@@ -773,10 +852,10 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "lowrank_is_implemented_returns_false": "IsImplemented() const\n    {\n        return false;"
             in sources["lowrank_header"],
             "reason": (
-                "W4A8 residual stages, mixed epilogues, final combine, "
-                "and custom-kernel numerical readback are incomplete."
+                "W4A8 residual execution stages, mixed epilogues, and final combine are incomplete."
             ),
-            "w4a8_residual_unblocked": False,
+            "w4a8_residual_unblocked": True,
+            "w4a8_residual_contract_recorded": True,
         },
         "source_proof": _source_proof(sources),
         "counts": {
@@ -784,6 +863,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "workspace_regions": len(WORKSPACE_REGIONS),
             "sync_flags": len(SYNC_FLAGS),
             "bf16_stages": len(BF16_STAGES),
+            "residual_stages": len(RESIDUAL_STAGES),
             "lowrank_invocations": len(LOWRANK_INVOCATIONS),
         },
     }

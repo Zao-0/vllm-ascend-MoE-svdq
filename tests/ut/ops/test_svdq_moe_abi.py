@@ -704,6 +704,81 @@ def test_svdq_cann_tiling_records_bf16_stage_shapes_and_factor_bindings():
     assert "FactorAddress(uint32_t factorId)" in contract
 
 
+def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
+    op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
+    tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
+    tiling_header = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h").read_text()
+    contract = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq.h").read_text()
+
+    assert "SVDQ_RESIDUAL_STAGE_COUNT = 4" in tiling_header
+    assert "SVDQResidualStageId" in tiling_header
+    assert "SVDQResidualStageShape" in tiling_header
+    assert "SVDQResidualStageShape residualStageShapes[SVDQ_RESIDUAL_STAGE_COUNT]" in tiling_header
+    assert "SetResidualStageShape" in tiling
+    assert "BuildResidualStageShapeTable" in tiling
+    assert "BuildResidualStageShapeTable(tilingData)" in tiling
+    assert "ResidualStageShape(uint32_t stageId)" in contract
+    assert "return tilingData_.residualStageShapes[stageId]" in contract
+
+    expected_stage_shapes = (
+        (
+            "SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT",
+            "SVDQ_REGION_ROUTED_X",
+            "SVDQ_REGION_X_SCALE",
+            "SVDQ_REGION_X_Q",
+            "info.hiddenSize",
+            "info.hiddenSize",
+            "SVDQ_INVALID_ID",
+            "SVDQ_INVALID_ID",
+        ),
+        (
+            "SVDQ_RESIDUAL_STAGE_W4A8_GMM1",
+            "SVDQ_REGION_X_Q",
+            "SVDQ_REGION_X_SCALE",
+            "SVDQ_REGION_ACCUMULATOR_1",
+            "info.hiddenSize",
+            "info.intermediateSize * 2",
+            "weight1Slot",
+            "scale1Slot",
+        ),
+        (
+            "SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN",
+            "SVDQ_REGION_HIDDEN",
+            "SVDQ_REGION_HIDDEN_SCALE",
+            "SVDQ_REGION_HIDDEN_Q",
+            "info.intermediateSize",
+            "info.intermediateSize",
+            "SVDQ_INVALID_ID",
+            "SVDQ_INVALID_ID",
+        ),
+        (
+            "SVDQ_RESIDUAL_STAGE_W4A8_GMM2",
+            "SVDQ_REGION_HIDDEN_Q",
+            "SVDQ_REGION_HIDDEN_SCALE",
+            "SVDQ_REGION_ACCUMULATOR_2",
+            "info.intermediateSize",
+            "info.hiddenSize",
+            "weight2Slot",
+            "scale2Slot",
+        ),
+    )
+    for stage, input_region, scale_region, output_region, k, n, weight_slot, scale_slot in expected_stage_shapes:
+        assert stage in tiling_header
+        assert stage in tiling
+        assert input_region in tiling
+        assert scale_region in tiling
+        assert output_region in tiling
+        assert "routedRows" in tiling
+        assert k in tiling
+        assert n in tiling
+        assert weight_slot in tiling
+        assert scale_slot in tiling
+
+    assert "stage.residualOnly = residualOnly" in tiling
+    assert "true);" in tiling
+    assert "AscendC kernel is not implemented yet" in tiling
+
+
 def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
     tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
@@ -1267,6 +1342,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "workspace_regions": 14,
         "sync_flags": 14,
         "bf16_stages": 7,
+        "residual_stages": 4,
         "lowrank_invocations": 2,
     }
     assert [factor["operator_tensor"] for factor in loaded["factor_abi"]] == [
@@ -1281,7 +1357,15 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["rank_split_contract"]["up_rank_offset"] == "gateRank"
     assert loaded["production_fail_closed"]["host_tiling_returns_graph_failed"]
     assert loaded["production_fail_closed"]["lowrank_is_implemented_returns_false"]
-    assert not loaded["production_fail_closed"]["w4a8_residual_unblocked"]
+    assert loaded["production_fail_closed"]["w4a8_residual_unblocked"]
+    assert loaded["production_fail_closed"]["w4a8_residual_contract_recorded"]
+    assert [stage["name"] for stage in loaded["residual_stages"]] == [
+        "SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT",
+        "SVDQ_RESIDUAL_STAGE_W4A8_GMM1",
+        "SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN",
+        "SVDQ_RESIDUAL_STAGE_W4A8_GMM2",
+    ]
+    assert all(stage["residual_only"] for stage in loaded["residual_stages"])
     assert all(loaded["source_proof"].values())
     assert loaded["debug_readback_contract"] == {
         "compile_macro": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK",

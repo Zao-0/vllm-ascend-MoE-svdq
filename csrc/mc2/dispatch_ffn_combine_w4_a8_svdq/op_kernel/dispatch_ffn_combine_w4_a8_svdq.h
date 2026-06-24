@@ -159,6 +159,11 @@ public:
         return tilingData_.bf16StageShapes[stageId];
     }
 
+    __aicore__ inline SVDQResidualStageShape ResidualStageShape(uint32_t stageId) const
+    {
+        return tilingData_.residualStageShapes[stageId];
+    }
+
     __aicore__ inline GM_ADDR FactorAddress(uint32_t factorId) const
     {
         switch (factorId) {

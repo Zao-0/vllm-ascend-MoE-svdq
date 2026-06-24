@@ -18,6 +18,7 @@
 constexpr uint32_t SVDQ_WORKSPACE_REGION_COUNT = 14;
 constexpr uint32_t SVDQ_SYNC_FLAG_COUNT = 14;
 constexpr uint32_t SVDQ_BF16_STAGE_COUNT = 7;
+constexpr uint32_t SVDQ_RESIDUAL_STAGE_COUNT = 4;
 constexpr uint32_t SVDQ_INVALID_ID = 0xffffffffU;
 
 enum SVDQWorkspaceRegionId : uint32_t {
@@ -75,6 +76,13 @@ enum SVDQBF16LowRankStageId : uint32_t {
     SVDQ_BF16_STAGE_DOWN_L2_GEMM = 6,
 };
 
+enum SVDQResidualStageId : uint32_t {
+    SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT = 0,
+    SVDQ_RESIDUAL_STAGE_W4A8_GMM1 = 1,
+    SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN = 2,
+    SVDQ_RESIDUAL_STAGE_W4A8_GMM2 = 3,
+};
+
 struct SVDQWorkspaceRegion {
     uint64_t offset;
     uint64_t size;
@@ -123,6 +131,19 @@ struct SVDQBF16StageShape {
     uint32_t factorColumnOffset;
 };
 
+struct SVDQResidualStageShape {
+    uint32_t stageId;
+    uint32_t inputRegionId;
+    uint32_t scaleRegionId;
+    uint32_t outputRegionId;
+    uint32_t m;
+    uint32_t k;
+    uint32_t n;
+    uint32_t residualWeightSlot;
+    uint32_t residualScaleSlot;
+    bool residualOnly;
+};
+
 struct DispatchFFNCombineW4A8SVDQInfo {
     uint32_t m;
     uint32_t hiddenSize;
@@ -147,6 +168,7 @@ struct DispatchFFNCombineW4A8SVDQTilingData {
     SVDQWorkspaceRegion workspaceRegions[SVDQ_WORKSPACE_REGION_COUNT];
     SVDQSyncFlag syncFlags[SVDQ_SYNC_FLAG_COUNT];
     SVDQBF16StageShape bf16StageShapes[SVDQ_BF16_STAGE_COUNT];
+    SVDQResidualStageShape residualStageShapes[SVDQ_RESIDUAL_STAGE_COUNT];
     DispatchFFNCombineW4A8SVDQImpl::SVDQFusedDownUpTiling
         lowRankInvocations[DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_COUNT];
 };
