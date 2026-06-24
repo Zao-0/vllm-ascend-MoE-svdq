@@ -312,6 +312,24 @@ def test_svdq_lowrank_debug_probe_preflights_runtime_soc_package_support(tmp_pat
     assert not _package_supports_runtime_soc(package_support=support, runtime_soc="ascend910b")
 
 
+def test_svdq_lowrank_debug_install_validator_checks_static_package_surfaces():
+    validator = (REPO_ROOT / "tools/svdq_lowrank_debug_install_validate.py").read_text()
+
+    assert "REQUIRED_OPAPI_SYMBOLS" in validator
+    for symbol in (
+        "aclnnSVDQLowRankDebugReadbackGetWorkspaceSize",
+        "aclnnSVDQLowRankDebugReadback",
+        "aclnnInnerSVDQLowRankDebugReadbackGetWorkspaceSize",
+        "aclnnInnerSVDQLowRankDebugReadback",
+    ):
+        assert symbol in validator
+    assert "svdq_low_rank_debug_readback" in validator
+    assert "_custom_package_debug_op_support()" in validator
+    assert "_package_supports_runtime_soc(" in validator
+    assert "require_runtime_soc_support" in validator
+    assert "libcust_opapi.so" in validator
+
+
 def test_cann_host_library_build_path_honors_soc_selection():
     build_script = (REPO_ROOT / "csrc/build.sh").read_text()
     create_lib_branch = build_script[build_script.index('elif [[ "$ENABLE_CREATE_LIB" == "TRUE" ]];') :]
@@ -1240,6 +1258,9 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_files"]["torch_binding"] == "csrc/torch_binding.cpp"
     assert loaded["source_files"]["torch_binding_meta"] == "csrc/torch_binding_meta.cpp"
     assert loaded["source_files"]["lowrank_debug_probe"] == "tools/svdq_lowrank_debug_readback_probe.py"
+    assert loaded["source_files"]["lowrank_debug_install_validate"] == (
+        "tools/svdq_lowrank_debug_install_validate.py"
+    )
     assert loaded["source_files"]["build_aclnn"] == "csrc/build_aclnn.sh"
     assert loaded["counts"] == {
         "factor_abi": 5,
@@ -1324,6 +1345,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
             "lowrank_debug_meta_registered",
             "lowrank_debug_probe_launches_real_op",
             "lowrank_debug_probe_preflights_runtime_soc_package",
+            "lowrank_debug_install_validator_checks_schema_symbols_and_soc",
             "lowrank_debug_op_in_a3_aclnn_package",
         ],
     }

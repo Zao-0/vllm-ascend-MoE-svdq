@@ -38,6 +38,7 @@ LOWRANK_DEBUG_TORCH_ADAPTER = LOWRANK_DEBUG_ALIAS_ROOT / "svdq_low_rank_debug_re
 TORCH_BINDING = Path("csrc/torch_binding.cpp")
 TORCH_BINDING_META = Path("csrc/torch_binding_meta.cpp")
 LOWRANK_DEBUG_PROBE = Path("tools/svdq_lowrank_debug_readback_probe.py")
+LOWRANK_DEBUG_INSTALL_VALIDATE = Path("tools/svdq_lowrank_debug_install_validate.py")
 BUILD_ACLNN = Path("csrc/build_aclnn.sh")
 
 FACTOR_ABI = [
@@ -416,6 +417,9 @@ def _read_sources(repo_root: Path) -> dict[str, str]:
         "torch_binding": (repo_root / TORCH_BINDING).read_text(encoding="utf-8"),
         "torch_binding_meta": (repo_root / TORCH_BINDING_META).read_text(encoding="utf-8"),
         "lowrank_debug_probe": (repo_root / LOWRANK_DEBUG_PROBE).read_text(encoding="utf-8"),
+        "lowrank_debug_install_validate": (repo_root / LOWRANK_DEBUG_INSTALL_VALIDATE).read_text(
+            encoding="utf-8"
+        ),
         "build_aclnn": (repo_root / BUILD_ACLNN).read_text(encoding="utf-8"),
     }
 
@@ -577,6 +581,13 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "_package_supports_runtime_soc(" in sources["lowrank_debug_probe"]
             and "binary_info_config.json" in sources["lowrank_debug_probe"]
         ),
+        "lowrank_debug_install_validator_checks_schema_symbols_and_soc": (
+            "REQUIRED_OPAPI_SYMBOLS" in sources["lowrank_debug_install_validate"]
+            and "svdq_low_rank_debug_readback" in sources["lowrank_debug_install_validate"]
+            and "aclnnInnerSVDQLowRankDebugReadback" in sources["lowrank_debug_install_validate"]
+            and "_custom_package_debug_op_support()" in sources["lowrank_debug_install_validate"]
+            and "require_runtime_soc_support" in sources["lowrank_debug_install_validate"]
+        ),
         "lowrank_debug_op_in_a3_aclnn_package": (
             '"dispatch_ffn_combine_w4_a8_svdq"' in sources["build_aclnn"]
             and '"svdq_low_rank_debug_readback"' in sources["build_aclnn"]
@@ -676,6 +687,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "torch_binding": str(TORCH_BINDING),
             "torch_binding_meta": str(TORCH_BINDING_META),
             "lowrank_debug_probe": str(LOWRANK_DEBUG_PROBE),
+            "lowrank_debug_install_validate": str(LOWRANK_DEBUG_INSTALL_VALIDATE),
             "build_aclnn": str(BUILD_ACLNN),
         },
         "factor_abi": FACTOR_ABI,
@@ -746,6 +758,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "lowrank_debug_meta_registered",
                 "lowrank_debug_probe_launches_real_op",
                 "lowrank_debug_probe_preflights_runtime_soc_package",
+                "lowrank_debug_install_validator_checks_schema_symbols_and_soc",
                 "lowrank_debug_op_in_a3_aclnn_package",
             ],
         },
