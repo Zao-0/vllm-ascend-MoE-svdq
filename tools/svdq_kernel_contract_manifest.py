@@ -557,6 +557,17 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         "__aicore__ inline SVDQResidualStageContract", dispatch_start
     )
     dispatch_source = sources["kernel_contract"][dispatch_start:dispatch_end] if dispatch_start >= 0 else ""
+    residual_quant_start = sources["kernel_contract"].find(
+        "__aicore__ inline bool RunResidualDynamicQuantStage(uint32_t stageId) const"
+    )
+    residual_quant_end = sources["kernel_contract"].find(
+        "__aicore__ inline bool RunResidualGmmStage", residual_quant_start
+    )
+    residual_quant_source = (
+        sources["kernel_contract"][residual_quant_start:residual_quant_end]
+        if residual_quant_start >= 0
+        else ""
+    )
     return {
         "host_tiling_builds_workspace_map": "BuildWorkspaceMap(tilingData)" in sources["host_tiling"],
         "host_tiling_builds_sync_flags": "BuildSyncFlagTable(tilingData)" in sources["host_tiling"],
@@ -697,6 +708,21 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "RunResidualGmmStage(stageId)" in sources["kernel_contract"]
             and "SVDQ_RESIDUAL_BIAS1_SLOT" in sources["kernel_contract"]
             and "SVDQ_RESIDUAL_BIAS2_SLOT" in sources["kernel_contract"]
+        ),
+        "kernel_residual_routed_input_quant_execution_enabled": (
+            '../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2.cpp'
+            in sources["kernel_contract"]
+            and "DispatchQuantRoutingTempWorkspace() const" in sources["kernel_contract"]
+            and "SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT" in residual_quant_source
+            and "SVDQ_REGION_ROUTED_X" in residual_quant_source
+            and "SVDQ_REGION_X_SCALE" in residual_quant_source
+            and "SVDQ_REGION_X_Q" in residual_quant_source
+            and "moe_init_routing_quant_v2<bfloat16_t>" in residual_quant_source
+            and "WorkspaceAddress(plan.outputRegionId)" in residual_quant_source
+            and "WorkspaceAddress(plan.activationScaleRegionId)" in residual_quant_source
+            and "DispatchQuantRoutingTempWorkspace()" in residual_quant_source
+            and "routingTiling.initRoutingQuantTilingKey" in residual_quant_source
+            and "return true;" in residual_quant_source
         ),
         "kernel_residual_execution_fail_closed": (
             "RunW4A8ResidualStages() const" in sources["kernel_contract"]
@@ -1067,6 +1093,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "W4A8 residual execution, mixed epilogues, and final combine are incomplete."
             ),
             "dispatch_routing_execution_enabled": source_proof["kernel_dispatch_routing_execution_enabled"],
+            "residual_routed_input_quant_execution_enabled": source_proof[
+                "kernel_residual_routed_input_quant_execution_enabled"
+            ],
             "w4a8_residual_execution_fail_closed": (
                 "RunW4A8ResidualStages() const" in sources["kernel_contract"]
                 and "RunMixedEpilogueStages() const" in sources["kernel_contract"]

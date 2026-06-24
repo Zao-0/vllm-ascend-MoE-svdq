@@ -991,6 +991,31 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     assert "true);" in tiling
     assert "AscendC kernel is not implemented yet" in tiling
 
+    assert (
+        "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2.cpp"
+        in contract
+    )
+    assert "DispatchQuantRoutingTempWorkspace() const" in contract
+    residual_quant_source = contract[
+        contract.index("__aicore__ inline bool RunResidualDynamicQuantStage(uint32_t stageId) const") : contract.index(
+            "__aicore__ inline bool RunResidualGmmStage"
+        )
+    ]
+    for token in (
+        "stageId != SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT",
+        "plan.inputRegionId != SVDQ_REGION_ROUTED_X",
+        "plan.activationScaleRegionId != SVDQ_REGION_X_SCALE",
+        "plan.outputRegionId != SVDQ_REGION_X_Q",
+        "moe_init_routing_quant_v2<bfloat16_t>",
+        "WorkspaceAddress(plan.outputRegionId)",
+        "WorkspaceAddress(plan.activationScaleRegionId)",
+        "DispatchQuantRoutingTempWorkspace()",
+        "&routingTiling.moeInitRoutingQuantV2TilingData",
+        "routingTiling.initRoutingQuantTilingKey",
+        "return true;",
+    ):
+        assert token in residual_quant_source
+
 
 def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
     op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
@@ -1729,6 +1754,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["host_tiling_returns_graph_failed"]
     assert loaded["production_fail_closed"]["lowrank_is_implemented_uses_complete_contract"]
     assert loaded["production_fail_closed"]["dispatch_routing_execution_enabled"]
+    assert loaded["production_fail_closed"]["residual_routed_input_quant_execution_enabled"]
     assert loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
     assert loaded["production_fail_closed"]["mixed_epilogue_execution_fail_closed"]
     assert loaded["production_fail_closed"]["final_combine_execution_fail_closed"]
@@ -1745,6 +1771,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_process_orders_svdq_data_dependencies"]
     assert loaded["source_proof"]["kernel_binds_residual_weight_scale_slots"]
     assert loaded["source_proof"]["kernel_residual_dispatches_dynamic_quant_and_gmm"]
+    assert loaded["source_proof"]["kernel_residual_routed_input_quant_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_execution_fail_closed"]
     assert loaded["source_proof"]["kernel_records_mixed_epilogue_contracts"]
     assert loaded["source_proof"]["kernel_records_final_combine_contract"]

@@ -14,6 +14,7 @@
 #include "kernel_operator.h"
 #include "dispatch_ffn_combine_w4_a8_svdq_tiling.h"
 #include "../../dispatch_ffn_combine_bf16/op_kernel/moe_init_routing_v2/moe_init_routing_v2.cpp"
+#include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2.cpp"
 #include "lowrank/svdq_fused_down_up.hpp"
 
 namespace DispatchFFNCombineW4A8SVDQImpl {
@@ -272,6 +273,12 @@ public:
     __aicore__ inline GM_ADDR DispatchRoutingTempWorkspace() const
     {
         return runtime_.workspace + tilingData_.info.workspaceBytes;
+    }
+
+    __aicore__ inline GM_ADDR DispatchQuantRoutingTempWorkspace() const
+    {
+        return runtime_.workspace + tilingData_.info.workspaceBytes +
+               tilingData_.dispatchRouting.bf16RoutingWorkspaceBytes;
     }
 
     __aicore__ inline GM_ADDR FactorAddress(uint32_t factorId) const
@@ -544,7 +551,23 @@ public:
         if (plan.opKind != SVDQ_RESIDUAL_OP_DYNAMIC_QUANT || !ResidualExecutionPlanReady(stageId)) {
             return false;
         }
-        return false;
+        if (stageId != SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT || plan.inputRegionId != SVDQ_REGION_ROUTED_X ||
+            plan.activationScaleRegionId != SVDQ_REGION_X_SCALE || plan.outputRegionId != SVDQ_REGION_X_Q) {
+            return false;
+        }
+        SVDQDispatchRoutingContract contract = DispatchRoutingContract();
+        SVDQDispatchRoutingTiling routingTiling = DispatchRoutingTiling();
+        if (WorkspaceAddress(contract.routeIndexRegionId) == nullptr ||
+            DispatchQuantRoutingTempWorkspace() == nullptr || routingTiling.initRoutingQuantTilingKey == 0 ||
+            routingTiling.routingWorkspaceBytes == 0) {
+            return false;
+        }
+        moe_init_routing_quant_v2<bfloat16_t>(runtime_.x, runtime_.expertId, nullptr, nullptr,
+            WorkspaceAddress(plan.outputRegionId), WorkspaceAddress(contract.routeIndexRegionId),
+            runtime_.expertTokenNums, nullptr, WorkspaceAddress(plan.activationScaleRegionId),
+            DispatchQuantRoutingTempWorkspace(), &routingTiling.moeInitRoutingQuantV2TilingData,
+            routingTiling.initRoutingQuantTilingKey);
+        return true;
     }
 
     __aicore__ inline bool RunResidualGmmStage(uint32_t stageId) const
