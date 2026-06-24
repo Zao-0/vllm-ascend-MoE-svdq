@@ -407,6 +407,24 @@ def test_svdq_final_combine_device_probe_executes_official_token_unpermute_surfa
         assert token in probe
 
 
+def test_svdq_mixed_epilogue_device_probe_matches_reference_oracle():
+    probe = (REPO_ROOT / "tools/svdq_mixed_epilogue_device_probe.py").read_text()
+
+    for token in (
+        "build_svdq_mixed_epilogue_reference",
+        "torch_npu.npu_dynamic_quant",
+        "residual_gate, residual_up = residual_gate_up.float().chunk(2, dim=1)",
+        "gate_mixed = residual_gate + inputs[\"gate_lowrank\"].to(device=device).float()",
+        "up_mixed = residual_up + inputs[\"up_lowrank\"].to(device=device).float()",
+        "hidden_bf16 = (torch.nn.functional.silu(gate_mixed) * up_mixed).to(torch.bfloat16)",
+        "down_mixed = inputs[\"residual_down\"].to(device=device).float() +",
+        "hidden_q_exact_match",
+        "phase_k_mixed_epilogue_device_probe_summary.json",
+        "--require-npu",
+    ):
+        assert token in probe
+
+
 def test_cann_host_library_build_path_honors_soc_selection():
     build_script = (REPO_ROOT / "csrc/build.sh").read_text()
     create_lib_branch = build_script[build_script.index('elif [[ "$ENABLE_CREATE_LIB" == "TRUE" ]];') :]
