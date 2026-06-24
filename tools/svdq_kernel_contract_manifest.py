@@ -559,9 +559,28 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "OP_NAME DispatchFFNCombineW4A8SVDQ" in sources["op_cmake"]
         ),
         "kernel_resolves_workspace_addresses": "WorkspaceAddress(uint32_t regionId)" in sources["kernel_contract"],
+        "kernel_resolves_rank_workspace_regions": (
+            "workspace_.lowRankRank1 = WorkspaceAddress(SVDQ_REGION_LOWRANK_RANK_1)" in sources["kernel_contract"]
+            and "workspace_.lowRankRank2 = WorkspaceAddress(SVDQ_REGION_LOWRANK_RANK_2)" in sources["kernel_contract"]
+        ),
         "kernel_exposes_bf16_stage_contracts": "BF16StageContract(uint32_t stageId)" in sources["kernel_contract"],
         "kernel_exposes_residual_stage_contracts": (
             "ResidualStageShape(uint32_t stageId)" in sources["kernel_contract"]
+            and "ResidualStageContract(uint32_t stageId)" in sources["kernel_contract"]
+            and "ResidualStageReady(uint32_t stageId)" in sources["kernel_contract"]
+        ),
+        "kernel_binds_residual_weight_scale_slots": (
+            "SVDQ_RESIDUAL_WEIGHT1_SLOT = 1" in sources["kernel_contract"]
+            and "SVDQ_RESIDUAL_WEIGHT2_SLOT = 2" in sources["kernel_contract"]
+            and "SVDQ_RESIDUAL_SCALE1_SLOT = 4" in sources["kernel_contract"]
+            and "SVDQ_RESIDUAL_SCALE2_SLOT = 5" in sources["kernel_contract"]
+            and "ResidualWeightAddress(uint32_t residualWeightSlot)" in sources["kernel_contract"]
+            and "ResidualScaleAddress(uint32_t residualScaleSlot)" in sources["kernel_contract"]
+        ),
+        "kernel_residual_execution_fail_closed": (
+            "RunW4A8ResidualStages() const" in sources["kernel_contract"]
+            and "ResidualStageReady(stageId)" in sources["kernel_contract"]
+            and "return false;\n    }\n\nprivate:" in sources["kernel_contract"]
         ),
         "residual_stage_contract_is_residual_only": (
             "stage.residualOnly = residualOnly" in sources["host_tiling"]
@@ -741,8 +760,8 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
             for token in (stage["name"], stage["input_region"], stage["scale_region"], stage["output_region"]):
                 if token != "SVDQ_INVALID_ID" and token not in sources[source_name]:
                     raise ValueError(f"residual stage token {token} missing from {source_name}.")
-        if "ResidualStageShape(uint32_t stageId)" not in sources["kernel_contract"]:
-            raise ValueError("residual stages are not exposed by the kernel contract.")
+        if f"case {stage['name']}:" not in sources["kernel_contract"]:
+            raise ValueError(f"residual stage {stage['name']} missing from kernel contract switch.")
 
     for invocation in manifest["lowrank_invocations"]:
         for token in (
@@ -892,7 +911,10 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "reason": (
                 "W4A8 residual execution stages, mixed epilogues, and final combine are incomplete."
             ),
-            "w4a8_residual_unblocked": True,
+            "w4a8_residual_execution_fail_closed": (
+                "RunW4A8ResidualStages() const" in sources["kernel_contract"]
+                and "return false;\n    }\n\nprivate:" in sources["kernel_contract"]
+            ),
             "w4a8_residual_contract_recorded": True,
         },
         "source_proof": _source_proof(sources),

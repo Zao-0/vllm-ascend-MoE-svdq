@@ -842,6 +842,21 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     assert "BuildResidualStageShapeTable(tilingData)" in tiling
     assert "ResidualStageShape(uint32_t stageId)" in contract
     assert "return tilingData_.residualStageShapes[stageId]" in contract
+    assert "SVDQResidualStageContract" in contract
+    assert "ResidualStageContract(uint32_t stageId)" in contract
+    assert "ResidualStageReady(uint32_t stageId)" in contract
+    assert "RunW4A8ResidualStages() const" in contract
+    assert "return false;\n    }\n\nprivate:" in contract
+
+    for slot in (
+        "SVDQ_RESIDUAL_WEIGHT1_SLOT = 1",
+        "SVDQ_RESIDUAL_WEIGHT2_SLOT = 2",
+        "SVDQ_RESIDUAL_SCALE1_SLOT = 4",
+        "SVDQ_RESIDUAL_SCALE2_SLOT = 5",
+    ):
+        assert slot in contract
+    assert "ResidualWeightAddress(uint32_t residualWeightSlot)" in contract
+    assert "ResidualScaleAddress(uint32_t residualScaleSlot)" in contract
 
     expected_stage_shapes = (
         (
@@ -896,6 +911,10 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         assert n in tiling
         assert weight_slot in tiling
         assert scale_slot in tiling
+        assert f"case {stage}:" in contract
+        assert input_region in contract
+        assert scale_region in contract
+        assert output_region in contract
 
     assert "stage.residualOnly = residualOnly" in tiling
     assert "true);" in tiling
@@ -1501,8 +1520,11 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["rank_split_contract"]["up_rank_offset"] == "gateRank"
     assert loaded["production_fail_closed"]["host_tiling_returns_graph_failed"]
     assert loaded["production_fail_closed"]["lowrank_is_implemented_returns_false"]
-    assert loaded["production_fail_closed"]["w4a8_residual_unblocked"]
+    assert loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
     assert loaded["production_fail_closed"]["w4a8_residual_contract_recorded"]
+    assert loaded["source_proof"]["kernel_resolves_rank_workspace_regions"]
+    assert loaded["source_proof"]["kernel_binds_residual_weight_scale_slots"]
+    assert loaded["source_proof"]["kernel_residual_execution_fail_closed"]
     assert loaded["source_proof"]["lowrank_helper_uses_separate_rank_workspace"]
     assert loaded["source_proof"]["lowrank_helper_stage_orders_rank_consumers"]
     assert [region["name"] for region in loaded["workspace_regions"][-2:]] == [
