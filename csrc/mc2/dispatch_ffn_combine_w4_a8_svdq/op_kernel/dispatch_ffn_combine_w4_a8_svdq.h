@@ -944,7 +944,7 @@ public:
         }
         SVDQMixedEpilogueLaunch launch = BuildMixedEpilogueLaunch(epilogueId);
         if (launch.appliesSwiGLU) {
-            return false;
+            return RunMixedSwiGLUEpilogueStage(launch);
         }
         return RunMixedOutputEpilogueStage(launch);
     }
@@ -991,6 +991,61 @@ public:
             const float residual = static_cast<float>(LoadMixedEpilogueResidualBF16(launch, row, column));
             const float lowRank = static_cast<float>(LoadMixedEpilogueLowRankBF16(launch, row, column));
             StoreMixedEpilogueOutputBF16(launch, row, column, static_cast<bfloat16_t>(residual + lowRank));
+        }
+        return true;
+    }
+
+    __aicore__ inline float ClampExpInput(float value) const
+    {
+        if (value > 16.0F) {
+            return 16.0F;
+        }
+        if (value < -16.0F) {
+            return -16.0F;
+        }
+        return value;
+    }
+
+    __aicore__ inline float ExpApproxFloat(float value) const
+    {
+        const float scaled = 1.0F + ClampExpInput(value) * 0.00390625F;
+        float result = scaled;
+        for (uint32_t square = 0; square < 8; ++square) {
+            result *= result;
+        }
+        return result;
+    }
+
+    __aicore__ inline float SiluFloat(float value) const
+    {
+        return value / (1.0F + ExpApproxFloat(-value));
+    }
+
+    __aicore__ inline bool RunMixedSwiGLUEpilogueStage(const SVDQMixedEpilogueLaunch& launch) const
+    {
+        if (!launch.appliesSwiGLU || launch.residualColumns != launch.outputColumns * 2 ||
+            launch.lowRankColumns != launch.outputColumns * 2 || launch.gateColumnOffset != 0 ||
+            launch.upColumnOffset != launch.outputColumns || launch.m == 0 || launch.outputColumns == 0) {
+            return false;
+        }
+        const uint32_t coreIdx = AscendC::GetBlockIdx();
+        const uint32_t coreCount = AscendC::GetBlockNum();
+        if (coreCount == 0) {
+            return false;
+        }
+        const uint64_t outputElements = static_cast<uint64_t>(launch.m) * launch.outputColumns;
+        for (uint64_t elementIndex = coreIdx; elementIndex < outputElements; elementIndex += coreCount) {
+            const uint32_t row = static_cast<uint32_t>(elementIndex / launch.outputColumns);
+            const uint32_t column = static_cast<uint32_t>(elementIndex % launch.outputColumns);
+            const uint32_t gateColumn = launch.gateColumnOffset + column;
+            const uint32_t upColumn = launch.upColumnOffset + column;
+            const float gate =
+                static_cast<float>(LoadMixedEpilogueResidualBF16(launch, row, gateColumn)) +
+                static_cast<float>(LoadMixedEpilogueLowRankBF16(launch, row, gateColumn));
+            const float up =
+                static_cast<float>(LoadMixedEpilogueResidualBF16(launch, row, upColumn)) +
+                static_cast<float>(LoadMixedEpilogueLowRankBF16(launch, row, upColumn));
+            StoreMixedEpilogueOutputBF16(launch, row, column, static_cast<bfloat16_t>(SiluFloat(gate) * up));
         }
         return true;
     }

@@ -1246,6 +1246,7 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
         "shape.gateColumnOffset == SVDQ_INVALID_ID",
         "shape.upColumnOffset == SVDQ_INVALID_ID",
         "if (launch.appliesSwiGLU)",
+        "return RunMixedSwiGLUEpilogueStage(launch)",
         "return RunMixedOutputEpilogueStage(launch)",
         "LoadMixedEpilogueResidualBF16(",
         "LoadMixedEpilogueLowRankBF16(",
@@ -1257,6 +1258,16 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
         "const float residual = static_cast<float>(LoadMixedEpilogueResidualBF16(launch, row, column))",
         "const float lowRank = static_cast<float>(LoadMixedEpilogueLowRankBF16(launch, row, column))",
         "StoreMixedEpilogueOutputBF16(launch, row, column, static_cast<bfloat16_t>(residual + lowRank))",
+        "RunMixedSwiGLUEpilogueStage(const SVDQMixedEpilogueLaunch& launch) const",
+        "launch.residualColumns != launch.outputColumns * 2",
+        "launch.lowRankColumns != launch.outputColumns * 2",
+        "launch.gateColumnOffset != 0",
+        "launch.upColumnOffset != launch.outputColumns",
+        "const uint32_t gateColumn = launch.gateColumnOffset + column",
+        "const uint32_t upColumn = launch.upColumnOffset + column",
+        "SiluFloat(float value) const",
+        "ExpApproxFloat(-value)",
+        "SiluFloat(gate) * up",
     ):
         assert token in epilogue_source
 
@@ -2039,10 +2050,11 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["residual_gmm_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["mixed_epilogue_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["mixed_output_epilogue_execution_enabled"]
+    assert loaded["production_fail_closed"]["mixed_swiglu_epilogue_execution_enabled"]
     assert loaded["production_fail_closed"]["final_combine_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["final_combine_execution_enabled"]
     assert loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
-    assert loaded["production_fail_closed"]["mixed_epilogue_execution_fail_closed"]
+    assert not loaded["production_fail_closed"]["mixed_epilogue_execution_fail_closed"]
     assert not loaded["production_fail_closed"]["final_combine_execution_fail_closed"]
     assert loaded["production_fail_closed"]["w4a8_residual_contract_recorded"]
     assert loaded["production_fail_closed"]["mixed_epilogue_contract_recorded"]
@@ -2065,6 +2077,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_records_mixed_epilogue_contracts"]
     assert loaded["source_proof"]["kernel_mixed_epilogue_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_mixed_output_epilogue_scalar_execution_enabled"]
+    assert loaded["source_proof"]["kernel_mixed_swiglu_epilogue_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_records_final_combine_contract"]
     assert loaded["source_proof"]["kernel_final_combine_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_final_combine_scalar_execution_enabled"]

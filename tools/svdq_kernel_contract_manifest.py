@@ -954,6 +954,25 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
                 "host_tiling"
             ]
         ),
+        "kernel_mixed_swiglu_epilogue_scalar_execution_enabled": (
+            "RunMixedSwiGLUEpilogueStage(const SVDQMixedEpilogueLaunch& launch) const"
+            in sources["kernel_contract"]
+            and "return RunMixedSwiGLUEpilogueStage(launch);" in sources["kernel_contract"]
+            and "launch.residualColumns != launch.outputColumns * 2" in sources["kernel_contract"]
+            and "launch.lowRankColumns != launch.outputColumns * 2" in sources["kernel_contract"]
+            and "launch.gateColumnOffset != 0" in sources["kernel_contract"]
+            and "launch.upColumnOffset != launch.outputColumns" in sources["kernel_contract"]
+            and "const uint32_t gateColumn = launch.gateColumnOffset + column" in sources["kernel_contract"]
+            and "const uint32_t upColumn = launch.upColumnOffset + column" in sources["kernel_contract"]
+            and "const float gate =" in sources["kernel_contract"]
+            and "const float up =" in sources["kernel_contract"]
+            and "SiluFloat(gate) * up" in sources["kernel_contract"]
+            and "SiluFloat(float value) const" in sources["kernel_contract"]
+            and "ExpApproxFloat(-value)" in sources["kernel_contract"]
+            and "SVDQ_REGION_ACCUMULATOR_1, offset, routedRows * gateUpSize * BF16_BYTES" in sources[
+                "host_tiling"
+            ]
+        ),
         "kernel_records_final_combine_contract": (
             "SVDQFinalCombineContract" in sources["kernel_contract"]
             and "FinalCombineContract() const" in sources["kernel_contract"]
@@ -1397,7 +1416,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "IsImplemented() const\n    {\n        return HasCompleteContract();" in sources["lowrank_header"]
             ),
             "reason": (
-                "W4A8 residual execution, mixed epilogues, and final combine are incomplete."
+                "W4A8 residual GMM execution and host tiling success are incomplete."
             ),
             "dispatch_routing_execution_enabled": source_proof["kernel_dispatch_routing_execution_enabled"],
             "residual_routed_input_quant_execution_enabled": source_proof[
@@ -1418,6 +1437,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "mixed_output_epilogue_execution_enabled": source_proof[
                 "kernel_mixed_output_epilogue_scalar_execution_enabled"
             ],
+            "mixed_swiglu_epilogue_execution_enabled": source_proof[
+                "kernel_mixed_swiglu_epilogue_scalar_execution_enabled"
+            ],
             "final_combine_launch_descriptor_recorded": source_proof[
                 "kernel_final_combine_launch_descriptor_recorded"
             ],
@@ -1429,8 +1451,8 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 and "RunMixedEpilogueStages() const" in sources["kernel_contract"]
             ),
             "mixed_epilogue_execution_fail_closed": (
-                "RunMixedEpilogueStages() const" in sources["kernel_contract"]
-                and "MixedEpilogueReady(epilogueId)" in sources["kernel_contract"]
+                not source_proof["kernel_mixed_output_epilogue_scalar_execution_enabled"]
+                or not source_proof["kernel_mixed_swiglu_epilogue_scalar_execution_enabled"]
             ),
             "final_combine_execution_fail_closed": False,
             "w4a8_residual_contract_recorded": True,
