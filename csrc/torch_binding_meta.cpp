@@ -341,6 +341,72 @@ std::tuple<at::Tensor&, at::Tensor&> dispatch_ffn_combine_w4a8_svdq_meta(
     return {out, expert_token_nums};
 }
 
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_low_rank_debug_readback_meta(
+    const at::Tensor& routed_x,
+    const at::Tensor& hidden,
+    const at::Tensor& gate_up_svdq_l1,
+    const at::Tensor& gate_svdq_l2,
+    const at::Tensor& up_svdq_l2,
+    const at::Tensor& down_svdq_l1,
+    const at::Tensor& down_svdq_l2,
+    const at::Tensor& expert_token_nums,
+    int64_t gate_rank,
+    int64_t up_rank,
+    int64_t down_rank,
+    int64_t gate_rank_offset,
+    int64_t up_rank_offset)
+{
+    TORCH_CHECK(routed_x.dim() == 2, "routed_x must be rank-2.");
+    TORCH_CHECK(hidden.dim() == 2, "hidden must be rank-2.");
+    TORCH_CHECK(expert_token_nums.dim() == 1, "expert_token_nums must be rank-1.");
+    TORCH_CHECK(routed_x.scalar_type() == at::kBFloat16, "routed_x must be BF16.");
+    TORCH_CHECK(hidden.scalar_type() == at::kBFloat16, "hidden must be BF16.");
+    TORCH_CHECK(expert_token_nums.scalar_type() == at::kInt, "expert_token_nums must be INT32.");
+    TORCH_CHECK(gate_up_svdq_l1.scalar_type() == at::kBFloat16, "gate_up_svdq_l1 must be BF16.");
+    TORCH_CHECK(gate_svdq_l2.scalar_type() == at::kBFloat16, "gate_svdq_l2 must be BF16.");
+    TORCH_CHECK(up_svdq_l2.scalar_type() == at::kBFloat16, "up_svdq_l2 must be BF16.");
+    TORCH_CHECK(down_svdq_l1.scalar_type() == at::kBFloat16, "down_svdq_l1 must be BF16.");
+    TORCH_CHECK(down_svdq_l2.scalar_type() == at::kBFloat16, "down_svdq_l2 must be BF16.");
+    TORCH_CHECK(gate_up_svdq_l1.dim() == 3, "gate_up_svdq_l1 must be rank-3.");
+    TORCH_CHECK(gate_svdq_l2.dim() == 3, "gate_svdq_l2 must be rank-3.");
+    TORCH_CHECK(up_svdq_l2.dim() == 3, "up_svdq_l2 must be rank-3.");
+    TORCH_CHECK(down_svdq_l1.dim() == 3, "down_svdq_l1 must be rank-3.");
+    TORCH_CHECK(down_svdq_l2.dim() == 3, "down_svdq_l2 must be rank-3.");
+    TORCH_CHECK(gate_rank > 0 && up_rank > 0 && down_rank > 0, "SVDQ ranks must be positive.");
+    TORCH_CHECK(gate_rank_offset == 0, "gate_rank_offset must be 0.");
+    TORCH_CHECK(up_rank_offset == gate_rank, "up_rank_offset must equal gate_rank.");
+    TORCH_CHECK(routed_x.size(0) == hidden.size(0), "routed_x and hidden must have the same token count.");
+
+    const auto num_experts = gate_up_svdq_l1.size(0);
+    const auto routed_rows = routed_x.size(0);
+    const auto hidden_size = routed_x.size(1);
+    const auto intermediate_size = hidden.size(1);
+    TORCH_CHECK(gate_up_svdq_l1.size(1) == gate_rank + up_rank,
+                "gate_up_svdq_l1 rank dim must equal gate_rank + up_rank.");
+    TORCH_CHECK(gate_up_svdq_l1.size(2) == hidden_size, "gate_up_svdq_l1 hidden dim must match routed_x.");
+    TORCH_CHECK(gate_svdq_l2.size(0) == num_experts && gate_svdq_l2.size(1) == intermediate_size &&
+                    gate_svdq_l2.size(2) == gate_rank,
+                "gate_svdq_l2 shape is inconsistent with hidden and gate_rank.");
+    TORCH_CHECK(up_svdq_l2.size(0) == num_experts && up_svdq_l2.size(1) == intermediate_size &&
+                    up_svdq_l2.size(2) == up_rank,
+                "up_svdq_l2 shape is inconsistent with hidden and up_rank.");
+    TORCH_CHECK(down_svdq_l1.size(0) == num_experts && down_svdq_l1.size(1) == down_rank &&
+                    down_svdq_l1.size(2) == intermediate_size,
+                "down_svdq_l1 shape is inconsistent with hidden and down_rank.");
+    TORCH_CHECK(down_svdq_l2.size(0) == num_experts && down_svdq_l2.size(1) == hidden_size &&
+                    down_svdq_l2.size(2) == down_rank,
+                "down_svdq_l2 shape is inconsistent with routed_x and down_rank.");
+    TORCH_CHECK(expert_token_nums.size(0) == num_experts, "expert_token_nums expert count must match factors.");
+
+    at::Tensor gate_up_output = at::empty({routed_rows, intermediate_size * 2}, routed_x.options().device(at::kMeta));
+    at::Tensor down_output = at::empty({routed_rows, hidden_size}, routed_x.options().device(at::kMeta));
+    at::Tensor gate_up_accumulator = at::empty({routed_rows, intermediate_size * 2},
+                                               routed_x.options().device(at::kMeta).dtype(at::kFloat));
+    at::Tensor down_accumulator = at::empty({routed_rows, hidden_size},
+                                            routed_x.options().device(at::kMeta).dtype(at::kFloat));
+    return {gate_up_output, down_output, gate_up_accumulator, down_accumulator};
+}
+
 at::Tensor npu_lightning_indexer_meta(
     const at::Tensor &query, const at::Tensor &key, const at::Tensor &weights,
     const c10::optional<at::Tensor> &actual_seq_lengths_query,
@@ -1695,6 +1761,8 @@ TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
     ops.impl("dispatch_ffn_combine", &vllm_ascend::meta::dispatch_ffn_combine_meta);
     // MoE dispatch-ffn-combine W4A8-SVDQ
     ops.impl("dispatch_ffn_combine_w4a8_svdq", &vllm_ascend::meta::dispatch_ffn_combine_w4a8_svdq_meta);
+    // SVDQ low-rank debug readback
+    ops.impl("svdq_low_rank_debug_readback", &vllm_ascend::meta::svdq_low_rank_debug_readback_meta);
     // matmul allreduce add rmsnorm
     ops.impl("matmul_allreduce_add_rmsnorm", &vllm_ascend::meta::matmul_allreduce_add_rmsnorm_meta);
     // moe_init_routing_custom

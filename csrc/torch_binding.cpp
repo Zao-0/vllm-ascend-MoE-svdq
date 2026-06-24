@@ -37,6 +37,7 @@
 #endif
 #include "mc2/dispatch_ffn_combine/dispatch_ffn_combine_torch_adpt.h"
 #include "mc2/dispatch_ffn_combine_w4_a8_svdq/dispatch_ffn_combine_w4_a8_svdq_torch_adpt.h"
+#include "mc2/svdq_low_rank_debug_readback/svdq_low_rank_debug_readback_torch_adpt.h"
 #include "mc2/dispatch_gmm_combine_decode/dispatch_gmm_combine_decode_torch_adpt.h"
 #include "mc2/dispatch_layout/dispatch_layout_torch_adpt.h"
 #include "gmm/grouped_matmul_swiglu_quant_weight_nz_tensor_list/grouped_matmul_swiglu_quant_torch_adpt.h"
@@ -2477,6 +2478,16 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         "                               float swiglu_limit=1000000.0) -> (Tensor out, Tensor expert_token_nums)"
     );
     ops.impl("dispatch_ffn_combine_w4a8_svdq", torch::kPrivateUse1, &vllm_ascend::dispatch_ffn_combine_w4a8_svdq);
+
+    ops.def(
+        "svdq_low_rank_debug_readback(Tensor routed_x, Tensor hidden, Tensor gate_up_svdq_l1,"
+        "                             Tensor gate_svdq_l2, Tensor up_svdq_l2, Tensor down_svdq_l1,"
+        "                             Tensor down_svdq_l2, Tensor expert_token_nums,"
+        "                             int gate_rank, int up_rank, int down_rank, int gate_rank_offset,"
+        "                             int up_rank_offset) -> (Tensor gate_up_output, Tensor down_output,"
+        "                                                    Tensor gate_up_accumulator, Tensor down_accumulator)"
+    );
+    ops.impl("svdq_low_rank_debug_readback", torch::kPrivateUse1, &vllm_ascend::svdq_low_rank_debug_readback);
 
     ops.def("matmul_allreduce_add_rmsnorm(Tensor x1, Tensor x2, Tensor residual, Tensor gamma, \
         str groupTp, int tpRankSize, int tpRankId, float epsilon, bool isTransB, bool isGatherAddOut) -> (Tensor output, Tensor add_out)");

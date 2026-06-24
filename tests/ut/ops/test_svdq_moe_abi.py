@@ -660,6 +660,10 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     lowrank_debug_alias_root = REPO_ROOT / "csrc/mc2/svdq_low_rank_debug_readback"
     lowrank_debug_alias_cmake = (lowrank_debug_alias_root / "op_host/CMakeLists.txt").read_text()
     lowrank_debug_alias_kernel = (lowrank_debug_alias_root / "svdq_low_rank_debug_readback.cpp").read_text()
+    lowrank_debug_torch_adapter = (lowrank_debug_alias_root / "svdq_low_rank_debug_readback_torch_adpt.h").read_text()
+    torch_binding = (REPO_ROOT / "csrc/torch_binding.cpp").read_text()
+    torch_binding_meta = (REPO_ROOT / "csrc/torch_binding_meta.cpp").read_text()
+    lowrank_debug_probe = (REPO_ROOT / "tools/svdq_lowrank_debug_readback_probe.py").read_text()
 
     assert '#include "lowrank/svdq_fused_down_up_tiling.h"' in tiling_header
     assert '#include "lowrank/svdq_fused_down_up.hpp"' in contract
@@ -775,6 +779,24 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "GM_ADDR downAccumulator" in lowrank_debug_kernel
     assert "SVDQLowRankDebugReadbackKernel op" in lowrank_debug_kernel
     assert "op.Process();" in lowrank_debug_kernel
+    assert "aclnnSVDQLowRankDebugReadback" in lowrank_debug_torch_adapter
+    assert "svdq_low_rank_debug_readback(" in lowrank_debug_torch_adapter
+    assert "gate_up_output" in lowrank_debug_torch_adapter
+    assert "down_output" in lowrank_debug_torch_adapter
+    assert "gate_up_accumulator" in lowrank_debug_torch_adapter
+    assert "down_accumulator" in lowrank_debug_torch_adapter
+    assert "svdq_low_rank_debug_readback_torch_adpt.h" in torch_binding
+    assert 'ops.def(\n        "svdq_low_rank_debug_readback' in torch_binding
+    assert 'ops.impl("svdq_low_rank_debug_readback", torch::kPrivateUse1' in torch_binding
+    assert "svdq_low_rank_debug_readback_meta" in torch_binding_meta
+    assert (
+        'ops.impl("svdq_low_rank_debug_readback", &vllm_ascend::meta::svdq_low_rank_debug_readback_meta)'
+        in torch_binding_meta
+    )
+    assert "torch.ops._C_ascend.svdq_low_rank_debug_readback" in lowrank_debug_probe
+    assert "_load_validation_layer(" in lowrank_debug_probe
+    assert "build_svdq_bf16_stage_reference" in lowrank_debug_probe
+    assert "--require-accumulator-readback" in lowrank_debug_probe
     assert "BuildDownStagePlan() const" in lowrank_header
     assert "BuildPrimaryUpStagePlan() const" in lowrank_header
     assert "BuildSecondUpStagePlan() const" in lowrank_header
@@ -1007,6 +1029,10 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "gate_up_svdq_l2" not in lowrank_debug_kernel
     assert "gateUpSvdqL2" not in lowrank_debug_alias_kernel
     assert "gate_up_svdq_l2" not in lowrank_debug_alias_kernel
+    assert "gateUpSvdqL2" not in lowrank_debug_torch_adapter
+    assert "gate_up_svdq_l2" not in lowrank_debug_torch_adapter
+    assert "gateUpSvdqL2" not in lowrank_debug_probe
+    assert "gate_up_svdq_l2" not in lowrank_debug_probe
 
 
 def test_svdq_cann_kernel_contract_resolves_factors_workspace_and_bf16_stages():
@@ -1165,6 +1191,12 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_files"]["lowrank_debug_alias_kernel"] == (
         "csrc/mc2/svdq_low_rank_debug_readback/svdq_low_rank_debug_readback.cpp"
     )
+    assert loaded["source_files"]["lowrank_debug_torch_adapter"] == (
+        "csrc/mc2/svdq_low_rank_debug_readback/svdq_low_rank_debug_readback_torch_adpt.h"
+    )
+    assert loaded["source_files"]["torch_binding"] == "csrc/torch_binding.cpp"
+    assert loaded["source_files"]["torch_binding_meta"] == "csrc/torch_binding_meta.cpp"
+    assert loaded["source_files"]["lowrank_debug_probe"] == "tools/svdq_lowrank_debug_readback_probe.py"
     assert loaded["counts"] == {
         "factor_abi": 5,
         "workspace_regions": 14,
@@ -1243,6 +1275,9 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
             "lowrank_debug_op_public_aclnn_wrapper",
             "lowrank_debug_op_exposes_same_readback_outputs",
             "lowrank_debug_alias_source_root",
+            "lowrank_debug_torch_adapter_registered",
+            "lowrank_debug_meta_registered",
+            "lowrank_debug_probe_launches_real_op",
         ],
     }
 

@@ -33,6 +33,10 @@ LOWRANK_DEBUG_KERNEL = OP_ROOT / "op_kernel/lowrank/svdq_lowrank_debug_readback.
 LOWRANK_DEBUG_ALIAS_ROOT = Path("csrc/mc2/svdq_low_rank_debug_readback")
 LOWRANK_DEBUG_ALIAS_CMAKE = LOWRANK_DEBUG_ALIAS_ROOT / "op_host/CMakeLists.txt"
 LOWRANK_DEBUG_ALIAS_KERNEL = LOWRANK_DEBUG_ALIAS_ROOT / "svdq_low_rank_debug_readback.cpp"
+LOWRANK_DEBUG_TORCH_ADAPTER = LOWRANK_DEBUG_ALIAS_ROOT / "svdq_low_rank_debug_readback_torch_adpt.h"
+TORCH_BINDING = Path("csrc/torch_binding.cpp")
+TORCH_BINDING_META = Path("csrc/torch_binding_meta.cpp")
+LOWRANK_DEBUG_PROBE = Path("tools/svdq_lowrank_debug_readback_probe.py")
 
 FACTOR_ABI = [
     {"id": 0, "name": "SVDQ_FACTOR_GATE_UP_L1", "operator_tensor": "gate_up_svdq_l1"},
@@ -405,6 +409,10 @@ def _read_sources(repo_root: Path) -> dict[str, str]:
         "lowrank_debug_kernel": (repo_root / LOWRANK_DEBUG_KERNEL).read_text(encoding="utf-8"),
         "lowrank_debug_alias_cmake": (repo_root / LOWRANK_DEBUG_ALIAS_CMAKE).read_text(encoding="utf-8"),
         "lowrank_debug_alias_kernel": (repo_root / LOWRANK_DEBUG_ALIAS_KERNEL).read_text(encoding="utf-8"),
+        "lowrank_debug_torch_adapter": (repo_root / LOWRANK_DEBUG_TORCH_ADAPTER).read_text(encoding="utf-8"),
+        "torch_binding": (repo_root / TORCH_BINDING).read_text(encoding="utf-8"),
+        "torch_binding_meta": (repo_root / TORCH_BINDING_META).read_text(encoding="utf-8"),
+        "lowrank_debug_probe": (repo_root / LOWRANK_DEBUG_PROBE).read_text(encoding="utf-8"),
     }
 
 
@@ -535,6 +543,22 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "svdq_low_rank_debug_readback(" in sources["lowrank_debug_alias_kernel"]
             and "svdq_lowrank_debug_readback.h" in sources["lowrank_debug_alias_kernel"]
         ),
+        "lowrank_debug_torch_adapter_registered": (
+            "svdq_low_rank_debug_readback_torch_adpt.h" in sources["torch_binding"]
+            and 'ops.def(\n        "svdq_low_rank_debug_readback' in sources["torch_binding"]
+            and 'ops.impl("svdq_low_rank_debug_readback", torch::kPrivateUse1' in sources["torch_binding"]
+            and "aclnnSVDQLowRankDebugReadback" in sources["lowrank_debug_torch_adapter"]
+        ),
+        "lowrank_debug_meta_registered": (
+            "svdq_low_rank_debug_readback_meta" in sources["torch_binding_meta"]
+            and 'ops.impl("svdq_low_rank_debug_readback", &vllm_ascend::meta::svdq_low_rank_debug_readback_meta)'
+            in sources["torch_binding_meta"]
+        ),
+        "lowrank_debug_probe_launches_real_op": (
+            "torch.ops._C_ascend.svdq_low_rank_debug_readback" in sources["lowrank_debug_probe"]
+            and "_load_validation_layer(" in sources["lowrank_debug_probe"]
+            and "build_svdq_bf16_stage_reference" in sources["lowrank_debug_probe"]
+        ),
     }
 
 
@@ -623,6 +647,10 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "lowrank_debug_kernel": str(LOWRANK_DEBUG_KERNEL),
             "lowrank_debug_alias_cmake": str(LOWRANK_DEBUG_ALIAS_CMAKE),
             "lowrank_debug_alias_kernel": str(LOWRANK_DEBUG_ALIAS_KERNEL),
+            "lowrank_debug_torch_adapter": str(LOWRANK_DEBUG_TORCH_ADAPTER),
+            "torch_binding": str(TORCH_BINDING),
+            "torch_binding_meta": str(TORCH_BINDING_META),
+            "lowrank_debug_probe": str(LOWRANK_DEBUG_PROBE),
         },
         "factor_abi": FACTOR_ABI,
         "workspace_regions": WORKSPACE_REGIONS,
@@ -687,6 +715,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "lowrank_debug_op_public_aclnn_wrapper",
                 "lowrank_debug_op_exposes_same_readback_outputs",
                 "lowrank_debug_alias_source_root",
+                "lowrank_debug_torch_adapter_registered",
+                "lowrank_debug_meta_registered",
+                "lowrank_debug_probe_launches_real_op",
             ],
         },
         "rank_split_contract": {
