@@ -434,26 +434,27 @@ def test_svdq_w4a8_activation_quant_probe_matches_residual_stage_contract():
     assert '"npu_dequant_vs_input_error"' in probe
 
 
-def test_svdq_w4a8_residual_gmm_contract_probe_matches_official_call_surface():
+def test_svdq_w4a8_residual_gmm_contract_probe_matches_official_aic_aiv_surface():
     probe = (REPO_ROOT / "tools/svdq_w4a8_residual_gmm_contract_probe.py").read_text()
 
     for token in (
-        "official_w4a8_gmm1",
-        "official_w4a8_gmm2",
-        "torch_npu.npu_grouped_matmul",
-        "per_token_scale=[pertoken_scale]",
-        "per_token_scale=[per_token_scale]",
-        "scale=w1_scale",
-        "scale=weight_scale",
-        "bias=bias1",
-        "bias=bias",
-        "SVDQ_RESIDUAL_STAGE_W4A8_GMM1",
-        "SVDQ_RESIDUAL_STAGE_W4A8_GMM2",
-        "SVDQ_REGION_ACCUMULATOR_1",
-        "SVDQ_REGION_ACCUMULATOR_2",
-        "production_host_tiling_enabled",
-        "return ge::GRAPH_SUCCESS;",
-        "phase_f_residual_gmm_contract_probe_summary.json",
+        "official_mixed_aic_aiv_kernel_boundary",
+        "official_aic_w4a8_gmm_contract",
+        "official_aiv_gmm1_dequant_swiglu_hidden_quant_contract",
+        "official_aiv_gmm2_dequant_final_output_contract",
+        "KERNEL_TYPE_MIX_AIC_1_2",
+        "CATLASS_DEVICE void operator()<AscendC::AIC>",
+        "CATLASS_DEVICE void operator()<AscendC::AIV>",
+        "GMM1(params);",
+        "GMM2(params);",
+        "DispatchAndCombine(params);",
+        "BlockMmad",
+        "EpilogueAtlasA2W4A8PostPerTokenDequantSwigluQuant",
+        "EpilogueAtlasA2W4A8PostPerTokenDequantV2",
+        "production_host_tiling_expected",
+        "fail_closed",
+        "numerical_acceptance_claimed",
+        "phase_an_official_w4a8_aic_aiv_contract_summary.json",
     ):
         assert token in probe
 
