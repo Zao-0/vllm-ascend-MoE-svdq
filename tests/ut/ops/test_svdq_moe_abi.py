@@ -277,18 +277,30 @@ def test_svdq_host_tiling_builds_official_dispatch_routing_subtiling():
     tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
     tiling_header = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h").read_text()
 
+    assert "../../dispatch_ffn_combine_bf16/op_kernel/moe_init_routing_v2/moe_init_routing_v2_tiling.h" in tiling_header
     assert '#include "moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"' in tiling_header
     assert "struct SVDQDispatchRoutingTiling" in tiling_header
+    assert "uint64_t bf16RoutingTilingKey" in tiling_header
+    assert "uint64_t bf16RoutingWorkspaceBytes" in tiling_header
     assert "uint64_t initRoutingQuantTilingKey" in tiling_header
     assert "uint64_t routingWorkspaceBytes" in tiling_header
     assert "uint32_t aivNum" in tiling_header
+    assert "optiling::MoeInitRoutingV2TilingData moeInitRoutingV2TilingData" in tiling_header
     assert "optiling::MoeInitRoutingQuantV2TilingData moeInitRoutingQuantV2TilingData" in tiling_header
     assert "SVDQDispatchRoutingTiling dispatchRouting" in tiling_header
 
     for token in (
+        "../../dispatch_ffn_combine_bf16/op_kernel/moe_init_routing_v2/moe_init_routing_v2_tiling.h",
         '#include "moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"',
         "constexpr uint32_t SVDQ_ROUTING_BLOCK_NUM = 20",
         "constexpr uint64_t SVDQ_ROUTING_UB_SIZE = 196352",
+        "MoeInitRoutingV2TilingBase bf16RoutingBase",
+        "bf16RoutingBase.DoTiling",
+        "bf16ExpertNum",
+        "dispatchRouting.bf16RoutingTilingKey = bf16RoutingBase.tilingKey_",
+        "dispatchRouting.bf16RoutingWorkspaceBytes = bf16RoutingBase.workspaceSize_",
+        "dispatchRouting.moeInitRoutingV2TilingData = routingBase.moeInitRoutingTilingData",
+        "CopyMoeInitRoutingV2TilingData(dispatchRouting, bf16RoutingBase)",
         "MoeInitRoutingQuantV2TilingBase routingBase",
         "routingBase.DoTiling",
         "expertTokensCountOrCumsumFlag = 2",
@@ -302,6 +314,7 @@ def test_svdq_host_tiling_builds_official_dispatch_routing_subtiling():
         "dispatchRouting.moeInitRoutingQuantV2TilingData = routingBase.quantTilingData",
         "BuildDispatchRoutingTiling(tilingData)",
         "workSpaces[0] = SVDQ_SYSTEM_WORKSPACE + info.workspaceBytes +",
+        "tilingData->dispatchRouting.bf16RoutingWorkspaceBytes",
         "tilingData->dispatchRouting.routingWorkspaceBytes",
     ):
         assert token in tiling
@@ -1020,9 +1033,16 @@ def test_svdq_kernel_records_dispatch_routing_contract_before_lowrank():
         "DispatchRoutingTiling() const",
         "DispatchRoutingTempWorkspace() const",
         "tilingData_.dispatchRouting",
+        "routingTiling.bf16RoutingTilingKey != 0",
+        "routingTiling.bf16RoutingWorkspaceBytes > 0",
         "routingTiling.initRoutingQuantTilingKey != 0",
         "routingTiling.routingWorkspaceBytes > 0",
         "routingTiling.aivNum > 0",
+        "moe_init_routing_v2<bfloat16_t>",
+        "WorkspaceAddress(contract.routedOutputRegionId)",
+        "WorkspaceAddress(contract.routeIndexRegionId)",
+        "&routingTiling.moeInitRoutingV2TilingData",
+        "routingTiling.bf16RoutingTilingKey",
         "SVDQ_STAGE_BF16_DISPATCH",
         "SVDQ_REGION_ROUTED_X",
         "SVDQ_REGION_EXPANDED_ROW_IDX",
@@ -1650,6 +1670,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["host_tiling_builds_dispatch_routing_subtiling"]
     assert loaded["source_proof"]["kernel_tiling_contains_dispatch_routing_subtiling"]
     assert loaded["source_proof"]["kernel_dispatch_routing_uses_official_tiling_contract"]
+    assert loaded["source_proof"]["kernel_dispatch_routing_calls_official_bf16_helper"]
     assert loaded["source_proof"]["kernel_dispatch_routing_execution_fail_closed"]
     assert loaded["source_proof"]["kernel_binds_residual_weight_scale_slots"]
     assert loaded["source_proof"]["kernel_residual_execution_fail_closed"]

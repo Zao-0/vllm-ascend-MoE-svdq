@@ -13,6 +13,7 @@
 
 #include <cstdint>
 
+#include "../../dispatch_ffn_combine_bf16/op_kernel/moe_init_routing_v2/moe_init_routing_v2_tiling.h"
 #include "lowrank/svdq_fused_down_up_tiling.h"
 #include "moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"
 
@@ -167,9 +168,12 @@ struct DispatchFFNCombineW4A8SVDQInfo {
 };
 
 struct SVDQDispatchRoutingTiling {
+    uint64_t bf16RoutingTilingKey;
+    uint64_t bf16RoutingWorkspaceBytes;
     uint64_t initRoutingQuantTilingKey;
     uint64_t routingWorkspaceBytes;
     uint32_t aivNum;
+    optiling::MoeInitRoutingV2TilingData moeInitRoutingV2TilingData;
     optiling::MoeInitRoutingQuantV2TilingData moeInitRoutingQuantV2TilingData;
 };
 

@@ -13,6 +13,7 @@
 
 #include "kernel_operator.h"
 #include "dispatch_ffn_combine_w4_a8_svdq_tiling.h"
+#include "../../dispatch_ffn_combine_bf16/op_kernel/moe_init_routing_v2/moe_init_routing_v2.cpp"
 #include "lowrank/svdq_fused_down_up.hpp"
 
 namespace DispatchFFNCombineW4A8SVDQImpl {
@@ -371,7 +372,8 @@ public:
         return runtime_.x != nullptr && runtime_.expertId != nullptr && runtime_.probs != nullptr &&
                runtime_.expertTokenNums != nullptr && WorkspaceAddress(contract.routedOutputRegionId) != nullptr &&
                WorkspaceAddress(contract.routeIndexRegionId) != nullptr &&
-               DispatchRoutingTempWorkspace() != nullptr && routingTiling.initRoutingQuantTilingKey != 0 &&
+               DispatchRoutingTempWorkspace() != nullptr && routingTiling.bf16RoutingTilingKey != 0 &&
+               routingTiling.bf16RoutingWorkspaceBytes > 0 && routingTiling.initRoutingQuantTilingKey != 0 &&
                routingTiling.routingWorkspaceBytes > 0 && routingTiling.aivNum > 0;
     }
 
@@ -380,6 +382,12 @@ public:
         if (!DispatchRoutingReady()) {
             return false;
         }
+        SVDQDispatchRoutingContract contract = DispatchRoutingContract();
+        SVDQDispatchRoutingTiling routingTiling = DispatchRoutingTiling();
+        moe_init_routing_v2<bfloat16_t>(runtime_.x, runtime_.expertId,
+            WorkspaceAddress(contract.routedOutputRegionId), WorkspaceAddress(contract.routeIndexRegionId),
+            runtime_.expertTokenNums, nullptr, DispatchRoutingTempWorkspace(),
+            &routingTiling.moeInitRoutingV2TilingData, routingTiling.bf16RoutingTilingKey);
         return false;
     }
 

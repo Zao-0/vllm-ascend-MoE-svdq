@@ -549,6 +549,12 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         "host_tiling_builds_lowrank_invocations": "BuildLowRankInvocationTable(tilingData)" in sources["host_tiling"],
         "host_tiling_builds_dispatch_routing_subtiling": (
             "BuildDispatchRoutingTiling(tilingData)" in sources["host_tiling"]
+            and "MoeInitRoutingV2TilingBase bf16RoutingBase" in sources["host_tiling"]
+            and "bf16RoutingBase.DoTiling" in sources["host_tiling"]
+            and "bf16RoutingBase.tilingKey_" in sources["host_tiling"]
+            and "bf16RoutingBase.workspaceSize_" in sources["host_tiling"]
+            and "routingBase.moeInitRoutingTilingData" in sources["host_tiling"]
+            and "CopyMoeInitRoutingV2TilingData(dispatchRouting, bf16RoutingBase)" in sources["host_tiling"]
             and "MoeInitRoutingQuantV2TilingBase routingBase" in sources["host_tiling"]
             and "routingBase.DoTiling" in sources["host_tiling"]
             and "routingBase.tilingKey_" in sources["host_tiling"]
@@ -588,21 +594,39 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "SVDQ_SYNC_DISPATCH_METADATA_TO_UNPERMUTE" in sources["kernel_contract"]
         ),
         "kernel_tiling_contains_dispatch_routing_subtiling": (
-            '#include "moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"'
+            '#include "../../dispatch_ffn_combine_bf16/op_kernel/moe_init_routing_v2/moe_init_routing_v2_tiling.h"'
+            in sources["kernel_tiling"]
+            and '#include "moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"'
             in sources["kernel_tiling"]
             and "struct SVDQDispatchRoutingTiling" in sources["kernel_tiling"]
+            and "bf16RoutingTilingKey" in sources["kernel_tiling"]
+            and "bf16RoutingWorkspaceBytes" in sources["kernel_tiling"]
             and "initRoutingQuantTilingKey" in sources["kernel_tiling"]
             and "routingWorkspaceBytes" in sources["kernel_tiling"]
+            and "MoeInitRoutingV2TilingData moeInitRoutingV2TilingData" in sources["kernel_tiling"]
             and "MoeInitRoutingQuantV2TilingData moeInitRoutingQuantV2TilingData" in sources["kernel_tiling"]
             and "SVDQDispatchRoutingTiling dispatchRouting" in sources["kernel_tiling"]
         ),
         "kernel_dispatch_routing_uses_official_tiling_contract": (
-            "DispatchRoutingTiling() const" in sources["kernel_contract"]
+            '#include "../../dispatch_ffn_combine_bf16/op_kernel/moe_init_routing_v2/moe_init_routing_v2.cpp"'
+            in sources["kernel_contract"]
+            and "DispatchRoutingTiling() const" in sources["kernel_contract"]
             and "DispatchRoutingTempWorkspace() const" in sources["kernel_contract"]
             and "tilingData_.dispatchRouting" in sources["kernel_contract"]
+            and "routingTiling.bf16RoutingTilingKey != 0" in sources["kernel_contract"]
+            and "routingTiling.bf16RoutingWorkspaceBytes > 0" in sources["kernel_contract"]
             and "routingTiling.initRoutingQuantTilingKey != 0" in sources["kernel_contract"]
             and "routingTiling.routingWorkspaceBytes > 0" in sources["kernel_contract"]
             and "routingTiling.aivNum > 0" in sources["kernel_contract"]
+        ),
+        "kernel_dispatch_routing_calls_official_bf16_helper": (
+            "moe_init_routing_v2<bfloat16_t>" in sources["kernel_contract"]
+            and "WorkspaceAddress(contract.routedOutputRegionId)" in sources["kernel_contract"]
+            and "WorkspaceAddress(contract.routeIndexRegionId)" in sources["kernel_contract"]
+            and "runtime_.expertTokenNums" in sources["kernel_contract"]
+            and "DispatchRoutingTempWorkspace()" in sources["kernel_contract"]
+            and "&routingTiling.moeInitRoutingV2TilingData" in sources["kernel_contract"]
+            and "routingTiling.bf16RoutingTilingKey" in sources["kernel_contract"]
         ),
         "kernel_dispatch_routing_execution_fail_closed": (
             "RunDispatchRoutingStage() const" in sources["kernel_contract"]

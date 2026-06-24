@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "dispatch_ffn_combine_w4_a8_svdq_tiling.h"
+#include "../../dispatch_ffn_combine_bf16/op_kernel/moe_init_routing_v2/moe_init_routing_v2_tiling.h"
 #include "lowrank/svdq_lowrank_debug_readback_tiling.h"
 #include "moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"
 #include "register/op_def_registry.h"
@@ -207,10 +208,29 @@ static void CopyMoeInitRoutingQuantV2TilingData(
     dispatchRouting.moeInitRoutingQuantV2TilingData.gatherOut = routingBase.quantTilingData.gatherOut;
 }
 
+static void CopyMoeInitRoutingV2TilingData(
+    SVDQDispatchRoutingTiling& dispatchRouting, const optiling::MoeInitRoutingV2TilingBase& routingBase)
+{
+    dispatchRouting.moeInitRoutingV2TilingData = routingBase.moeInitRoutingTilingData;
+    dispatchRouting.moeInitRoutingV2TilingData.vbsComputeParamsOp =
+        routingBase.moeInitRoutingTilingData.vbsComputeParamsOp;
+    dispatchRouting.moeInitRoutingV2TilingData.vmsMiddleComputeParamsOp =
+        routingBase.moeInitRoutingTilingData.vmsMiddleComputeParamsOp;
+    dispatchRouting.moeInitRoutingV2TilingData.sortOutComputeParamsOp =
+        routingBase.moeInitRoutingTilingData.sortOutComputeParamsOp;
+    dispatchRouting.moeInitRoutingV2TilingData.srcToDstComputeParamsOp =
+        routingBase.moeInitRoutingTilingData.srcToDstComputeParamsOp;
+    dispatchRouting.moeInitRoutingV2TilingData.srcToDstCapacityComputeParamsOp =
+        routingBase.moeInitRoutingTilingData.srcToDstCapacityComputeParamsOp;
+    dispatchRouting.moeInitRoutingV2TilingData.gatherOutComputeParamsOp =
+        routingBase.moeInitRoutingTilingData.gatherOutComputeParamsOp;
+}
+
 static void BuildDispatchRoutingTiling(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
 {
     auto& info = tilingData->info;
     auto& dispatchRouting = tilingData->dispatchRouting;
+    optiling::MoeInitRoutingV2TilingBase bf16RoutingBase;
     optiling::MoeInitRoutingQuantV2TilingBase routingBase;
 
     constexpr int64_t inputDtypeSize = sizeof(int16_t);
@@ -221,9 +241,18 @@ static void BuildDispatchRoutingTiling(DispatchFFNCombineW4A8SVDQTilingData* til
     constexpr bool expertTokensBeforeCapacityFlag = false;
     constexpr int64_t quantMode = 1;
     constexpr uint32_t aivNumInitRouting = 2 * SVDQ_ROUTING_BLOCK_NUM;
+    const int64_t bf16ExpertNum =
+        static_cast<int64_t>(info.expertPerRank) * static_cast<int64_t>(info.worldSize);
     const int64_t expertNum =
         static_cast<int64_t>(info.expertPerRank) * static_cast<int64_t>(info.worldSize) + 1;
     const int64_t activeNum = static_cast<int64_t>(info.m) * static_cast<int64_t>(info.topK);
+
+    bf16RoutingBase.DoTiling(info.m, info.hiddenSize, info.topK, expertCapacity, bf16ExpertNum, activeNum,
+        dropPadMode, expertTokensCountOrCumsumFlag, expertTokensBeforeCapacityFlag, inputDtypeSize, quantMode,
+        scaleDim0, aivNumInitRouting, SVDQ_ROUTING_UB_SIZE);
+    dispatchRouting.bf16RoutingTilingKey = bf16RoutingBase.tilingKey_;
+    dispatchRouting.bf16RoutingWorkspaceBytes = bf16RoutingBase.workspaceSize_;
+    CopyMoeInitRoutingV2TilingData(dispatchRouting, bf16RoutingBase);
 
     routingBase.DoTiling(info.m, info.hiddenSize, info.topK, expertCapacity, expertNum, activeNum, dropPadMode,
         expertTokensCountOrCumsumFlag, expertTokensBeforeCapacityFlag, inputDtypeSize, quantMode, scaleDim0,
@@ -621,7 +650,9 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
     size_t* workSpaces = context->GetWorkspaceSizes(1);
     OP_TILING_CHECK(workSpaces == nullptr,
         OP_LOGE(nodeName, "workSpaces is nullptr."), return ge::GRAPH_FAILED);
-    workSpaces[0] = SVDQ_SYSTEM_WORKSPACE + info.workspaceBytes + tilingData->dispatchRouting.routingWorkspaceBytes;
+    workSpaces[0] = SVDQ_SYSTEM_WORKSPACE + info.workspaceBytes +
+                    tilingData->dispatchRouting.bf16RoutingWorkspaceBytes +
+                    tilingData->dispatchRouting.routingWorkspaceBytes;
 
     OP_LOGE(nodeName, "DispatchFFNCombineW4A8SVDQ AscendC kernel is not implemented yet.");
     return ge::GRAPH_FAILED;
