@@ -354,6 +354,20 @@ def test_svdq_cann_ops_are_selected_by_a2_and_a3_aclnn_build_script():
     _assert_svdq_ops_selected(a3_ops)
 
 
+def test_official_w4a8_opdef_advertises_ascend910b_for_package_generation():
+    op_def = (
+        REPO_ROOT
+        / "csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/dispatch_ffn_combine_w4_a8_def.cpp"
+    ).read_text()
+
+    assert "OP_ADD(DispatchFFNCombineW4A8)" in op_def
+    assert 'this->AICore().AddConfig("ascend910_93", aicore_config);' in op_def
+    assert 'this->AICore().AddConfig("ascend910b", aicore_config);' in op_def
+    assert op_def.index('this->AICore().AddConfig("ascend910_93", aicore_config);') < op_def.index(
+        'this->AICore().AddConfig("ascend910b", aicore_config);'
+    )
+
+
 def test_svdq_lowrank_debug_probe_preflights_runtime_soc_package_support(tmp_path):
     from tools.svdq_lowrank_debug_readback_probe import (
         DEBUG_OP_NAME,
