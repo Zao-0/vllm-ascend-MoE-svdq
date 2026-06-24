@@ -1100,7 +1100,22 @@ def test_svdq_kernel_records_dispatch_routing_contract_before_lowrank():
     ):
         assert token in contract
 
-    assert contract.index("RunDispatchRoutingStage()") < contract.index("RunBF16LowRankStages()")
+    dispatch_source = contract[
+        contract.index("__aicore__ inline bool RunDispatchRoutingStage() const") : contract.index(
+            "__aicore__ inline SVDQResidualStageContract"
+        )
+    ]
+    assert "moe_init_routing_v2<bfloat16_t>" in dispatch_source
+    assert "return true;" in dispatch_source
+
+    process = contract[
+        contract.index("__aicore__ inline void Process()") : contract.index(
+            "__aicore__ inline bool HasCompleteTilingContract()"
+        )
+    ]
+    assert process.index("RunDispatchRoutingStage()") < process.index(
+        "ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_GATE_UP)"
+    )
 
 
 def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
@@ -1713,7 +1728,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["rank_split_contract"]["up_rank_offset"] == "gateRank"
     assert loaded["production_fail_closed"]["host_tiling_returns_graph_failed"]
     assert loaded["production_fail_closed"]["lowrank_is_implemented_uses_complete_contract"]
-    assert loaded["production_fail_closed"]["dispatch_routing_execution_fail_closed"]
+    assert loaded["production_fail_closed"]["dispatch_routing_execution_enabled"]
     assert loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
     assert loaded["production_fail_closed"]["mixed_epilogue_execution_fail_closed"]
     assert loaded["production_fail_closed"]["final_combine_execution_fail_closed"]
@@ -1726,7 +1741,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_tiling_contains_dispatch_routing_subtiling"]
     assert loaded["source_proof"]["kernel_dispatch_routing_uses_official_tiling_contract"]
     assert loaded["source_proof"]["kernel_dispatch_routing_calls_official_bf16_helper"]
-    assert loaded["source_proof"]["kernel_dispatch_routing_execution_fail_closed"]
+    assert loaded["source_proof"]["kernel_dispatch_routing_execution_enabled"]
     assert loaded["source_proof"]["kernel_process_orders_svdq_data_dependencies"]
     assert loaded["source_proof"]["kernel_binds_residual_weight_scale_slots"]
     assert loaded["source_proof"]["kernel_residual_dispatches_dynamic_quant_and_gmm"]

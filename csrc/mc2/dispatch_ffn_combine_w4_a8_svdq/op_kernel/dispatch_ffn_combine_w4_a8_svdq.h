@@ -434,7 +434,7 @@ public:
             WorkspaceAddress(contract.routedOutputRegionId), WorkspaceAddress(contract.routeIndexRegionId),
             runtime_.expertTokenNums, nullptr, DispatchRoutingTempWorkspace(),
             &routingTiling.moeInitRoutingV2TilingData, routingTiling.bf16RoutingTilingKey);
-        return false;
+        return true;
     }
 
     __aicore__ inline SVDQResidualStageContract ResidualStageContract(uint32_t stageId) const

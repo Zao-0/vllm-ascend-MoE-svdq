@@ -552,6 +552,11 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
     process_start = sources["kernel_contract"].find("__aicore__ inline void Process()")
     process_end = sources["kernel_contract"].find("__aicore__ inline bool HasCompleteTilingContract()")
     process_source = sources["kernel_contract"][process_start:process_end] if process_start >= 0 else ""
+    dispatch_start = sources["kernel_contract"].find("__aicore__ inline bool RunDispatchRoutingStage() const")
+    dispatch_end = sources["kernel_contract"].find(
+        "__aicore__ inline SVDQResidualStageContract", dispatch_start
+    )
+    dispatch_source = sources["kernel_contract"][dispatch_start:dispatch_end] if dispatch_start >= 0 else ""
     return {
         "host_tiling_builds_workspace_map": "BuildWorkspaceMap(tilingData)" in sources["host_tiling"],
         "host_tiling_builds_sync_flags": "BuildSyncFlagTable(tilingData)" in sources["host_tiling"],
@@ -641,9 +646,11 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "&routingTiling.moeInitRoutingV2TilingData" in sources["kernel_contract"]
             and "routingTiling.bf16RoutingTilingKey" in sources["kernel_contract"]
         ),
-        "kernel_dispatch_routing_execution_fail_closed": (
+        "kernel_dispatch_routing_execution_enabled": (
             "RunDispatchRoutingStage() const" in sources["kernel_contract"]
             and "DispatchRoutingReady()" in sources["kernel_contract"]
+            and "moe_init_routing_v2<bfloat16_t>" in dispatch_source
+            and "return true;" in dispatch_source
             and "ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_GATE_UP)" in process_source
         ),
         "kernel_process_orders_svdq_data_dependencies": _tokens_in_order(
@@ -945,6 +952,7 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
 
 def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
     sources = _read_sources(repo_root)
+    source_proof = _source_proof(sources)
     manifest = {
         "schema_version": 1,
         "operator": "DispatchFFNCombineW4A8SVDQ",
@@ -1056,12 +1064,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "IsImplemented() const\n    {\n        return HasCompleteContract();" in sources["lowrank_header"]
             ),
             "reason": (
-                "Dispatch routing, W4A8 residual execution, mixed epilogues, and final combine are incomplete."
+                "W4A8 residual execution, mixed epilogues, and final combine are incomplete."
             ),
-            "dispatch_routing_execution_fail_closed": (
-                "RunDispatchRoutingStage() const" in sources["kernel_contract"]
-                and "DispatchRoutingReady()" in sources["kernel_contract"]
-            ),
+            "dispatch_routing_execution_enabled": source_proof["kernel_dispatch_routing_execution_enabled"],
             "w4a8_residual_execution_fail_closed": (
                 "RunW4A8ResidualStages() const" in sources["kernel_contract"]
                 and "RunMixedEpilogueStages() const" in sources["kernel_contract"]
@@ -1078,7 +1083,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "mixed_epilogue_contract_recorded": True,
             "final_combine_contract_recorded": True,
         },
-        "source_proof": _source_proof(sources),
+        "source_proof": source_proof,
         "counts": {
             "factor_abi": len(FACTOR_ABI),
             "workspace_regions": len(WORKSPACE_REGIONS),
