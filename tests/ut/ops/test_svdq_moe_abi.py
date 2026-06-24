@@ -348,6 +348,29 @@ def test_svdq_w4a8_activation_quant_probe_matches_residual_stage_contract():
     assert '"npu_dequant_vs_input_error"' in probe
 
 
+def test_svdq_w4a8_residual_gmm_contract_probe_matches_official_call_surface():
+    probe = (REPO_ROOT / "tools/svdq_w4a8_residual_gmm_contract_probe.py").read_text()
+
+    for token in (
+        "official_w4a8_gmm1",
+        "official_w4a8_gmm2",
+        "torch_npu.npu_grouped_matmul",
+        "per_token_scale=[pertoken_scale]",
+        "per_token_scale=[per_token_scale]",
+        "scale=w1_scale",
+        "scale=weight_scale",
+        "bias=bias1",
+        "bias=bias",
+        "SVDQ_RESIDUAL_STAGE_W4A8_GMM1",
+        "SVDQ_RESIDUAL_STAGE_W4A8_GMM2",
+        "SVDQ_REGION_ACCUMULATOR_1",
+        "SVDQ_REGION_ACCUMULATOR_2",
+        "GRAPH_FAILED",
+        "phase_f_residual_gmm_contract_probe_summary.json",
+    ):
+        assert token in probe
+
+
 def test_cann_host_library_build_path_honors_soc_selection():
     build_script = (REPO_ROOT / "csrc/build.sh").read_text()
     create_lib_branch = build_script[build_script.index('elif [[ "$ENABLE_CREATE_LIB" == "TRUE" ]];') :]
