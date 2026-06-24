@@ -2499,6 +2499,8 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         "                                                             Tensor routed_x_scale,"
         "                                                             Tensor gmm1_post_dequant,"
         "                                                             Tensor gmm1_hidden_prequant,"
+        "                                                             Tensor hidden_x_int4_packed,"
+        "                                                             Tensor hidden_x_scale,"
         "                                                             Tensor gmm2_post_dequant)"
     );
     ops.impl("svdq_w4a8_debug_readback", torch::kPrivateUse1, &vllm_ascend::svdq_w4a8_debug_readback);

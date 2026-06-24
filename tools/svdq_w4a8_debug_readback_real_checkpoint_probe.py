@@ -80,9 +80,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--linear-input-scale", type=float, default=0.01)
     parser.add_argument("--out-zero-abs-tol", type=float, default=1e-6)
     parser.add_argument("--compare-gmm1-reference", action="store_true")
+    parser.add_argument("--compare-gmm2-reference", action="store_true")
     parser.add_argument("--gmm1-reference-max-rows", type=int, default=64)
+    parser.add_argument("--gmm2-reference-max-rows", type=int, default=64)
     parser.add_argument("--gmm1-reference-max-abs-tol", type=float, default=2e-2)
     parser.add_argument("--gmm1-reference-mean-abs-tol", type=float, default=2e-3)
+    parser.add_argument("--gmm2-reference-max-abs-tol", type=float, default=2e-4)
+    parser.add_argument("--gmm2-reference-mean-abs-tol", type=float, default=2e-5)
     parser.add_argument("--require-npu", action="store_true")
     return parser.parse_args()
 
@@ -226,6 +230,25 @@ def _official_int8_to_int4_parts(x_int8: torch.Tensor) -> tuple[torch.Tensor, to
     return x_high, x_low
 
 
+def _official_packed_i4_hidden_to_parts(hidden_x_int4_packed: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    packed = hidden_x_int4_packed.detach().cpu().contiguous().to(torch.int16)
+    if packed.ndim != 2 or packed.shape[1] % 2 != 0:
+        raise ValueError("hidden packed INT4 debug tensor must have shape [rows, even_intermediate_size].")
+    packed_columns = int(packed.shape[1])
+    half_columns = packed_columns // 2
+
+    def unpack_i4_bytes(bytes_tensor: torch.Tensor) -> torch.Tensor:
+        unsigned = bytes_tensor & 0xFF
+        low_nibble = unsigned & 0x0F
+        high_nibble = (unsigned >> 4) & 0x0F
+        unpacked = torch.stack((low_nibble, high_nibble), dim=-1).reshape(bytes_tensor.shape[0], packed_columns)
+        return torch.where(unpacked >= 8, unpacked - 16, unpacked).to(torch.int32)
+
+    x_high = unpack_i4_bytes(packed[:, :half_columns])
+    x_low = unpack_i4_bytes(packed[:, half_columns:packed_columns])
+    return x_high, x_low
+
+
 def _clip_group_counts(counts: torch.Tensor, row_limit: int) -> torch.Tensor:
     remaining = int(row_limit)
     clipped = []
@@ -284,6 +307,56 @@ def _official_gmm1_unfused_reference(
         "compared_rows": int(reference.shape[0]),
         "group_counts": counts.tolist(),
     }
+
+
+def _official_gmm2_unfused_reference(
+    *,
+    hidden_x_int4_packed: torch.Tensor,
+    hidden_x_scale: torch.Tensor,
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    scale_bias: torch.Tensor,
+    expert_token_nums: torch.Tensor,
+    output_columns: int,
+    max_rows: int,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    row_count = min(int(hidden_x_int4_packed.shape[0]), int(max_rows))
+    counts = _clip_group_counts(expert_token_nums, row_count)
+    x_high, x_low = _official_packed_i4_hidden_to_parts(hidden_x_int4_packed[:row_count])
+    per_token_scale = hidden_x_scale[:row_count].detach().cpu().float()
+    weight_scale_fp32 = _int64_float_bits_to_fp32(weight_scale)
+    bias = scale_bias.detach().cpu().float().contiguous()
+    unpacked_weight = _unpack_postloaded_w4_columns(weight, output_columns)
+
+    outputs: list[torch.Tensor] = []
+    row_start = 0
+    for expert_id, count in enumerate(counts.tolist()):
+        count = int(count)
+        if count <= 0:
+            continue
+        row_end = row_start + count
+        weight_e = unpacked_weight[expert_id]
+        high_acc = x_high[row_start:row_end].matmul(weight_e)
+        low_acc = x_low[row_start:row_end].matmul(weight_e)
+        combined = (high_acc * 16 + low_acc).float()
+        dequant = combined * weight_scale_fp32[expert_id].reshape(1, -1) + bias[expert_id].reshape(1, -1)
+        outputs.append(dequant * per_token_scale[row_start:row_end].reshape(-1, 1))
+        row_start = row_end
+    if outputs:
+        reference = torch.cat(outputs, dim=0)
+    else:
+        reference = torch.empty((0, output_columns), dtype=torch.float32)
+    contract = {
+        "source": "official dispatch_ffn_combine_w4_a8 GMM2 AIC/AIV contract",
+        "input_boundary": "hidden_x_int4_packed/hidden_x_scale copied after GMM1 SwiGLU hidden quantization",
+        "activation_split": (
+            "official GMM2 reads prepacked hidden INT4 high-half bytes and low-half bytes from gmA2I4_I8"
+        ),
+        "epilogue_formula": "(high_acc * 16 + low_acc) * postloaded_weight_scale + scale_bias, then * hidden_x_scale",
+        "compared_rows": int(reference.shape[0]),
+        "group_counts": counts.tolist(),
+    }
+    return reference, contract
 
 
 def _postload_metadata(layer: torch.nn.Module) -> dict[str, Any]:
@@ -375,6 +448,8 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
         routed_x_scale,
         gmm1_post_dequant,
         gmm1_hidden_prequant,
+        hidden_x_int4_packed,
+        hidden_x_scale,
         gmm2_post_dequant,
     ) = op(
         x,
@@ -400,6 +475,8 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
         "routed_x_scale_active": _float_stats(routed_x_scale[:active_rows]),
         "gmm1_post_dequant_active": _float_stats(gmm1_post_dequant[:active_rows]),
         "gmm1_hidden_prequant_active": _float_stats(gmm1_hidden_prequant[:active_rows]),
+        "hidden_x_int4_packed_active": _float_stats(hidden_x_int4_packed[:active_rows]),
+        "hidden_x_scale_active": _float_stats(hidden_x_scale[:active_rows]),
         "gmm2_post_dequant_active": _float_stats(gmm2_post_dequant[:active_rows]),
         "expert_token_nums": {
             "shape": list(expert_token_nums.shape),
@@ -417,6 +494,8 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
         "expected_routed_x_int8": "finite official routed INT8 activation fed to GMM1",
         "expected_routed_x_scale": "finite official routed per-row activation scale fed to GMM1 epilogue",
         "expected_gmm1_hidden_prequant": "finite official hidden prequant debug tap after SwiGLU",
+        "expected_hidden_x_int4_packed": "finite official hidden packed INT4 activation fed to GMM2",
+        "expected_hidden_x_scale": "finite official hidden per-row activation scale fed to GMM2 epilogue",
         "expected_gmm2_post_dequant": "finite official debug tap",
         "expected_out": "finite output",
     }
@@ -432,8 +511,19 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
             )
         )
     )
+    hidden_quant_health = (
+        output_stats["hidden_x_scale_active"]["finite"]
+        and (
+            args.input_mode == "zero"
+            or (
+                output_stats["hidden_x_scale_active"]["nonzero"]
+                and output_stats["hidden_x_int4_packed_active"]["nonzero"]
+            )
+        )
+    )
     readback_finite = (
         routed_quant_health
+        and hidden_quant_health
         and output_stats["gmm1_post_dequant_active"]["finite"]
         and output_stats["gmm2_post_dequant_active"]["finite"]
         and output_stats["out"]["finite"]
@@ -488,17 +578,56 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
             "enabled": False,
             "reason": "pass --compare-gmm1-reference to run the official-source unfused GMM1 comparator",
         }
+    gmm2_reference: dict[str, Any] | None = None
+    gmm2_reference_passed = None
+    if args.compare_gmm2_reference:
+        reference, reference_contract = _official_gmm2_unfused_reference(
+            hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
+            hidden_x_scale=hidden_x_scale[:active_rows],
+            weight=layer.w2_weight,
+            weight_scale=layer.w2_weight_scale,
+            scale_bias=layer.w2_scale_bias,
+            expert_token_nums=expert_token_nums,
+            output_columns=spec.hidden_size,
+            max_rows=args.gmm2_reference_max_rows,
+        )
+        actual = gmm2_post_dequant[: reference.shape[0], : reference.shape[1]]
+        error = _tensor_error(actual, reference)
+        gmm2_reference_passed = (
+            error["actual_finite"]
+            and error["expected_finite"]
+            and error["diff_finite"]
+            and error["max_abs"] <= args.gmm2_reference_max_abs_tol
+            and error["mean_abs"] <= args.gmm2_reference_mean_abs_tol
+        )
+        gmm2_reference = {
+            "enabled": True,
+            "passed": gmm2_reference_passed,
+            "contract": reference_contract,
+            "error": error,
+            "max_abs_tolerance": args.gmm2_reference_max_abs_tol,
+            "mean_abs_tolerance": args.gmm2_reference_mean_abs_tol,
+        }
+        input_health_gate_passed = input_health_gate_passed and gmm2_reference_passed
+    else:
+        gmm2_reference = {
+            "enabled": False,
+            "reason": "pass --compare-gmm2-reference to run the official-source unfused GMM2 comparator",
+        }
+    both_gmm_references_passed = bool(gmm1_reference_passed and gmm2_reference_passed)
     return {
         "stage": f"real_checkpoint_w4a8_debug_readback_{args.input_mode}_input_health",
         "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_debug_readback -> aclnnSVDQW4A8DebugReadback",
         "official_source_of_truth": "dispatch_ffn_combine_w4_a8 AIC producer and AIV dequant debug taps",
         "public_grouped_matmul_used": False,
         "real_checkpoint_validation": True,
-        "nonzero_real_checkpoint_numerical_gate": False,
+        "nonzero_real_checkpoint_numerical_gate": both_gmm_references_passed,
         "gmm1_real_checkpoint_numerical_gate": (
             bool(gmm1_reference_passed) if gmm1_reference_passed is not None else False
         ),
-        "gmm2_real_checkpoint_numerical_gate": False,
+        "gmm2_real_checkpoint_numerical_gate": (
+            bool(gmm2_reference_passed) if gmm2_reference_passed is not None else False
+        ),
         "production_svdq_host_tiling_fail_closed": True,
         "layer_index": args.layer,
         "layer_name": spec.prefix,
@@ -520,20 +649,15 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
         },
         "unfused_reference": health_reference,
         "gmm1_unfused_reference": gmm1_reference,
-        "gmm2_unfused_reference": {
-            "enabled": False,
-            "reason": (
-                "The current debug ABI does not expose official hidden INT8 and hidden per-token scale, "
-                "which are required to compare GMM2 without re-deriving hidden quantization."
-            ),
-        },
+        "gmm2_unfused_reference": gmm2_reference,
         "out_zero_abs_tolerance": args.out_zero_abs_tol,
         "checks": {
             "input_health_gate_passed": input_health_gate_passed,
             "routed_quant_health": routed_quant_health,
+            "hidden_quant_health": hidden_quant_health,
             "readback_finite": readback_finite,
             "gmm1_reference_passed": gmm1_reference_passed,
-            "gmm2_reference_passed": None,
+            "gmm2_reference_passed": gmm2_reference_passed,
             "hidden_prequant_health": hidden_prequant_health,
             "debug_boundary_classification": debug_boundary_classification,
             "routed_rows_match": routed_rows_match,

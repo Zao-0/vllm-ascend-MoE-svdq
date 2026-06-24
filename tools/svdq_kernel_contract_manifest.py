@@ -1815,12 +1815,15 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                     "routed_x_scale_fp32",
                     "gmm1_post_dequant_fp32",
                     "gmm1_hidden_prequant_fp32",
+                    "hidden_x_int4_packed",
+                    "hidden_x_scale_fp32",
                     "gmm2_post_dequant_fp32",
                 ],
                 "input_surface": "official DispatchFFNCombineW4A8 inputs plus readback outputs",
                 "debug_output_pointer_hook": (
                     "MatmulKernel::Params ptrDebugRoutedX/ptrDebugRoutedScale/"
-                    "ptrDebugGMM1/ptrDebugGMM1Hidden/ptrDebugGMM2"
+                    "ptrDebugGMM1/ptrDebugGMM1Hidden/ptrDebugHiddenX/"
+                    "ptrDebugHiddenScale/ptrDebugGMM2"
                 ),
                 "must_reuse": [
                     "DispatchFFNCombineW4A8Kernel",

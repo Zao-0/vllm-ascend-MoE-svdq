@@ -316,6 +316,8 @@ def _run_debug_readback(args: argparse.Namespace, group: str) -> dict[str, Any]:
         routed_x_scale,
         gmm1_post_dequant,
         gmm1_hidden_prequant,
+        hidden_x_int4_packed,
+        hidden_x_scale,
         gmm2_post_dequant,
     ) = op(
         npu_tensors["x"],
@@ -340,6 +342,8 @@ def _run_debug_readback(args: argparse.Namespace, group: str) -> dict[str, Any]:
         "routed_x_scale_active": _float_stats(routed_x_scale[:active_rows]),
         "gmm1_post_dequant_active": _float_stats(gmm1_post_dequant[:active_rows]),
         "gmm1_hidden_prequant_active": _float_stats(gmm1_hidden_prequant[:active_rows]),
+        "hidden_x_int4_packed_active": _float_stats(hidden_x_int4_packed[:active_rows]),
+        "hidden_x_scale_active": _float_stats(hidden_x_scale[:active_rows]),
         "gmm2_post_dequant_active": _float_stats(gmm2_post_dequant[:active_rows]),
         "expert_token_nums": {
             "shape": list(expert_token_nums.shape),
@@ -351,15 +355,16 @@ def _run_debug_readback(args: argparse.Namespace, group: str) -> dict[str, Any]:
     calibration_data_validated = all(check["nonzero_nibbles"] for check in packed_checks.values())
     readback_finite = (
         output_stats["routed_x_scale_active"]["finite"]
-        and
-        output_stats["gmm1_post_dequant_active"]["finite"]
+        and output_stats["gmm1_post_dequant_active"]["finite"]
+        and output_stats["hidden_x_scale_active"]["finite"]
         and output_stats["gmm2_post_dequant_active"]["finite"]
     )
     readback_nonzero = (
         output_stats["routed_x_int8_active"]["nonzero"]
         and output_stats["routed_x_scale_active"]["nonzero"]
-        and
-        output_stats["gmm1_post_dequant_active"]["nonzero"]
+        and output_stats["gmm1_post_dequant_active"]["nonzero"]
+        and output_stats["hidden_x_int4_packed_active"]["nonzero"]
+        and output_stats["hidden_x_scale_active"]["nonzero"]
         and output_stats["gmm2_post_dequant_active"]["nonzero"]
     )
     routed_rows_match = output_stats["expert_token_nums"]["sum"] == active_rows
@@ -369,8 +374,21 @@ def _run_debug_readback(args: argparse.Namespace, group: str) -> dict[str, Any]:
         "finite": output_stats["gmm1_hidden_prequant_active"]["finite"],
         "nonzero": output_stats["gmm1_hidden_prequant_active"]["nonzero"],
     }
+    hidden_quant_health = {
+        "finite": output_stats["hidden_x_scale_active"]["finite"],
+        "nonzero": (
+            output_stats["hidden_x_int4_packed_active"]["nonzero"]
+            and output_stats["hidden_x_scale_active"]["nonzero"]
+        ),
+    }
     hidden_prequant_health_passed = hidden_prequant_health["finite"] and hidden_prequant_health["nonzero"]
-    passed = calibration_stage_passed and readback_health_passed and hidden_prequant_health_passed
+    hidden_quant_health_passed = hidden_quant_health["finite"] and hidden_quant_health["nonzero"]
+    passed = (
+        calibration_stage_passed
+        and readback_health_passed
+        and hidden_prequant_health_passed
+        and hidden_quant_health_passed
+    )
     return {
         "stage": "official_svdqw4a8_debug_readback_deterministic_packed_int4_calibration",
         "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_debug_readback -> aclnnSVDQW4A8DebugReadback",
@@ -382,6 +400,8 @@ def _run_debug_readback(args: argparse.Namespace, group: str) -> dict[str, Any]:
         "readback_health_passed": readback_health_passed,
         "hidden_prequant_health": hidden_prequant_health,
         "hidden_prequant_health_passed": hidden_prequant_health_passed,
+        "hidden_quant_health": hidden_quant_health,
+        "hidden_quant_health_passed": hidden_quant_health_passed,
         "routed_rows_match": routed_rows_match,
         "synthetic_calibration_numerical_gate": False,
         "public_grouped_matmul_used": False,

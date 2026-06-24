@@ -399,15 +399,21 @@ def test_official_w4a8_debug_readback_compile_flag_is_default_off():
     assert "GM_ADDR ptrDebugRoutedScale;" in kernel
     assert "GM_ADDR ptrDebugGMM1;" in kernel
     assert "GM_ADDR ptrDebugGMM1Hidden;" in kernel
+    assert "GM_ADDR ptrDebugHiddenX;" in kernel
+    assert "GM_ADDR ptrDebugHiddenScale;" in kernel
     assert "GM_ADDR ptrDebugGMM2;" in kernel
     assert "GM_ADDR symmetricPtr_ = nullptr, GM_ADDR ptrDebugRoutedX_ = nullptr" in kernel
     assert "GM_ADDR ptrDebugRoutedScale_ = nullptr" in kernel
     assert "GM_ADDR ptrDebugGMM1Hidden_ = nullptr" in kernel
+    assert "GM_ADDR ptrDebugHiddenX_ = nullptr" in kernel
+    assert "GM_ADDR ptrDebugHiddenScale_ = nullptr" in kernel
     assert "GM_ADDR ptrDebugGMM2_ = nullptr" in kernel
     assert "ptrDebugRoutedX(ptrDebugRoutedX_)" in kernel
     assert "ptrDebugRoutedScale(ptrDebugRoutedScale_)" in kernel
     assert "ptrDebugGMM1(ptrDebugGMM1_)" in kernel
     assert "ptrDebugGMM1Hidden(ptrDebugGMM1Hidden_)" in kernel
+    assert "ptrDebugHiddenX(ptrDebugHiddenX_)" in kernel
+    assert "ptrDebugHiddenScale(ptrDebugHiddenScale_)" in kernel
     assert "ptrDebugGMM2(ptrDebugGMM2_)" in kernel
     assert "#ifdef W4A8_DEBUG" in kernel
     assert "if (coreIdx == 0 && params.ptrDebugRoutedX != nullptr)" in kernel
@@ -418,6 +424,10 @@ def test_official_w4a8_debug_readback_compile_flag_is_default_off():
     assert "if (params.ptrDebugGMM1Hidden != nullptr)" in kernel
     assert "ptrCGMM1Hidden = params.ptrDebugGMM1Hidden;" in kernel
     assert "workspaceOffset += params.maxOutputSize * k2 * sizeof(float);" in kernel
+    assert "if (params.ptrDebugHiddenX != nullptr)" in kernel
+    assert "CopyGMToGM(hiddenXDebugGM, gmA2I4_I8" in kernel
+    assert "if (params.ptrDebugHiddenScale != nullptr)" in kernel
+    assert "CopyGMToGM(hiddenScaleDebugGM, gmPerTokenScale2" in kernel
     assert "if (params.ptrDebugGMM2 != nullptr)" in kernel
     assert "ptrCGMM2 = params.ptrDebugGMM2;" in kernel
     assert "workspaceOffset += params.maxOutputSize * n2 * sizeof(float);" in kernel
@@ -440,13 +450,18 @@ def test_official_w4a8_debug_readback_compile_flag_is_default_off():
     assert "GM_ADDR debugRoutedScaleGM = nullptr" in op_class
     assert "GM_ADDR debugGMM1GM = nullptr" in op_class
     assert "GM_ADDR debugGMM1HiddenGM = nullptr" in op_class
+    assert "GM_ADDR debugHiddenXGM = nullptr" in op_class
+    assert "GM_ADDR debugHiddenScaleGM = nullptr" in op_class
     assert "GM_ADDR debugGMM2GM = nullptr" in op_class
     assert "debugRoutedXGM_" in op_class
     assert "debugRoutedScaleGM_" in op_class
     assert "debugGMM1GM_" in op_class
     assert "debugGMM1HiddenGM_" in op_class
+    assert "debugHiddenXGM_" in op_class
+    assert "debugHiddenScaleGM_" in op_class
     assert "debugGMM2GM_" in op_class
-    assert "debugRoutedXGM_, debugRoutedScaleGM_, debugGMM1GM_, debugGMM1HiddenGM_, debugGMM2GM_" in op_class
+    assert "debugRoutedXGM_, debugRoutedScaleGM_, debugGMM1GM_, debugGMM1HiddenGM_, debugHiddenXGM_," in op_class
+    assert "debugHiddenScaleGM_, debugGMM2GM_" in op_class
 
     assert "extern \"C\" __global__ __aicore__ void svdqw4_a8_debug_readback" in debug_kernel
     assert "KERNEL_TYPE_MIX_AIC_1_2" in debug_kernel
@@ -455,6 +470,8 @@ def test_official_w4a8_debug_readback_compile_flag_is_default_off():
     assert "routedXScale" in debug_kernel
     assert "gmm1PostDequant" in debug_kernel
     assert "gmm1HiddenPrequant" in debug_kernel
+    assert "hiddenXInt4Packed" in debug_kernel
+    assert "hiddenXScale" in debug_kernel
     assert "gmm2PostDequant" in debug_kernel
 
     assert "class SVDQW4A8DebugReadback" in debug_def
@@ -462,6 +479,8 @@ def test_official_w4a8_debug_readback_compile_flag_is_default_off():
     assert 'this->Output("routedXScale")' in debug_def
     assert 'this->Output("gmm1PostDequant")' in debug_def
     assert 'this->Output("gmm1HiddenPrequant")' in debug_def
+    assert 'this->Output("hiddenXInt4Packed")' in debug_def
+    assert 'this->Output("hiddenXScale")' in debug_def
     assert 'this->Output("gmm2PostDequant")' in debug_def
     assert "OP_ADD(SVDQW4A8DebugReadback)" in debug_def
     assert "IMPL_OP_OPTILING(SVDQW4A8DebugReadback)" in tiling
@@ -720,7 +739,11 @@ def test_svdq_w4a8_debug_readback_real_checkpoint_probe_uses_official_debug_path
         "gmm1_real_checkpoint_numerical_gate",
         "gmm2_real_checkpoint_numerical_gate",
         "gmm2_unfused_reference",
-        "does not expose official hidden INT8",
+        "--compare-gmm2-reference",
+        "_official_gmm2_unfused_reference",
+        "hidden_x_int4_packed_active",
+        "hidden_x_scale_active",
+        "hidden_quant_health",
         "public_grouped_matmul_used",
         "False",
         "nonzero_real_checkpoint_numerical_gate",
@@ -2707,12 +2730,15 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
                 "routed_x_scale_fp32",
                 "gmm1_post_dequant_fp32",
                 "gmm1_hidden_prequant_fp32",
+                "hidden_x_int4_packed",
+                "hidden_x_scale_fp32",
                 "gmm2_post_dequant_fp32",
             ],
             "input_surface": "official DispatchFFNCombineW4A8 inputs plus readback outputs",
             "debug_output_pointer_hook": (
                 "MatmulKernel::Params ptrDebugRoutedX/ptrDebugRoutedScale/"
-                "ptrDebugGMM1/ptrDebugGMM1Hidden/ptrDebugGMM2"
+                "ptrDebugGMM1/ptrDebugGMM1Hidden/ptrDebugHiddenX/"
+                "ptrDebugHiddenScale/ptrDebugGMM2"
             ),
             "must_reuse": [
                 "DispatchFFNCombineW4A8Kernel",

@@ -106,6 +106,8 @@ public:
         GM_ADDR ptrDebugRoutedScale;
         GM_ADDR ptrDebugGMM1;
         GM_ADDR ptrDebugGMM1Hidden;
+        GM_ADDR ptrDebugHiddenX;
+        GM_ADDR ptrDebugHiddenScale;
         GM_ADDR ptrDebugGMM2;
         //--------------
         GM_ADDR expertIdx;
@@ -143,7 +145,8 @@ public:
                optiling::MoeInitRoutingQuantV2TilingData moeInitRoutingQuantV2TilingData_, float swigluLimit_,
                GM_ADDR symmetricPtr_ = nullptr, GM_ADDR ptrDebugRoutedX_ = nullptr,
                GM_ADDR ptrDebugRoutedScale_ = nullptr, GM_ADDR ptrDebugGMM1_ = nullptr,
-               GM_ADDR ptrDebugGMM1Hidden_ = nullptr, GM_ADDR ptrDebugGMM2_ = nullptr)
+               GM_ADDR ptrDebugGMM1Hidden_ = nullptr, GM_ADDR ptrDebugHiddenX_ = nullptr,
+               GM_ADDR ptrDebugHiddenScale_ = nullptr, GM_ADDR ptrDebugGMM2_ = nullptr)
             : problemShape(problemShape_),
               EP(EP_),
               listLen(listLen_),
@@ -183,6 +186,8 @@ public:
               ptrDebugRoutedScale(ptrDebugRoutedScale_),
               ptrDebugGMM1(ptrDebugGMM1_),
               ptrDebugGMM1Hidden(ptrDebugGMM1Hidden_),
+              ptrDebugHiddenX(ptrDebugHiddenX_),
+              ptrDebugHiddenScale(ptrDebugHiddenScale_),
               ptrDebugGMM2(ptrDebugGMM2_),
               ptrXActiveMask(ptrXActiveMask_),
               moeInitRoutingQuantV2TilingData(moeInitRoutingQuantV2TilingData_),
@@ -1104,6 +1109,24 @@ private:
             AscendC::CrossCoreSetFlag<0x2, PIPE_MTE3>(SYNCFLAGV2C);
         }
         blockEpilogue1.Finalize();
+#ifdef W4A8_DEBUG
+        AscendC::SyncAll<true>();
+        if (coreIdx == 0) {
+            if (params.ptrDebugHiddenX != nullptr) {
+                AscendC::GlobalTensor<int8_t> hiddenXDebugGM;
+                hiddenXDebugGM.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t *>(params.ptrDebugHiddenX));
+                CopyGMToGM(hiddenXDebugGM, gmA2I4_I8, params.maxOutputSize * (params.problemShape.n() / 2),
+                           params.ubMoveNum);
+            }
+            if (params.ptrDebugHiddenScale != nullptr) {
+                AscendC::GlobalTensor<ElementPerTokenScale> hiddenScaleDebugGM;
+                hiddenScaleDebugGM.SetGlobalBuffer(
+                    reinterpret_cast<__gm__ ElementPerTokenScale *>(params.ptrDebugHiddenScale));
+                CopyGMToGM(hiddenScaleDebugGM, gmPerTokenScale2, params.maxOutputSize, params.ubMoveNum);
+            }
+        }
+        AscendC::SyncAll<true>();
+#endif
 #ifdef SYNC_MODE
         AscendC::SyncAll<false>();
         AscendC::SyncAll<false>();

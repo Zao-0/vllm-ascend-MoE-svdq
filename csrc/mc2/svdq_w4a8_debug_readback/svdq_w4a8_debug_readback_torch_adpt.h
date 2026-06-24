@@ -40,7 +40,7 @@ inline void check_svdq_w4a8_debug_rank(const at::Tensor& tensor, int64_t rank, c
 
 }  // namespace
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
 svdq_w4a8_debug_readback(
     const at::Tensor& x,
     const at::TensorList& weight1,
@@ -106,6 +106,8 @@ svdq_w4a8_debug_readback(
     auto routed_x_scale = at::zeros({max_output_size}, x.options().dtype(at::kFloat));
     auto gmm1_post_dequant = at::zeros({max_output_size, gmm1_columns}, x.options().dtype(at::kFloat));
     auto gmm1_hidden_prequant = at::zeros({max_output_size, intermediate_size}, x.options().dtype(at::kFloat));
+    auto hidden_x_int4_packed = at::zeros({max_output_size, intermediate_size}, x.options().dtype(at::kChar));
+    auto hidden_x_scale = at::zeros({max_output_size}, x.options().dtype(at::kFloat));
     auto gmm2_post_dequant = at::zeros({max_output_size, hidden_size}, x.options().dtype(at::kFloat));
 
     char* group_ep_ptr = group_string.data();
@@ -130,9 +132,11 @@ svdq_w4a8_debug_readback(
         routed_x_scale,
         gmm1_post_dequant,
         gmm1_hidden_prequant,
+        hidden_x_int4_packed,
+        hidden_x_scale,
         gmm2_post_dequant);
     return {out, expert_token_nums, routed_x_int8, routed_x_scale, gmm1_post_dequant, gmm1_hidden_prequant,
-            gmm2_post_dequant};
+            hidden_x_int4_packed, hidden_x_scale, gmm2_post_dequant};
 }
 
 }  // namespace vllm_ascend
