@@ -384,8 +384,18 @@ def test_official_w4a8_debug_readback_compile_flag_is_default_off():
 
     assert "ptrCGMM1" in kernel
     assert "ptrCGMM2" in kernel
+    assert "GM_ADDR ptrDebugGMM1;" in kernel
+    assert "GM_ADDR ptrDebugGMM2;" in kernel
+    assert "GM_ADDR symmetricPtr_ = nullptr, GM_ADDR ptrDebugGMM1_ = nullptr" in kernel
+    assert "GM_ADDR ptrDebugGMM2_ = nullptr" in kernel
+    assert "ptrDebugGMM1(ptrDebugGMM1_)" in kernel
+    assert "ptrDebugGMM2(ptrDebugGMM2_)" in kernel
     assert "#ifdef W4A8_DEBUG" in kernel
+    assert "if (params.ptrDebugGMM1 != nullptr)" in kernel
+    assert "ptrCGMM1 = params.ptrDebugGMM1;" in kernel
     assert "workspaceOffset += params.maxOutputSize * params.problemShape.n() * sizeof(float);" in kernel
+    assert "if (params.ptrDebugGMM2 != nullptr)" in kernel
+    assert "ptrCGMM2 = params.ptrDebugGMM2;" in kernel
     assert "workspaceOffset += params.maxOutputSize * n2 * sizeof(float);" in kernel
     assert "DataCopy(gmTileGMM1, ubCFp32, blockN);" in gmm1_epilogue
     assert "copyUbToGmGMM2(gmTileGMM2, ubFp32, layoutGM, layoutUB);" in gmm2_epilogue
@@ -2553,6 +2563,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
                 "gmm2_post_dequant_fp32",
             ],
             "input_surface": "official DispatchFFNCombineW4A8 inputs plus readback outputs",
+            "debug_output_pointer_hook": "MatmulKernel::Params ptrDebugGMM1/ptrDebugGMM2",
             "must_reuse": [
                 "DispatchFFNCombineW4A8Kernel",
                 "BlockMmad",
@@ -2567,6 +2578,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
             "official_w4a8_aic_calls_gmm1_gmm2",
             "official_w4a8_aiv_calls_dispatch_and_combine",
             "official_w4a8_workspace_has_ptr_cgmm1_cgmm2",
+            "official_w4a8_debug_output_pointer_hook",
             "official_w4a8_kernel_binds_block_mmad_and_epilogues",
             "official_w4a8_gmm1_epilogue_debug_copies_fp32",
             "official_w4a8_gmm2_epilogue_debug_copies_fp32",

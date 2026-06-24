@@ -1212,6 +1212,18 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "workspaceOffset += params.maxOutputSize * n2 * sizeof(float);"
             in sources["official_w4a8_kernel"]
         ),
+        "official_w4a8_debug_output_pointer_hook": (
+            "GM_ADDR ptrDebugGMM1;" in sources["official_w4a8_kernel"]
+            and "GM_ADDR ptrDebugGMM2;" in sources["official_w4a8_kernel"]
+            and "GM_ADDR ptrDebugGMM1_ = nullptr" in sources["official_w4a8_kernel"]
+            and "GM_ADDR ptrDebugGMM2_ = nullptr" in sources["official_w4a8_kernel"]
+            and "ptrDebugGMM1(ptrDebugGMM1_)" in sources["official_w4a8_kernel"]
+            and "ptrDebugGMM2(ptrDebugGMM2_)" in sources["official_w4a8_kernel"]
+            and "if (params.ptrDebugGMM1 != nullptr)" in sources["official_w4a8_kernel"]
+            and "ptrCGMM1 = params.ptrDebugGMM1;" in sources["official_w4a8_kernel"]
+            and "if (params.ptrDebugGMM2 != nullptr)" in sources["official_w4a8_kernel"]
+            and "ptrCGMM2 = params.ptrDebugGMM2;" in sources["official_w4a8_kernel"]
+        ),
         "official_w4a8_kernel_binds_block_mmad_and_epilogues": (
             "using BlockMmad = Gemm::Block::BlockMmad" in sources["official_w4a8_op"]
             and "EpilogueAtlasA2W4A8PostPerTokenDequantSwigluQuant"
@@ -1677,6 +1689,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                     "gmm2_post_dequant_fp32",
                 ],
                 "input_surface": "official DispatchFFNCombineW4A8 inputs plus readback outputs",
+                "debug_output_pointer_hook": "MatmulKernel::Params ptrDebugGMM1/ptrDebugGMM2",
                 "must_reuse": [
                     "DispatchFFNCombineW4A8Kernel",
                     "BlockMmad",
@@ -1691,6 +1704,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "official_w4a8_aic_calls_gmm1_gmm2",
                 "official_w4a8_aiv_calls_dispatch_and_combine",
                 "official_w4a8_workspace_has_ptr_cgmm1_cgmm2",
+                "official_w4a8_debug_output_pointer_hook",
                 "official_w4a8_kernel_binds_block_mmad_and_epilogues",
                 "official_w4a8_gmm1_epilogue_debug_copies_fp32",
                 "official_w4a8_gmm2_epilogue_debug_copies_fp32",

@@ -102,6 +102,8 @@ public:
         uint32_t rankSize;
         int32_t ubMoveNum;
         GM_ADDR symmetricPtr;
+        GM_ADDR ptrDebugGMM1;
+        GM_ADDR ptrDebugGMM2;
         //--------------
         GM_ADDR expertIdx;
         GM_ADDR moeInitRoutingQuantV2Scale;
@@ -136,7 +138,7 @@ public:
                GM_ADDR expertTokensBeforeCapacity_, GM_ADDR probs_, GM_ADDR ptrWorkspace_, GM_ADDR gmExpertTokenNums_,
                int32_t ubMoveNum_, GM_ADDR ptrXActiveMask_,
                optiling::MoeInitRoutingQuantV2TilingData moeInitRoutingQuantV2TilingData_, float swigluLimit_,
-               GM_ADDR symmetricPtr_ = nullptr)
+               GM_ADDR symmetricPtr_ = nullptr, GM_ADDR ptrDebugGMM1_ = nullptr, GM_ADDR ptrDebugGMM2_ = nullptr)
             : problemShape(problemShape_),
               EP(EP_),
               listLen(listLen_),
@@ -172,6 +174,8 @@ public:
               ptrExpertTokenNums(gmExpertTokenNums_),
               ubMoveNum(ubMoveNum_),
               symmetricPtr(symmetricPtr_),
+              ptrDebugGMM1(ptrDebugGMM1_),
+              ptrDebugGMM2(ptrDebugGMM2_),
               ptrXActiveMask(ptrXActiveMask_),
               moeInitRoutingQuantV2TilingData(moeInitRoutingQuantV2TilingData_),
               swigluLimit(swigluLimit_)
@@ -1264,11 +1268,19 @@ private:
 
                 ptrCGMM1 = params.ptrWorkspace + workspaceOffset;
 #ifdef W4A8_DEBUG
-                workspaceOffset += params.maxOutputSize * params.problemShape.n() * sizeof(float);
+                if (params.ptrDebugGMM1 != nullptr) {
+                    ptrCGMM1 = params.ptrDebugGMM1;
+                } else {
+                    workspaceOffset += params.maxOutputSize * params.problemShape.n() * sizeof(float);
+                }
 #endif
                 ptrCGMM2 = params.ptrWorkspace + workspaceOffset;
 #ifdef W4A8_DEBUG
-                workspaceOffset += params.maxOutputSize * n2 * sizeof(float);
+                if (params.ptrDebugGMM2 != nullptr) {
+                    ptrCGMM2 = params.ptrDebugGMM2;
+                } else {
+                    workspaceOffset += params.maxOutputSize * n2 * sizeof(float);
+                }
 #endif
             }
             ptrSumBeforeRank = params.ptrWorkspace + workspaceOffset;
