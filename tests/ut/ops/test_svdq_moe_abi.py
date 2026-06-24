@@ -883,30 +883,42 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
 
     assert "SVDQ_RESIDUAL_STAGE_COUNT = 4" in tiling_header
     assert "SVDQ_RESIDUAL_GMM_COUNT = 2" in tiling_header
+    assert "SVDQ_RESIDUAL_QUANT_COUNT = 2" in tiling_header
     assert "SVDQResidualStageId" in tiling_header
     assert "SVDQResidualStageShape" in tiling_header
     assert "SVDQResidualStageShape residualStageShapes[SVDQ_RESIDUAL_STAGE_COUNT]" in tiling_header
+    assert "SVDQResidualQuantShape" in tiling_header
+    assert "SVDQResidualQuantShape residualQuantShapes[SVDQ_RESIDUAL_QUANT_COUNT]" in tiling_header
     assert "SVDQResidualGmmShape" in tiling_header
     assert "SVDQResidualGmmShape residualGmmShapes[SVDQ_RESIDUAL_GMM_COUNT]" in tiling_header
     assert "SetResidualStageShape" in tiling
     assert "BuildResidualStageShapeTable" in tiling
     assert "BuildResidualStageShapeTable(tilingData)" in tiling
+    assert "SetResidualQuantShape" in tiling
+    assert "BuildResidualQuantShapeTable" in tiling
+    assert "BuildResidualQuantShapeTable(tilingData)" in tiling
     assert "SetResidualGmmShape" in tiling
     assert "BuildResidualGmmShapeTable" in tiling
     assert "BuildResidualGmmShapeTable(tilingData)" in tiling
     assert "ResidualStageShape(uint32_t stageId)" in contract
     assert "return tilingData_.residualStageShapes[stageId]" in contract
+    assert "ResidualQuantShape(uint32_t quantId)" in contract
+    assert "return tilingData_.residualQuantShapes[quantId]" in contract
     assert "ResidualGmmShape(uint32_t gmmId)" in contract
     assert "return tilingData_.residualGmmShapes[gmmId]" in contract
     assert "SVDQResidualStageContract" in contract
     assert "ResidualStageContract(uint32_t stageId)" in contract
     assert "SVDQResidualExecutionPlan" in contract
+    assert "SVDQResidualQuantLaunch" in contract
     assert "SVDQResidualGmmLaunch" in contract
     assert "ResidualExecutionPlan(uint32_t stageId)" in contract
+    assert "ResidualQuantIdForStage(uint32_t stageId)" in contract
+    assert "BuildResidualQuantLaunch(uint32_t stageId)" in contract
     assert "ResidualGmmIdForStage(uint32_t stageId)" in contract
     assert "BuildResidualGmmLaunch(uint32_t stageId)" in contract
     assert "ResidualStageReady(uint32_t stageId)" in contract
     assert "ResidualExecutionPlanReady(uint32_t stageId)" in contract
+    assert "ResidualQuantLaunchReady(uint32_t stageId)" in contract
     assert "ResidualGmmLaunchReady(uint32_t stageId)" in contract
     assert "RunResidualDynamicQuantStage(uint32_t stageId)" in contract
     assert "RunResidualGmmStage(uint32_t stageId)" in contract
@@ -1000,6 +1012,36 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         assert token in contract
 
     for token in (
+        "quant.usesRouting = usesRouting",
+        "quant.residualOnly = true",
+        "SetResidualQuantShape(tilingData, 0, SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT",
+        "SetResidualQuantShape(tilingData, 1, SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN",
+        "routedRows, info.hiddenSize, routedRows, true",
+        "routedRows, info.intermediateSize, routedRows, false",
+    ):
+        assert token in tiling
+
+    residual_quant_descriptor_source = contract[
+        contract.index("__aicore__ inline uint32_t ResidualQuantIdForStage") : contract.index(
+            "__aicore__ inline uint32_t ResidualGmmIdForStage"
+        )
+    ]
+    for token in (
+        "SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT",
+        "SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN",
+        "WorkspaceAddress(shape.inputRegionId)",
+        "WorkspaceAddress(shape.activationScaleRegionId)",
+        "WorkspaceAddress(shape.outputRegionId)",
+        "shape.usesRouting ? WorkspaceAddress(contract.routeIndexRegionId) : nullptr",
+        "shape.usesRouting ? DispatchQuantRoutingTempWorkspace() : nullptr",
+        "runtime_.expertTokenNums",
+        "shape.scaleElements",
+        "shape.usesRouting",
+        "shape.residualOnly",
+    ):
+        assert token in residual_quant_descriptor_source
+
+    for token in (
         "gmm.groupListType = 1",
         "gmm.groupType = 0",
         "gmm.splitItem = 2",
@@ -1072,19 +1114,38 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         )
     ]
     for token in (
-        "stageId != SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT",
-        "plan.inputRegionId != SVDQ_REGION_ROUTED_X",
-        "plan.activationScaleRegionId != SVDQ_REGION_X_SCALE",
-        "plan.outputRegionId != SVDQ_REGION_X_Q",
+        "SVDQResidualQuantLaunch launch = BuildResidualQuantLaunch(stageId)",
+        "if (!launch.usesRouting)",
         "moe_init_routing_quant_v2<bfloat16_t>",
-        "WorkspaceAddress(plan.outputRegionId)",
-        "WorkspaceAddress(plan.activationScaleRegionId)",
-        "DispatchQuantRoutingTempWorkspace()",
+        "launch.output",
+        "launch.routeIndex",
+        "launch.expertTokenNums",
+        "launch.activationScale",
+        "launch.workspace",
         "&routingTiling.moeInitRoutingQuantV2TilingData",
         "routingTiling.initRoutingQuantTilingKey",
         "return true;",
     ):
         assert token in residual_quant_source
+
+    quant_ready_source = contract[
+        contract.index("__aicore__ inline bool ResidualQuantLaunchReady") : contract.index(
+            "__aicore__ inline bool ResidualGmmLaunchReady"
+        )
+    ]
+    for token in (
+        "plan.opKind != SVDQ_RESIDUAL_OP_DYNAMIC_QUANT",
+        "shape.inputRegionId != plan.inputRegionId",
+        "shape.activationScaleRegionId != plan.activationScaleRegionId",
+        "shape.outputRegionId != plan.outputRegionId",
+        "shape.scaleElements != shape.m",
+        "launch.expertTokenNums == nullptr",
+        "if (shape.usesRouting)",
+        "routingTiling.initRoutingQuantTilingKey != 0",
+        "routingTiling.routingWorkspaceBytes > 0",
+        "return launch.routeIndex == nullptr && launch.workspace == nullptr",
+    ):
+        assert token in quant_ready_source
 
 
 def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
@@ -1809,6 +1870,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "sync_flags": 14,
         "bf16_stages": 7,
         "residual_stages": 4,
+        "residual_quant_launches": 2,
         "residual_gmm_launches": 2,
         "lowrank_invocations": 2,
     }
@@ -1826,6 +1888,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["lowrank_is_implemented_uses_complete_contract"]
     assert loaded["production_fail_closed"]["dispatch_routing_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_routed_input_quant_execution_enabled"]
+    assert loaded["production_fail_closed"]["residual_quant_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
     assert loaded["production_fail_closed"]["mixed_epilogue_execution_fail_closed"]
@@ -1843,6 +1906,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_process_orders_svdq_data_dependencies"]
     assert loaded["source_proof"]["kernel_binds_residual_weight_scale_slots"]
     assert loaded["source_proof"]["kernel_residual_dispatches_dynamic_quant_and_gmm"]
+    assert loaded["source_proof"]["kernel_residual_quant_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_residual_routed_input_quant_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_execution_fail_closed"]
@@ -1863,6 +1927,34 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "SVDQ_RESIDUAL_STAGE_W4A8_GMM2",
     ]
     assert all(stage["residual_only"] for stage in loaded["residual_stages"])
+    assert [launch["name"] for launch in loaded["residual_quant_launches"]] == [
+        "SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT",
+        "SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN",
+    ]
+    assert loaded["residual_quant_launches"][0] == {
+        "id": 0,
+        "name": "SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT",
+        "input_region": "SVDQ_REGION_ROUTED_X",
+        "activation_scale_region": "SVDQ_REGION_X_SCALE",
+        "output_region": "SVDQ_REGION_X_Q",
+        "m": "routedRows",
+        "k": "info.hiddenSize",
+        "scale_elements": "routedRows",
+        "uses_routing": True,
+        "residual_only": True,
+    }
+    assert loaded["residual_quant_launches"][1] == {
+        "id": 1,
+        "name": "SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN",
+        "input_region": "SVDQ_REGION_HIDDEN",
+        "activation_scale_region": "SVDQ_REGION_HIDDEN_SCALE",
+        "output_region": "SVDQ_REGION_HIDDEN_Q",
+        "m": "routedRows",
+        "k": "info.intermediateSize",
+        "scale_elements": "routedRows",
+        "uses_routing": False,
+        "residual_only": True,
+    }
     assert [launch["name"] for launch in loaded["residual_gmm_launches"]] == [
         "SVDQ_RESIDUAL_STAGE_W4A8_GMM1",
         "SVDQ_RESIDUAL_STAGE_W4A8_GMM2",

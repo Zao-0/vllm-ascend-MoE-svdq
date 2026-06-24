@@ -348,6 +348,36 @@ static void BuildResidualStageShapeTable(DispatchFFNCombineW4A8SVDQTilingData* t
         routedRows, info.intermediateSize, info.hiddenSize, weight2Slot, scale2Slot, true);
 }
 
+static void SetResidualQuantShape(
+    DispatchFFNCombineW4A8SVDQTilingData* tilingData, uint32_t quantId, uint32_t stageId,
+    uint32_t inputRegionId, uint32_t activationScaleRegionId, uint32_t outputRegionId,
+    uint32_t m, uint32_t k, uint32_t scaleElements, bool usesRouting)
+{
+    auto& quant = tilingData->residualQuantShapes[quantId];
+    quant.stageId = stageId;
+    quant.inputRegionId = inputRegionId;
+    quant.activationScaleRegionId = activationScaleRegionId;
+    quant.outputRegionId = outputRegionId;
+    quant.m = m;
+    quant.k = k;
+    quant.scaleElements = scaleElements;
+    quant.usesRouting = usesRouting;
+    quant.residualOnly = true;
+}
+
+static void BuildResidualQuantShapeTable(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
+{
+    auto& info = tilingData->info;
+    const uint32_t routedRows = info.maxOutputSize;
+
+    SetResidualQuantShape(tilingData, 0, SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT,
+        SVDQ_REGION_ROUTED_X, SVDQ_REGION_X_SCALE, SVDQ_REGION_X_Q,
+        routedRows, info.hiddenSize, routedRows, true);
+    SetResidualQuantShape(tilingData, 1, SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN,
+        SVDQ_REGION_HIDDEN, SVDQ_REGION_HIDDEN_SCALE, SVDQ_REGION_HIDDEN_Q,
+        routedRows, info.intermediateSize, routedRows, false);
+}
+
 static void SetResidualGmmShape(
     DispatchFFNCombineW4A8SVDQTilingData* tilingData, uint32_t gmmId, uint32_t stageId,
     uint32_t inputRegionId, uint32_t activationScaleRegionId, uint32_t outputRegionId,
@@ -693,6 +723,7 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
     BuildDispatchRoutingTiling(tilingData);
     BuildBF16StageShapeTable(tilingData);
     BuildResidualStageShapeTable(tilingData);
+    BuildResidualQuantShapeTable(tilingData);
     BuildResidualGmmShapeTable(tilingData);
     BuildLowRankInvocationTable(tilingData);
     size_t* workSpaces = context->GetWorkspaceSizes(1);

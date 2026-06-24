@@ -21,6 +21,7 @@ constexpr uint32_t SVDQ_WORKSPACE_REGION_COUNT = 16;
 constexpr uint32_t SVDQ_SYNC_FLAG_COUNT = 14;
 constexpr uint32_t SVDQ_BF16_STAGE_COUNT = 7;
 constexpr uint32_t SVDQ_RESIDUAL_STAGE_COUNT = 4;
+constexpr uint32_t SVDQ_RESIDUAL_QUANT_COUNT = 2;
 constexpr uint32_t SVDQ_RESIDUAL_GMM_COUNT = 2;
 constexpr uint32_t SVDQ_INVALID_ID = 0xffffffffU;
 
@@ -149,6 +150,18 @@ struct SVDQResidualStageShape {
     bool residualOnly;
 };
 
+struct SVDQResidualQuantShape {
+    uint32_t stageId;
+    uint32_t inputRegionId;
+    uint32_t activationScaleRegionId;
+    uint32_t outputRegionId;
+    uint32_t m;
+    uint32_t k;
+    uint32_t scaleElements;
+    bool usesRouting;
+    bool residualOnly;
+};
+
 struct SVDQResidualGmmShape {
     uint32_t stageId;
     uint32_t inputRegionId;
@@ -205,6 +218,7 @@ struct DispatchFFNCombineW4A8SVDQTilingData {
     SVDQSyncFlag syncFlags[SVDQ_SYNC_FLAG_COUNT];
     SVDQBF16StageShape bf16StageShapes[SVDQ_BF16_STAGE_COUNT];
     SVDQResidualStageShape residualStageShapes[SVDQ_RESIDUAL_STAGE_COUNT];
+    SVDQResidualQuantShape residualQuantShapes[SVDQ_RESIDUAL_QUANT_COUNT];
     SVDQResidualGmmShape residualGmmShapes[SVDQ_RESIDUAL_GMM_COUNT];
     DispatchFFNCombineW4A8SVDQImpl::SVDQFusedDownUpTiling
         lowRankInvocations[DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_COUNT];

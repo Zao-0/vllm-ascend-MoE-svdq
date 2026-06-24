@@ -139,6 +139,21 @@ struct SVDQResidualExecutionPlan {
     bool residualOnly;
 };
 
+struct SVDQResidualQuantLaunch {
+    uint32_t stageId;
+    GM_ADDR input;
+    GM_ADDR activationScale;
+    GM_ADDR output;
+    GM_ADDR routeIndex;
+    GM_ADDR expertTokenNums;
+    GM_ADDR workspace;
+    uint32_t m;
+    uint32_t k;
+    uint32_t scaleElements;
+    bool usesRouting;
+    bool residualOnly;
+};
+
 struct SVDQResidualGmmLaunch {
     uint32_t stageId;
     GM_ADDR input;
@@ -284,6 +299,11 @@ public:
     __aicore__ inline SVDQResidualStageShape ResidualStageShape(uint32_t stageId) const
     {
         return tilingData_.residualStageShapes[stageId];
+    }
+
+    __aicore__ inline SVDQResidualQuantShape ResidualQuantShape(uint32_t quantId) const
+    {
+        return tilingData_.residualQuantShapes[quantId];
     }
 
     __aicore__ inline SVDQResidualGmmShape ResidualGmmShape(uint32_t gmmId) const
@@ -522,6 +542,35 @@ public:
         }
     }
 
+    __aicore__ inline uint32_t ResidualQuantIdForStage(uint32_t stageId) const
+    {
+        switch (stageId) {
+            case SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT:
+                return 0;
+            case SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN:
+                return 1;
+            default:
+                return SVDQ_INVALID_ID;
+        }
+    }
+
+    __aicore__ inline SVDQResidualQuantLaunch BuildResidualQuantLaunch(uint32_t stageId) const
+    {
+        uint32_t quantId = ResidualQuantIdForStage(stageId);
+        if (quantId == SVDQ_INVALID_ID) {
+            return {SVDQ_INVALID_ID, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                0, 0, 0, false, false};
+        }
+        SVDQResidualQuantShape shape = ResidualQuantShape(quantId);
+        SVDQDispatchRoutingContract contract = DispatchRoutingContract();
+        GM_ADDR routeIndex = shape.usesRouting ? WorkspaceAddress(contract.routeIndexRegionId) : nullptr;
+        GM_ADDR workspace = shape.usesRouting ? DispatchQuantRoutingTempWorkspace() : nullptr;
+        return {shape.stageId, WorkspaceAddress(shape.inputRegionId),
+            WorkspaceAddress(shape.activationScaleRegionId), WorkspaceAddress(shape.outputRegionId),
+            routeIndex, runtime_.expertTokenNums, workspace, shape.m, shape.k, shape.scaleElements,
+            shape.usesRouting, shape.residualOnly};
+    }
+
     __aicore__ inline uint32_t ResidualGmmIdForStage(uint32_t stageId) const
     {
         switch (stageId) {
@@ -598,6 +647,33 @@ public:
         return false;
     }
 
+    __aicore__ inline bool ResidualQuantLaunchReady(uint32_t stageId) const
+    {
+        SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
+        uint32_t quantId = ResidualQuantIdForStage(stageId);
+        if (plan.opKind != SVDQ_RESIDUAL_OP_DYNAMIC_QUANT || quantId == SVDQ_INVALID_ID ||
+            !ResidualExecutionPlanReady(stageId)) {
+            return false;
+        }
+        SVDQResidualQuantShape shape = ResidualQuantShape(quantId);
+        SVDQResidualQuantLaunch launch = BuildResidualQuantLaunch(stageId);
+        if (shape.stageId != stageId || shape.inputRegionId != plan.inputRegionId ||
+            shape.activationScaleRegionId != plan.activationScaleRegionId ||
+            shape.outputRegionId != plan.outputRegionId || shape.m == 0 || shape.k == 0 ||
+            shape.scaleElements != shape.m || !shape.residualOnly || launch.input == nullptr ||
+            launch.activationScale == nullptr || launch.output == nullptr ||
+            launch.expertTokenNums == nullptr) {
+            return false;
+        }
+        if (shape.usesRouting) {
+            SVDQDispatchRoutingTiling routingTiling = DispatchRoutingTiling();
+            return launch.routeIndex != nullptr && launch.workspace != nullptr &&
+                   routingTiling.initRoutingQuantTilingKey != 0 &&
+                   routingTiling.routingWorkspaceBytes > 0;
+        }
+        return launch.routeIndex == nullptr && launch.workspace == nullptr;
+    }
+
     __aicore__ inline bool ResidualGmmLaunchReady(uint32_t stageId) const
     {
         SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
@@ -624,24 +700,17 @@ public:
     __aicore__ inline bool RunResidualDynamicQuantStage(uint32_t stageId) const
     {
         SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
-        if (plan.opKind != SVDQ_RESIDUAL_OP_DYNAMIC_QUANT || !ResidualExecutionPlanReady(stageId)) {
+        if (plan.opKind != SVDQ_RESIDUAL_OP_DYNAMIC_QUANT || !ResidualQuantLaunchReady(stageId)) {
             return false;
         }
-        if (stageId != SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT || plan.inputRegionId != SVDQ_REGION_ROUTED_X ||
-            plan.activationScaleRegionId != SVDQ_REGION_X_SCALE || plan.outputRegionId != SVDQ_REGION_X_Q) {
-            return false;
-        }
-        SVDQDispatchRoutingContract contract = DispatchRoutingContract();
+        SVDQResidualQuantLaunch launch = BuildResidualQuantLaunch(stageId);
         SVDQDispatchRoutingTiling routingTiling = DispatchRoutingTiling();
-        if (WorkspaceAddress(contract.routeIndexRegionId) == nullptr ||
-            DispatchQuantRoutingTempWorkspace() == nullptr || routingTiling.initRoutingQuantTilingKey == 0 ||
-            routingTiling.routingWorkspaceBytes == 0) {
+        if (!launch.usesRouting) {
             return false;
         }
         moe_init_routing_quant_v2<bfloat16_t>(runtime_.x, runtime_.expertId, nullptr, nullptr,
-            WorkspaceAddress(plan.outputRegionId), WorkspaceAddress(contract.routeIndexRegionId),
-            runtime_.expertTokenNums, nullptr, WorkspaceAddress(plan.activationScaleRegionId),
-            DispatchQuantRoutingTempWorkspace(), &routingTiling.moeInitRoutingQuantV2TilingData,
+            launch.output, launch.routeIndex, launch.expertTokenNums, nullptr, launch.activationScale,
+            launch.workspace, &routingTiling.moeInitRoutingQuantV2TilingData,
             routingTiling.initRoutingQuantTilingKey);
         return true;
     }

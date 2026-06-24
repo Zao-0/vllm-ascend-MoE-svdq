@@ -431,6 +431,33 @@ RESIDUAL_STAGES = [
     },
 ]
 
+RESIDUAL_QUANT_LAUNCHES = [
+    {
+        "id": 0,
+        "name": "SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT",
+        "input_region": "SVDQ_REGION_ROUTED_X",
+        "activation_scale_region": "SVDQ_REGION_X_SCALE",
+        "output_region": "SVDQ_REGION_X_Q",
+        "m": "routedRows",
+        "k": "info.hiddenSize",
+        "scale_elements": "routedRows",
+        "uses_routing": True,
+        "residual_only": True,
+    },
+    {
+        "id": 1,
+        "name": "SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN",
+        "input_region": "SVDQ_REGION_HIDDEN",
+        "activation_scale_region": "SVDQ_REGION_HIDDEN_SCALE",
+        "output_region": "SVDQ_REGION_HIDDEN_Q",
+        "m": "routedRows",
+        "k": "info.intermediateSize",
+        "scale_elements": "routedRows",
+        "uses_routing": False,
+        "residual_only": True,
+    },
+]
+
 RESIDUAL_GMM_LAUNCHES = [
     {
         "id": 0,
@@ -772,18 +799,36 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "ResidualGmmLaunchReady(uint32_t stageId)" in sources["kernel_contract"]
             and "BuildResidualGmmLaunch(stageId)" in sources["kernel_contract"]
         ),
+        "kernel_residual_quant_launch_descriptor_recorded": (
+            "SVDQ_RESIDUAL_QUANT_COUNT = 2" in sources["kernel_tiling"]
+            and "struct SVDQResidualQuantShape" in sources["kernel_tiling"]
+            and "SVDQResidualQuantShape residualQuantShapes[SVDQ_RESIDUAL_QUANT_COUNT]" in sources["kernel_tiling"]
+            and "SetResidualQuantShape" in sources["host_tiling"]
+            and "BuildResidualQuantShapeTable" in sources["host_tiling"]
+            and "BuildResidualQuantShapeTable(tilingData)" in sources["host_tiling"]
+            and "SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT" in sources["host_tiling"]
+            and "SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN" in sources["host_tiling"]
+            and "quant.usesRouting = usesRouting" in sources["host_tiling"]
+            and "quant.residualOnly = true" in sources["host_tiling"]
+            and "SVDQResidualQuantLaunch" in sources["kernel_contract"]
+            and "ResidualQuantShape(uint32_t quantId)" in sources["kernel_contract"]
+            and "ResidualQuantIdForStage(uint32_t stageId)" in sources["kernel_contract"]
+            and "BuildResidualQuantLaunch(uint32_t stageId)" in sources["kernel_contract"]
+            and "ResidualQuantLaunchReady(uint32_t stageId)" in sources["kernel_contract"]
+            and "BuildResidualQuantLaunch(stageId)" in sources["kernel_contract"]
+        ),
         "kernel_residual_routed_input_quant_execution_enabled": (
             '../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2.cpp'
             in sources["kernel_contract"]
             and "DispatchQuantRoutingTempWorkspace() const" in sources["kernel_contract"]
-            and "SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT" in residual_quant_source
-            and "SVDQ_REGION_ROUTED_X" in residual_quant_source
-            and "SVDQ_REGION_X_SCALE" in residual_quant_source
-            and "SVDQ_REGION_X_Q" in residual_quant_source
+            and "SVDQResidualQuantLaunch launch = BuildResidualQuantLaunch(stageId)" in residual_quant_source
+            and "if (!launch.usesRouting)" in residual_quant_source
             and "moe_init_routing_quant_v2<bfloat16_t>" in residual_quant_source
-            and "WorkspaceAddress(plan.outputRegionId)" in residual_quant_source
-            and "WorkspaceAddress(plan.activationScaleRegionId)" in residual_quant_source
-            and "DispatchQuantRoutingTempWorkspace()" in residual_quant_source
+            and "launch.output" in residual_quant_source
+            and "launch.routeIndex" in residual_quant_source
+            and "launch.expertTokenNums" in residual_quant_source
+            and "launch.activationScale" in residual_quant_source
+            and "launch.workspace" in residual_quant_source
             and "routingTiling.initRoutingQuantTilingKey" in residual_quant_source
             and "return true;" in residual_quant_source
         ),
@@ -1005,6 +1050,19 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
         if f"case {stage['name']}:" not in sources["kernel_contract"]:
             raise ValueError(f"residual stage {stage['name']} missing from kernel contract switch.")
 
+    for launch in manifest["residual_quant_launches"]:
+        for token in (
+            launch["name"],
+            launch["input_region"],
+            launch["activation_scale_region"],
+            launch["output_region"],
+        ):
+            if token not in sources["host_tiling"] or token not in sources["kernel_contract"]:
+                raise ValueError(f"residual quant launch token {token} missing from source.")
+        for token in ("SVDQResidualQuantShape", "BuildResidualQuantLaunch", "ResidualQuantLaunchReady"):
+            if token not in sources["kernel_contract"]:
+                raise ValueError(f"residual quant launch helper {token} missing from kernel contract.")
+
     for launch in manifest["residual_gmm_launches"]:
         for token in (
             launch["name"],
@@ -1086,6 +1144,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
         "sync_flags": _sync_flag_records(),
         "bf16_stages": _bf16_stage_records(),
         "residual_stages": _residual_stage_records(),
+        "residual_quant_launches": RESIDUAL_QUANT_LAUNCHES,
         "residual_gmm_launches": RESIDUAL_GMM_LAUNCHES,
         "lowrank_invocations": LOWRANK_INVOCATIONS,
         "lowrank_tile_shape": {"m": 16, "n": 64, "k": 64},
@@ -1173,6 +1232,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "residual_routed_input_quant_execution_enabled": source_proof[
                 "kernel_residual_routed_input_quant_execution_enabled"
             ],
+            "residual_quant_launch_descriptor_recorded": source_proof[
+                "kernel_residual_quant_launch_descriptor_recorded"
+            ],
             "residual_gmm_launch_descriptor_recorded": source_proof[
                 "kernel_residual_gmm_launch_descriptor_recorded"
             ],
@@ -1199,6 +1261,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "sync_flags": len(SYNC_FLAGS),
             "bf16_stages": len(BF16_STAGES),
             "residual_stages": len(RESIDUAL_STAGES),
+            "residual_quant_launches": len(RESIDUAL_QUANT_LAUNCHES),
             "residual_gmm_launches": len(RESIDUAL_GMM_LAUNCHES),
             "lowrank_invocations": len(LOWRANK_INVOCATIONS),
         },
