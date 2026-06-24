@@ -389,6 +389,24 @@ def test_svdq_w4a8_residual_gmm_device_probe_executes_official_stage_shapes():
         assert token in probe
 
 
+def test_svdq_final_combine_device_probe_executes_official_token_unpermute_surface():
+    probe = (REPO_ROOT / "tools/svdq_final_combine_device_probe.py").read_text()
+
+    for token in (
+        "torch_npu.npu_moe_token_unpermute",
+        "build_svdq_final_combine_reference",
+        "permuted_tokens=routed_output.to(device=device)",
+        "sorted_indices=expanded_row_idx.to(device=device)",
+        "probs=topk_weights.to(device=device)",
+        "expanded_row_idx = torch.arange(num_rows, dtype=torch.int32)",
+        "num_rows = num_tokens * top_k",
+        "expected = reference[\"stages\"][\"combined_output\"].to(torch.bfloat16)",
+        "phase_h_final_combine_device_probe_summary.json",
+        "--require-npu",
+    ):
+        assert token in probe
+
+
 def test_cann_host_library_build_path_honors_soc_selection():
     build_script = (REPO_ROOT / "csrc/build.sh").read_text()
     create_lib_branch = build_script[build_script.index('elif [[ "$ENABLE_CREATE_LIB" == "TRUE" ]];') :]
