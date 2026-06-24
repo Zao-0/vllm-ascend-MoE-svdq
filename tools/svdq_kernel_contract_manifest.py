@@ -580,7 +580,37 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         "kernel_residual_execution_fail_closed": (
             "RunW4A8ResidualStages() const" in sources["kernel_contract"]
             and "ResidualStageReady(stageId)" in sources["kernel_contract"]
-            and "return false;\n    }\n\nprivate:" in sources["kernel_contract"]
+            and "RunMixedEpilogueStages() const" in sources["kernel_contract"]
+        ),
+        "kernel_records_mixed_epilogue_contracts": (
+            "SVDQMixedEpilogueContract" in sources["kernel_contract"]
+            and "MixedEpilogueContract(uint32_t epilogueId)" in sources["kernel_contract"]
+            and "MixedEpilogueReady(uint32_t epilogueId)" in sources["kernel_contract"]
+            and "SVDQ_STAGE_MIXED_EPILOGUE_1" in sources["kernel_contract"]
+            and "SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE" in sources["kernel_contract"]
+            and "SVDQ_REGION_ACCUMULATOR_1" in sources["kernel_contract"]
+            and "SVDQ_REGION_PROJECTION_1" in sources["kernel_contract"]
+            and "SVDQ_REGION_HIDDEN" in sources["kernel_contract"]
+            and "SVDQ_REGION_ACCUMULATOR_2" in sources["kernel_contract"]
+            and "SVDQ_REGION_PROJECTION_2" in sources["kernel_contract"]
+            and "SVDQ_REGION_PEER_OUTPUT" in sources["kernel_contract"]
+        ),
+        "kernel_records_final_combine_contract": (
+            "SVDQFinalCombineContract" in sources["kernel_contract"]
+            and "FinalCombineContract() const" in sources["kernel_contract"]
+            and "FinalCombineReady() const" in sources["kernel_contract"]
+            and "SVDQ_STAGE_UNPERMUTE_COMBINE" in sources["kernel_contract"]
+            and "SVDQ_REGION_PEER_OUTPUT" in sources["kernel_contract"]
+            and "SVDQ_REGION_EXPANDED_ROW_IDX" in sources["kernel_contract"]
+            and "runtime_.out != nullptr" in sources["kernel_contract"]
+            and "runtime_.expertId != nullptr" in sources["kernel_contract"]
+            and "runtime_.probs != nullptr" in sources["kernel_contract"]
+        ),
+        "kernel_mixed_final_execution_fail_closed": (
+            "RunMixedEpilogueStages() const" in sources["kernel_contract"]
+            and "MixedEpilogueReady(epilogueId)" in sources["kernel_contract"]
+            and "RunFinalCombine() const" in sources["kernel_contract"]
+            and "FinalCombineReady()" in sources["kernel_contract"]
         ),
         "residual_stage_contract_is_residual_only": (
             "stage.residualOnly = residualOnly" in sources["host_tiling"]
@@ -914,9 +944,19 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             ),
             "w4a8_residual_execution_fail_closed": (
                 "RunW4A8ResidualStages() const" in sources["kernel_contract"]
-                and "return false;\n    }\n\nprivate:" in sources["kernel_contract"]
+                and "RunMixedEpilogueStages() const" in sources["kernel_contract"]
+            ),
+            "mixed_epilogue_execution_fail_closed": (
+                "RunMixedEpilogueStages() const" in sources["kernel_contract"]
+                and "MixedEpilogueReady(epilogueId)" in sources["kernel_contract"]
+            ),
+            "final_combine_execution_fail_closed": (
+                "RunFinalCombine() const" in sources["kernel_contract"]
+                and "FinalCombineReady()" in sources["kernel_contract"]
             ),
             "w4a8_residual_contract_recorded": True,
+            "mixed_epilogue_contract_recorded": True,
+            "final_combine_contract_recorded": True,
         },
         "source_proof": _source_proof(sources),
         "counts": {

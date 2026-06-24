@@ -19,6 +19,7 @@ namespace DispatchFFNCombineW4A8SVDQImpl {
 
 constexpr uint32_t SVDQ_FACTOR_COUNT = 5;
 constexpr uint32_t SVDQ_BF16_STAGE_COUNT = 7;
+constexpr uint32_t SVDQ_MIXED_EPILOGUE_COUNT = 2;
 constexpr uint32_t SVDQ_INVALID_ID = 0xffffffffU;
 constexpr uint32_t SVDQ_RESIDUAL_WEIGHT1_SLOT = 1;
 constexpr uint32_t SVDQ_RESIDUAL_WEIGHT2_SLOT = 2;
@@ -107,6 +108,28 @@ struct SVDQResidualStageContract {
     bool residualOnly;
 };
 
+struct SVDQMixedEpilogueContract {
+    uint32_t stageId;
+    uint32_t residualRegionId;
+    uint32_t lowRankRegionId;
+    uint32_t scaleRegionId;
+    uint32_t outputRegionId;
+    uint32_t waitLowRankFlagId;
+    uint32_t waitResidualFlagId;
+    uint32_t waitScaleFlagId;
+    uint32_t signalPrimaryFlagId;
+    uint32_t signalSecondaryFlagId;
+    bool appliesSwiGLU;
+};
+
+struct SVDQFinalCombineContract {
+    uint32_t stageId;
+    uint32_t inputRegionId;
+    uint32_t routeRegionId;
+    uint32_t waitOutputFlagId;
+    uint32_t waitRouteFlagId;
+};
+
 class DispatchFFNCombineW4A8SVDQ {
 public:
     __aicore__ inline DispatchFFNCombineW4A8SVDQ() {}
@@ -154,7 +177,12 @@ public:
         if (!RunW4A8ResidualStages()) {
             return;
         }
-        // Mixed epilogues and final combine are added after the residual-only W4A8 branch.
+        if (!RunMixedEpilogueStages()) {
+            return;
+        }
+        if (!RunFinalCombine()) {
+            return;
+        }
     }
 
     __aicore__ inline bool HasCompleteTilingContract() const
@@ -369,6 +397,74 @@ public:
             if (!ResidualStageReady(stageId)) {
                 return false;
             }
+        }
+        return false;
+    }
+
+    __aicore__ inline SVDQMixedEpilogueContract MixedEpilogueContract(uint32_t epilogueId) const
+    {
+        switch (epilogueId) {
+            case 0:
+                return {SVDQ_STAGE_MIXED_EPILOGUE_1, SVDQ_REGION_ACCUMULATOR_1, SVDQ_REGION_PROJECTION_1,
+                    SVDQ_REGION_X_SCALE, SVDQ_REGION_HIDDEN, SVDQ_SYNC_LOWRANK_1_TO_MIXED_EPILOGUE_1,
+                    SVDQ_SYNC_W4A8_GEMM_1_TO_MIXED_EPILOGUE_1, SVDQ_SYNC_QUANT_1_TO_MIXED_EPILOGUE_1,
+                    SVDQ_SYNC_MIXED_EPILOGUE_1_TO_QUANT_2, SVDQ_SYNC_MIXED_EPILOGUE_1_TO_LOWRANK_2, true};
+            case 1:
+                return {SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, SVDQ_REGION_ACCUMULATOR_2, SVDQ_REGION_PROJECTION_2,
+                    SVDQ_REGION_HIDDEN_SCALE, SVDQ_REGION_PEER_OUTPUT,
+                    SVDQ_SYNC_LOWRANK_2_TO_MIXED_OUTPUT_EPILOGUE,
+                    SVDQ_SYNC_W4A8_GEMM_2_TO_MIXED_OUTPUT_EPILOGUE,
+                    SVDQ_SYNC_QUANT_2_TO_MIXED_OUTPUT_EPILOGUE,
+                    SVDQ_SYNC_MIXED_OUTPUT_EPILOGUE_TO_UNPERMUTE, SVDQ_INVALID_ID, false};
+            default:
+                return {SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID,
+                    SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID, false};
+        }
+    }
+
+    __aicore__ inline bool MixedEpilogueReady(uint32_t epilogueId) const
+    {
+        SVDQMixedEpilogueContract contract = MixedEpilogueContract(epilogueId);
+        if (contract.stageId == SVDQ_INVALID_ID) {
+            return false;
+        }
+        if (WorkspaceAddress(contract.residualRegionId) == nullptr ||
+            WorkspaceAddress(contract.lowRankRegionId) == nullptr ||
+            WorkspaceAddress(contract.scaleRegionId) == nullptr ||
+            WorkspaceAddress(contract.outputRegionId) == nullptr) {
+            return false;
+        }
+        return true;
+    }
+
+    __aicore__ inline bool RunMixedEpilogueStages() const
+    {
+        for (uint32_t epilogueId = 0; epilogueId < SVDQ_MIXED_EPILOGUE_COUNT; ++epilogueId) {
+            if (!MixedEpilogueReady(epilogueId)) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    __aicore__ inline SVDQFinalCombineContract FinalCombineContract() const
+    {
+        return {SVDQ_STAGE_UNPERMUTE_COMBINE, SVDQ_REGION_PEER_OUTPUT, SVDQ_REGION_EXPANDED_ROW_IDX,
+            SVDQ_SYNC_MIXED_OUTPUT_EPILOGUE_TO_UNPERMUTE, SVDQ_SYNC_DISPATCH_METADATA_TO_UNPERMUTE};
+    }
+
+    __aicore__ inline bool FinalCombineReady() const
+    {
+        SVDQFinalCombineContract contract = FinalCombineContract();
+        return WorkspaceAddress(contract.inputRegionId) != nullptr &&
+               WorkspaceAddress(contract.routeRegionId) != nullptr && runtime_.out != nullptr &&
+               runtime_.expertId != nullptr && runtime_.probs != nullptr;
+    }
+
+    __aicore__ inline bool RunFinalCombine() const
+    {
+        if (!FinalCombineReady()) {
+            return false;
         }
         return false;
     }

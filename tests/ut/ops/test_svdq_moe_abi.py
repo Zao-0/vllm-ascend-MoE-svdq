@@ -921,6 +921,58 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     assert "AscendC kernel is not implemented yet" in tiling
 
 
+def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
+    op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
+    contract = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq.h").read_text()
+
+    for token in (
+        "SVDQ_MIXED_EPILOGUE_COUNT = 2",
+        "SVDQMixedEpilogueContract",
+        "MixedEpilogueContract(uint32_t epilogueId)",
+        "MixedEpilogueReady(uint32_t epilogueId)",
+        "RunMixedEpilogueStages() const",
+        "SVDQ_STAGE_MIXED_EPILOGUE_1",
+        "SVDQ_REGION_ACCUMULATOR_1",
+        "SVDQ_REGION_PROJECTION_1",
+        "SVDQ_REGION_X_SCALE",
+        "SVDQ_REGION_HIDDEN",
+        "SVDQ_SYNC_LOWRANK_1_TO_MIXED_EPILOGUE_1",
+        "SVDQ_SYNC_W4A8_GEMM_1_TO_MIXED_EPILOGUE_1",
+        "SVDQ_SYNC_QUANT_1_TO_MIXED_EPILOGUE_1",
+        "SVDQ_SYNC_MIXED_EPILOGUE_1_TO_QUANT_2",
+        "SVDQ_SYNC_MIXED_EPILOGUE_1_TO_LOWRANK_2",
+        "SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE",
+        "SVDQ_REGION_ACCUMULATOR_2",
+        "SVDQ_REGION_PROJECTION_2",
+        "SVDQ_REGION_HIDDEN_SCALE",
+        "SVDQ_REGION_PEER_OUTPUT",
+        "SVDQ_SYNC_LOWRANK_2_TO_MIXED_OUTPUT_EPILOGUE",
+        "SVDQ_SYNC_W4A8_GEMM_2_TO_MIXED_OUTPUT_EPILOGUE",
+        "SVDQ_SYNC_QUANT_2_TO_MIXED_OUTPUT_EPILOGUE",
+        "SVDQ_SYNC_MIXED_OUTPUT_EPILOGUE_TO_UNPERMUTE",
+    ):
+        assert token in contract
+
+    for token in (
+        "SVDQFinalCombineContract",
+        "FinalCombineContract() const",
+        "FinalCombineReady() const",
+        "RunFinalCombine() const",
+        "SVDQ_STAGE_UNPERMUTE_COMBINE",
+        "SVDQ_REGION_PEER_OUTPUT",
+        "SVDQ_REGION_EXPANDED_ROW_IDX",
+        "SVDQ_SYNC_MIXED_OUTPUT_EPILOGUE_TO_UNPERMUTE",
+        "SVDQ_SYNC_DISPATCH_METADATA_TO_UNPERMUTE",
+        "runtime_.out != nullptr",
+        "runtime_.expertId != nullptr",
+        "runtime_.probs != nullptr",
+    ):
+        assert token in contract
+
+    assert contract.index("RunW4A8ResidualStages()") < contract.index("RunMixedEpilogueStages()")
+    assert contract.index("RunMixedEpilogueStages()") < contract.index("RunFinalCombine()")
+
+
 def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
     tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
@@ -1521,10 +1573,17 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["host_tiling_returns_graph_failed"]
     assert loaded["production_fail_closed"]["lowrank_is_implemented_uses_complete_contract"]
     assert loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
+    assert loaded["production_fail_closed"]["mixed_epilogue_execution_fail_closed"]
+    assert loaded["production_fail_closed"]["final_combine_execution_fail_closed"]
     assert loaded["production_fail_closed"]["w4a8_residual_contract_recorded"]
+    assert loaded["production_fail_closed"]["mixed_epilogue_contract_recorded"]
+    assert loaded["production_fail_closed"]["final_combine_contract_recorded"]
     assert loaded["source_proof"]["kernel_resolves_rank_workspace_regions"]
     assert loaded["source_proof"]["kernel_binds_residual_weight_scale_slots"]
     assert loaded["source_proof"]["kernel_residual_execution_fail_closed"]
+    assert loaded["source_proof"]["kernel_records_mixed_epilogue_contracts"]
+    assert loaded["source_proof"]["kernel_records_final_combine_contract"]
+    assert loaded["source_proof"]["kernel_mixed_final_execution_fail_closed"]
     assert loaded["source_proof"]["lowrank_helper_enabled_by_contract"]
     assert loaded["source_proof"]["lowrank_helper_uses_separate_rank_workspace"]
     assert loaded["source_proof"]["lowrank_helper_stage_orders_rank_consumers"]
