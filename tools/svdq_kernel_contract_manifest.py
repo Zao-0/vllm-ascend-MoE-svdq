@@ -587,7 +587,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "SVDQ_RESIDUAL_STAGE_W4A8_GMM1" in sources["host_tiling"]
             and "SVDQ_RESIDUAL_STAGE_W4A8_GMM2" in sources["host_tiling"]
         ),
-        "lowrank_helper_fail_closed": "IsImplemented() const\n    {\n        return false;"
+        "lowrank_helper_enabled_by_contract": "IsImplemented() const\n    {\n        return HasCompleteContract();"
         in sources["lowrank_header"],
         "lowrank_helper_uses_separate_rank_workspace": (
             "GM_ADDR rank;" in sources["lowrank_header"]
@@ -906,10 +906,11 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
         },
         "production_fail_closed": {
             "host_tiling_returns_graph_failed": "AscendC kernel is not implemented yet" in sources["host_tiling"],
-            "lowrank_is_implemented_returns_false": "IsImplemented() const\n    {\n        return false;"
-            in sources["lowrank_header"],
+            "lowrank_is_implemented_uses_complete_contract": (
+                "IsImplemented() const\n    {\n        return HasCompleteContract();" in sources["lowrank_header"]
+            ),
             "reason": (
-                "W4A8 residual execution stages, mixed epilogues, and final combine are incomplete."
+                "W4A8 residual execution, mixed epilogues, and final combine are incomplete."
             ),
             "w4a8_residual_execution_fail_closed": (
                 "RunW4A8ResidualStages() const" in sources["kernel_contract"]

@@ -848,7 +848,7 @@ public:
 
     __aicore__ inline bool IsImplemented() const
     {
-        return false;
+        return HasCompleteContract();
     }
 
     __aicore__ inline void Process()

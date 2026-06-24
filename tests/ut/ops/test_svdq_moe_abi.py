@@ -1106,7 +1106,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "AscendC::SyncAll()" in lowrank_header
     assert "stage-ordered so L2 stages cannot read rank workspace" in lowrank_header
     assert "IsImplemented() const" in lowrank_header
-    assert "return false" in lowrank_header
+    assert "return HasCompleteContract();" in lowrank_header
     assert "args_.tiling.invocationId < SVDQ_LOWRANK_INVOCATION_COUNT" in lowrank_header
     assert "args_.expertPerRank > 0" in lowrank_header
     assert "args_.tiling.rowTile > 0" in lowrank_header
@@ -1519,12 +1519,13 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["rank_split_contract"]["split_source"] == "explicit gateRank/upRank offsets"
     assert loaded["rank_split_contract"]["up_rank_offset"] == "gateRank"
     assert loaded["production_fail_closed"]["host_tiling_returns_graph_failed"]
-    assert loaded["production_fail_closed"]["lowrank_is_implemented_returns_false"]
+    assert loaded["production_fail_closed"]["lowrank_is_implemented_uses_complete_contract"]
     assert loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
     assert loaded["production_fail_closed"]["w4a8_residual_contract_recorded"]
     assert loaded["source_proof"]["kernel_resolves_rank_workspace_regions"]
     assert loaded["source_proof"]["kernel_binds_residual_weight_scale_slots"]
     assert loaded["source_proof"]["kernel_residual_execution_fail_closed"]
+    assert loaded["source_proof"]["lowrank_helper_enabled_by_contract"]
     assert loaded["source_proof"]["lowrank_helper_uses_separate_rank_workspace"]
     assert loaded["source_proof"]["lowrank_helper_stage_orders_rank_consumers"]
     assert [region["name"] for region in loaded["workspace_regions"][-2:]] == [
