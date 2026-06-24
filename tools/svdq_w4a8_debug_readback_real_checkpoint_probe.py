@@ -116,11 +116,30 @@ def _load_real_residual_layer(
     return layer, spec, len(residual_keys)
 
 
+def _index_runs(mask: torch.Tensor, *, limit: int = 16) -> list[list[int]]:
+    indices = mask.nonzero().flatten().tolist()
+    if not indices:
+        return []
+    runs = []
+    start = prev = int(indices[0])
+    for index in indices[1:]:
+        index = int(index)
+        if index == prev + 1:
+            prev = index
+            continue
+        runs.append([start, prev])
+        if len(runs) >= limit:
+            return runs
+        start = prev = index
+    runs.append([start, prev])
+    return runs[:limit]
+
+
 def _float_stats(tensor: torch.Tensor) -> dict[str, Any]:
     cpu = tensor.detach().cpu().float()
     finite = bool(torch.isfinite(cpu).all().item()) if cpu.numel() else True
     abs_cpu = torch.nan_to_num(cpu).abs()
-    return {
+    stats = {
         "shape": list(tensor.shape),
         "dtype": str(tensor.dtype),
         "finite": finite,
@@ -128,8 +147,32 @@ def _float_stats(tensor: torch.Tensor) -> dict[str, Any]:
         "mean_abs": float(abs_cpu.mean().item()) if abs_cpu.numel() else 0.0,
         "nonzero": bool(torch.any(abs_cpu > 0).item()) if abs_cpu.numel() else False,
         "nan_count": int(torch.isnan(cpu).sum().item()),
+        "inf_count": int(torch.isinf(cpu).sum().item()),
         "sample": cpu.flatten()[:8].tolist(),
     }
+    if cpu.ndim == 2 and cpu.numel():
+        nan_mask = torch.isnan(cpu)
+        inf_mask = torch.isinf(cpu)
+        nonfinite_mask = ~torch.isfinite(cpu)
+        stats.update(
+            {
+                "nan_row_count": int(nan_mask.any(dim=1).sum().item()),
+                "nan_col_count": int(nan_mask.any(dim=0).sum().item()),
+                "inf_row_count": int(inf_mask.any(dim=1).sum().item()),
+                "inf_col_count": int(inf_mask.any(dim=0).sum().item()),
+                "nonfinite_row_count": int(nonfinite_mask.any(dim=1).sum().item()),
+                "nonfinite_col_count": int(nonfinite_mask.any(dim=0).sum().item()),
+                "nan_rows_first32": nan_mask.any(dim=1).nonzero().flatten()[:32].tolist(),
+                "nan_cols_first32": nan_mask.any(dim=0).nonzero().flatten()[:32].tolist(),
+                "nan_row_ranges_first16": _index_runs(nan_mask.any(dim=1)),
+                "nan_col_ranges_first16": _index_runs(nan_mask.any(dim=0)),
+                "nonfinite_rows_first32": nonfinite_mask.any(dim=1).nonzero().flatten()[:32].tolist(),
+                "nonfinite_cols_first32": nonfinite_mask.any(dim=0).nonzero().flatten()[:32].tolist(),
+                "nonfinite_row_ranges_first16": _index_runs(nonfinite_mask.any(dim=1)),
+                "nonfinite_col_ranges_first16": _index_runs(nonfinite_mask.any(dim=0)),
+            }
+        )
+    return stats
 
 
 def _postload_metadata(layer: torch.nn.Module) -> dict[str, Any]:
@@ -149,6 +192,7 @@ def _postload_metadata(layer: torch.nn.Module) -> dict[str, Any]:
             "dtype": str(tensor.dtype),
             "stride": list(tensor.stride()),
             "device": str(tensor.device),
+            "health": _float_stats(tensor),
         }
     return metadata
 
