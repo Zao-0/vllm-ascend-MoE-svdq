@@ -101,8 +101,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_w4a8_debug_readb
 
     auto out = at::empty({x.size(0), hidden_size}, x.options());
     auto expert_token_nums = at::empty({1, num_experts}, expert_idx.options());
-    auto gmm1_post_dequant = at::empty({max_output_size, gmm1_columns}, x.options().dtype(at::kFloat));
-    auto gmm2_post_dequant = at::empty({max_output_size, hidden_size}, x.options().dtype(at::kFloat));
+    auto gmm1_post_dequant = at::zeros({max_output_size, gmm1_columns}, x.options().dtype(at::kFloat));
+    auto gmm2_post_dequant = at::zeros({max_output_size, hidden_size}, x.options().dtype(at::kFloat));
 
     char* group_ep_ptr = group_string.data();
     EXEC_NPU_CMD(
