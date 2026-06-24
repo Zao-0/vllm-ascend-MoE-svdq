@@ -33,6 +33,7 @@ from vllm_ascend.quantization.methods.svdq_post_load import (
     build_svdq_operator_factors,
 )
 from vllm_ascend.quantization.methods.svdq_weight_loader import make_svdq_factor_weight_loader
+from vllm_ascend.quantization.methods.w4a8 import AscendW4A8DynamicFusedMoEMethod
 from vllm_ascend.quantization.svdq_spec import (
     SVDQ_FACTOR_SPECS,
     SVDQ_FACTOR_TO_RAW_NAME,
@@ -41,6 +42,24 @@ from vllm_ascend.quantization.svdq_spec import (
 
 DEFAULT_MODEL_PATH = "/root/workspace/lza/LLM/Qwen3.5-35B-A3B-W4A8-svdq-r64-mtp-canonical"
 DEFAULT_EVIDENCE_DIR = "/root/workspace/lza/svdq_clean_evidence"
+
+RESIDUAL_PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
+RESIDUAL_KINDS = (
+    "weight",
+    "weight_scale",
+    "weight_offset",
+    "weight_scale_second",
+    "weight_offset_second",
+    "scale_bias",
+)
+RESIDUAL_OPERATOR_TENSORS = (
+    "w13_weight",
+    "w2_weight",
+    "w13_weight_scale",
+    "w2_weight_scale",
+    "w13_scale_bias",
+    "w2_scale_bias",
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -71,6 +90,63 @@ def _tensor_sha256(tensor: torch.Tensor) -> str:
     else:
         data = cpu.numpy().tobytes()
     return hashlib.sha256(data).hexdigest()
+
+
+def _tensor_bytes(tensor: torch.Tensor) -> bytes:
+    cpu = tensor.detach().contiguous().cpu()
+    if cpu.dtype == torch.bfloat16:
+        return cpu.view(torch.uint16).numpy().tobytes()
+    return cpu.numpy().tobytes()
+
+
+def _storage_nbytes(tensor: torch.Tensor) -> int:
+    try:
+        return int(tensor.untyped_storage().nbytes())
+    except Exception:
+        try:
+            return int(tensor.storage().nbytes())
+        except Exception:
+            return int(tensor.numel() * tensor.element_size())
+
+
+def _tensor_npu_format(tensor: torch.Tensor) -> str:
+    if tensor.device.type != "npu":
+        return "not_npu"
+    try:
+        import torch_npu  # type: ignore[import-untyped]
+
+        return str(torch_npu.get_npu_format(tensor))
+    except Exception as exc:
+        return f"unavailable:{type(exc).__name__}"
+
+
+def _sampled_bytes_hex(data: bytes, *, sample_bytes: int = 64) -> dict[str, str]:
+    if len(data) <= sample_bytes * 3:
+        return {"all": data.hex()}
+    midpoint = max((len(data) // 2) - (sample_bytes // 2), 0)
+    return {
+        "head": data[:sample_bytes].hex(),
+        "middle": data[midpoint : midpoint + sample_bytes].hex(),
+        "tail": data[-sample_bytes:].hex(),
+    }
+
+
+def _tensor_audit_metadata(name: str, tensor: torch.Tensor) -> dict[str, Any]:
+    data = _tensor_bytes(tensor)
+    return {
+        "name": name,
+        "dtype": str(tensor.dtype),
+        "device": str(tensor.device),
+        "logical_shape": list(tensor.shape),
+        "stride": list(tensor.stride()),
+        "storage_size_bytes": _storage_nbytes(tensor),
+        "storage_offset": int(tensor.storage_offset()),
+        "element_size_bytes": int(tensor.element_size()),
+        "numel": int(tensor.numel()),
+        "npu_format": _tensor_npu_format(tensor),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "sampled_bytes_hex": _sampled_bytes_hex(data),
+    }
 
 
 def _make_mapping_probe_model() -> torch.nn.Module:
@@ -114,11 +190,93 @@ def _make_validation_layer(spec: Any, *, tp_size: int, tp_rank: int) -> torch.nn
     return layer
 
 
+def _make_official_w4a8_method(
+    quant_description: dict[str, Any],
+    *,
+    tp_size: int,
+) -> AscendW4A8DynamicFusedMoEMethod:
+    method = object.__new__(AscendW4A8DynamicFusedMoEMethod)
+    method.group_size = int(quant_description.get("group_size", 256))
+    method.is_per_channel_weight = method.group_size == 0
+    method.new_quant_version = quant_description.get("version", "0") == "1.0.0"
+    method.quant_method = quant_description.get("ascend_quant_method", "") or ""
+    if "weight_strategy" in quant_description:
+        method.weight_strategy = quant_description.get("weight_strategy", "group")
+    method.tp_size = int(tp_size)
+    method.dynamic_eplb = False
+    return method
+
+
+def _ensure_minimal_ascend_config_for_official_postload() -> None:
+    from vllm_ascend import ascend_config as ascend_config_module
+    from vllm_ascend import envs as ascend_envs
+
+    try:
+        ascend_config_module.get_ascend_config()
+        return
+    except RuntimeError:
+        pass
+
+    ascend_config_module._ASCEND_CONFIG = SimpleNamespace(
+        ascend_compilation_config=SimpleNamespace(),
+        eplb_config=SimpleNamespace(dynamic_eplb=False),
+        weight_nz_mode=ascend_envs.VLLM_ASCEND_ENABLE_NZ,
+    )
+
+
+def _require_npu_for_residual_parity() -> None:
+    try:
+        import torch_npu  # noqa: F401  # type: ignore[import-untyped]
+    except Exception as exc:
+        raise RuntimeError("official W4A8 residual parity requires torch_npu.") from exc
+    if not hasattr(torch, "npu") or not torch.npu.is_available():
+        raise RuntimeError("official W4A8 residual parity requires an available NPU.")
+
+
+def _make_residual_validation_layer(
+    *,
+    method: AscendW4A8DynamicFusedMoEMethod,
+    spec: Any,
+    tp_size: int,
+    tp_rank: int,
+) -> torch.nn.Module:
+    if spec.intermediate_size % tp_size != 0:
+        raise ValueError(f"intermediate size {spec.intermediate_size} is not divisible by tp_size={tp_size}.")
+    intermediate_local = spec.intermediate_size // tp_size
+    layer = torch.nn.Module()
+    layer.layer_name = spec.prefix
+    layer.local_num_experts = spec.num_experts
+    layer.expert_map = None
+    layer._expert_map = None
+    layer.moe_parallel_config = SimpleNamespace(tp_rank=tp_rank)
+    layer.swiglu_limit = 0.0
+
+    param_dict = {}
+    param_dict.update(method.get_weight(spec.num_experts, intermediate_local, spec.hidden_size, torch.float32))
+    param_dict.update(
+        method.get_dynamic_quant_param(spec.num_experts, intermediate_local, spec.hidden_size, torch.float32)
+    )
+    for param_name, tensor in param_dict.items():
+        layer.register_parameter(param_name, torch.nn.Parameter(tensor.npu(), requires_grad=False))
+    return layer
+
+
 def _factor_checkpoint_keys(spec: Any) -> list[str]:
     keys = []
     for expert_id in range(spec.num_experts):
         for param_name, (projection, factor_kind, _, _) in SVDQ_FACTOR_SPECS.items():
             keys.append(f"{spec.checkpoint_prefix}.{expert_id}.{projection}.{factor_kind}")
+    return keys
+
+
+def _residual_checkpoint_keys(spec: Any, weight_map: dict[str, str]) -> list[str]:
+    keys = []
+    for expert_id in range(spec.num_experts):
+        for projection in RESIDUAL_PROJECTIONS:
+            for kind in RESIDUAL_KINDS:
+                key = f"{spec.checkpoint_prefix}.{expert_id}.{projection}.{kind}"
+                if key in weight_map:
+                    keys.append(key)
     return keys
 
 
@@ -159,6 +317,70 @@ def _load_factor_through_qwen_mapping(
             "success": bool(success),
         }
     raise KeyError(f"no expert mapping matched checkpoint key {key!r}.")
+
+
+def _residual_destination(
+    *,
+    projection: str,
+    kind: str,
+) -> tuple[str, int | None]:
+    if projection == "down_proj":
+        return f"w2_{kind}", None
+    if projection == "gate_proj":
+        return f"w13_{kind}", 0
+    if projection == "up_proj":
+        return f"w13_{kind}", 1
+    raise ValueError(f"unsupported residual projection {projection!r}.")
+
+
+def _load_residual_checkpoint_tensor(
+    *,
+    layer: torch.nn.Module,
+    spec: Any,
+    key: str,
+    loaded_weight: torch.Tensor,
+) -> dict[str, Any]:
+    suffix = key.removeprefix(f"{spec.checkpoint_prefix}.")
+    expert_text, projection, kind = suffix.split(".", 2)
+    expert_id = int(expert_text)
+    param_name, fused_slot = _residual_destination(projection=projection, kind=kind)
+    if not hasattr(layer, param_name):
+        raise KeyError(f"layer is missing residual parameter {param_name!r} for checkpoint key {key!r}.")
+
+    target = getattr(layer, param_name).data[expert_id]
+    if fused_slot is None:
+        if tuple(target.shape) != tuple(loaded_weight.shape):
+            raise ValueError(
+                f"{key} shape mismatch for {param_name}: loaded={tuple(loaded_weight.shape)}, "
+                f"target={tuple(target.shape)}."
+            )
+        target.copy_(loaded_weight)
+        destination_slice = "full"
+    else:
+        rows = int(loaded_weight.shape[0])
+        start = fused_slot * rows
+        end = start + rows
+        target_slice = target[start:end]
+        if tuple(target_slice.shape) != tuple(loaded_weight.shape):
+            raise ValueError(
+                f"{key} shape mismatch for {param_name}[{start}:{end}]: "
+                f"loaded={tuple(loaded_weight.shape)}, target={tuple(target_slice.shape)}."
+            )
+        target_slice.copy_(loaded_weight)
+        destination_slice = f"{start}:{end}"
+
+    return {
+        "checkpoint_key": key,
+        "projection": projection,
+        "kind": kind,
+        "global_expert_id": expert_id,
+        "destination_parameter": param_name,
+        "destination_slice": destination_slice,
+        "loaded_shape": list(loaded_weight.shape),
+        "loaded_dtype": str(loaded_weight.dtype),
+        "loaded_stride": list(loaded_weight.stride()),
+        "loaded_checksum": _tensor_sha256(loaded_weight),
+    }
 
 
 def _attach_raw_aliases(layer: torch.nn.Module) -> None:
@@ -202,6 +424,173 @@ def _emit_raw_manifest(
     with open(path, "w", encoding="utf-8") as f:
         json.dump({"layer_name": spec.prefix, "entries": entries}, f, indent=2)
     return path
+
+
+def _emit_residual_parity_manifest(
+    *,
+    layer: torch.nn.Module,
+    spec: Any,
+    evidence_dir: str,
+    official_audit: dict[str, Any],
+) -> str:
+    layer_name = spec.prefix.replace(".", "_")
+    path = os.path.join(evidence_dir, f"{layer_name}_svdq_official_w4a8_residual_parity.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"layer_name": spec.prefix, **official_audit}, f, indent=2)
+    return path
+
+
+def _compare_residual_operator_tensors(
+    *,
+    svdq_layer: torch.nn.Module,
+    official_layer: torch.nn.Module,
+) -> dict[str, Any]:
+    entries = []
+    for name in RESIDUAL_OPERATOR_TENSORS:
+        if not hasattr(svdq_layer, name) or not hasattr(official_layer, name):
+            entries.append(
+                {
+                    "name": name,
+                    "present_in_svdq": hasattr(svdq_layer, name),
+                    "present_in_official": hasattr(official_layer, name),
+                    "exact_match": False,
+                }
+            )
+            continue
+        svdq_tensor = getattr(svdq_layer, name).detach()
+        official_tensor = getattr(official_layer, name).detach()
+        svdq_meta = _tensor_audit_metadata(f"svdq.{name}", svdq_tensor)
+        official_meta = _tensor_audit_metadata(f"official_w4a8.{name}", official_tensor)
+        metadata_equal = {
+            field: svdq_meta[field] == official_meta[field]
+            for field in (
+                "dtype",
+                "device",
+                "logical_shape",
+                "stride",
+                "storage_offset",
+                "element_size_bytes",
+                "numel",
+                "npu_format",
+                "sha256",
+                "sampled_bytes_hex",
+            )
+        }
+        exact_match = bool(torch.equal(svdq_tensor.cpu(), official_tensor.cpu()))
+        entries.append(
+            {
+                "name": name,
+                "present_in_svdq": True,
+                "present_in_official": True,
+                "exact_match": exact_match,
+                "metadata_equal": metadata_equal,
+                "svdq": svdq_meta,
+                "official_w4a8": official_meta,
+            }
+        )
+    return {
+        "passed": all(entry.get("exact_match", False) for entry in entries),
+        "entries": entries,
+    }
+
+
+def _load_and_audit_residual_parity(
+    *,
+    model_path: str,
+    evidence_dir: str,
+    quant_description: dict[str, Any],
+    weight_map: dict[str, str],
+    spec: Any,
+    tp_size: int,
+    tp_rank: int,
+) -> dict[str, Any]:
+    _require_npu_for_residual_parity()
+    method = _make_official_w4a8_method(quant_description, tp_size=tp_size)
+    svdq_residual_layer = _make_residual_validation_layer(
+        method=method,
+        spec=spec,
+        tp_size=tp_size,
+        tp_rank=tp_rank,
+    )
+    official_layer = _make_residual_validation_layer(
+        method=method,
+        spec=spec,
+        tp_size=tp_size,
+        tp_rank=tp_rank,
+    )
+
+    residual_keys = _residual_checkpoint_keys(spec, weight_map)
+    by_shard = _group_keys_by_shard(residual_keys, weight_map)
+    load_records = []
+    for shard, shard_keys in by_shard.items():
+        with safe_open(os.path.join(model_path, shard), framework="pt", device="cpu") as f:
+            for key in shard_keys:
+                loaded_weight = f.get_tensor(key)
+                svdq_record = _load_residual_checkpoint_tensor(
+                    layer=svdq_residual_layer,
+                    spec=spec,
+                    key=key,
+                    loaded_weight=loaded_weight,
+                )
+                official_record = _load_residual_checkpoint_tensor(
+                    layer=official_layer,
+                    spec=spec,
+                    key=key,
+                    loaded_weight=loaded_weight,
+                )
+                if svdq_record != official_record:
+                    raise ValueError(f"residual load record diverged for {key}.")
+                load_records.append(svdq_record)
+
+    pre_postload = _compare_residual_operator_tensors(
+        svdq_layer=svdq_residual_layer,
+        official_layer=official_layer,
+    )
+    _ensure_minimal_ascend_config_for_official_postload()
+    method.process_weights_after_loading(svdq_residual_layer)
+    method.process_weights_after_loading(official_layer)
+    post_postload = _compare_residual_operator_tensors(
+        svdq_layer=svdq_residual_layer,
+        official_layer=official_layer,
+    )
+    audit = {
+        "official_method": "vllm_ascend.quantization.methods.w4a8.AscendW4A8DynamicFusedMoEMethod",
+        "official_post_load": (
+            "AscendW4A8DynamicFusedMoEMethod.process_weights_after_loading_modelslim"
+            if method.quant_method == ""
+            else "AscendW4A8DynamicFusedMoEMethod.process_weights_after_loading_compressed_tensors"
+        ),
+        "svdq_residual_source": (
+            "AscendW4A8SVDQFusedMoEMethod inherits official W4A8 residual "
+            "allocation/loading/post-load; this audit constructs the residual "
+            "subset with the official W4A8 method and compares it with an "
+            "isolated official W4A8 layer after the same real checkpoint loads."
+        ),
+        "quant_description": {
+            "version": quant_description.get("version"),
+            "group_size": quant_description.get("group_size"),
+            "ascend_quant_method": quant_description.get("ascend_quant_method"),
+        },
+        "num_residual_checkpoint_keys": len(residual_keys),
+        "num_residual_load_records": len(load_records),
+        "load_records_sample": load_records[:12],
+        "pre_postload_parity": pre_postload,
+        "post_postload_parity": post_postload,
+    }
+    audit["passed"] = (
+        len(residual_keys) > 0
+        and len(load_records) == len(residual_keys)
+        and bool(pre_postload["passed"])
+        and bool(post_postload["passed"])
+    )
+    manifest_path = _emit_residual_parity_manifest(
+        layer=svdq_residual_layer,
+        spec=spec,
+        evidence_dir=evidence_dir,
+        official_audit=audit,
+    )
+    audit["manifest_path"] = manifest_path
+    return audit
 
 
 def _validate_loaded_sets(layer: torch.nn.Module, spec: Any) -> dict[str, list[int]]:
@@ -278,6 +667,15 @@ def _validate_layer(
         evidence_dir=evidence_dir,
         load_records=load_records,
     )
+    residual_parity = _load_and_audit_residual_parity(
+        model_path=model_path,
+        evidence_dir=evidence_dir,
+        quant_description=quant_description,
+        weight_map=weight_map,
+        spec=spec,
+        tp_size=tp_size,
+        tp_rank=tp_rank,
+    )
 
     layer_name = spec.prefix.replace(".", "_")
     operator_audit_path = os.path.join(evidence_dir, f"{layer_name}_svdq_operator_factor_audit.json")
@@ -294,6 +692,11 @@ def _validate_layer(
         "all_loads_successful": all(record["success"] for record in load_records),
         "loaded_expert_counts": {name: len(experts) for name, experts in loaded_summary.items()},
         "audit_passed": bool(audit["passed"]),
+        "official_w4a8_residual_parity_passed": bool(residual_parity["passed"]),
+        "official_w4a8_residual_parity_path": residual_parity["manifest_path"],
+        "official_w4a8_residual_operator_tensors": [
+            entry["name"] for entry in residual_parity["post_postload_parity"]["entries"]
+        ],
         "audit_max_abs": audit["max_abs"],
         "bf16_stage_names": audit["bf16_stage_names"],
         "bf16_stage_max_abs": audit["bf16_stage_max_abs"],
@@ -334,7 +737,10 @@ def main() -> None:
         "tp_size": args.tp_size,
         "tp_rank": args.tp_rank,
         "passed": all(
-            result["all_loads_successful"] and result["audit_passed"] for result in results
+            result["all_loads_successful"]
+            and result["audit_passed"]
+            and result["official_w4a8_residual_parity_passed"]
+            for result in results
         ),
         "results": results,
     }
