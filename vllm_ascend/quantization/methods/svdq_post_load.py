@@ -43,6 +43,12 @@ SVDQ_MIXED_EPILOGUE_STAGE_NAMES = (
     "down_mixed",
 )
 
+SVDQ_FINAL_COMBINE_STAGE_NAMES = (
+    "row_weights",
+    "weighted_expert_output",
+    "combined_output",
+)
+
 
 def _as_tensor(value: torch.Tensor | torch.nn.Parameter) -> torch.Tensor:
     return value.data if isinstance(value, torch.nn.Parameter) else value
@@ -378,6 +384,119 @@ def build_svdq_mixed_epilogue_reference(
             if tensor.dtype != torch.int8
         ),
         "swiglu_limit": float(swiglu_limit),
+    }
+
+
+def _resolve_final_combine_indices(
+    *,
+    num_rows: int,
+    num_tokens: int,
+    top_k: int,
+    expanded_row_idx: torch.Tensor | None,
+    token_indices: torch.Tensor | None,
+    topk_indices: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if expanded_row_idx is not None:
+        if token_indices is not None or topk_indices is not None:
+            raise ValueError("expanded_row_idx cannot be combined with token_indices/topk_indices.")
+        if expanded_row_idx.ndim != 1:
+            raise ValueError(f"expanded_row_idx must be rank-1, got {tuple(expanded_row_idx.shape)}.")
+        if int(expanded_row_idx.shape[0]) != num_rows:
+            raise ValueError(f"expanded_row_idx length {expanded_row_idx.shape[0]} does not match rows {num_rows}.")
+        flat_indices = expanded_row_idx.detach().long().abs().cpu()
+        resolved_token_indices = torch.div(flat_indices, top_k, rounding_mode="floor")
+        resolved_topk_indices = flat_indices.remainder(top_k)
+    else:
+        if token_indices is None or topk_indices is None:
+            raise ValueError("provide either expanded_row_idx or both token_indices and topk_indices.")
+        if token_indices.ndim != 1 or topk_indices.ndim != 1:
+            raise ValueError(
+                f"token_indices and topk_indices must be rank-1, got "
+                f"{tuple(token_indices.shape)} and {tuple(topk_indices.shape)}."
+            )
+        if int(token_indices.shape[0]) != num_rows or int(topk_indices.shape[0]) != num_rows:
+            raise ValueError(
+                "token_indices/topk_indices lengths must match routed_output rows, "
+                f"got {token_indices.shape[0]}, {topk_indices.shape[0]}, and {num_rows}."
+            )
+        resolved_token_indices = token_indices.detach().long().cpu()
+        resolved_topk_indices = topk_indices.detach().long().cpu()
+
+    if resolved_token_indices.numel():
+        min_token = int(resolved_token_indices.min().item())
+        max_token = int(resolved_token_indices.max().item())
+        min_topk = int(resolved_topk_indices.min().item())
+        max_topk = int(resolved_topk_indices.max().item())
+        if min_token < 0 or max_token >= num_tokens:
+            raise ValueError(f"token index range [{min_token}, {max_token}] is outside [0, {num_tokens}).")
+        if min_topk < 0 or max_topk >= top_k:
+            raise ValueError(f"top-k index range [{min_topk}, {max_topk}] is outside [0, {top_k}).")
+    return resolved_token_indices, resolved_topk_indices
+
+
+def build_svdq_final_combine_reference(
+    *,
+    routed_output: torch.Tensor,
+    topk_weights: torch.Tensor,
+    expanded_row_idx: torch.Tensor | None = None,
+    token_indices: torch.Tensor | None = None,
+    topk_indices: torch.Tensor | None = None,
+    num_tokens: int | None = None,
+) -> dict[str, Any]:
+    """Build the final routed-output combine reference.
+
+    The default index mode mirrors the all-gather token-combine surface, where
+    ``expanded_row_idx`` addresses flattened ``[token, top_k]`` slots and
+    ``topk_weights`` supplies the per-route probabilities.
+    """
+    if routed_output.ndim != 2:
+        raise ValueError(f"routed_output must be rank-2 [rows, hidden], got {tuple(routed_output.shape)}.")
+    if topk_weights.ndim != 2:
+        raise ValueError(f"topk_weights must be rank-2 [tokens, top_k], got {tuple(topk_weights.shape)}.")
+
+    num_rows = int(routed_output.shape[0])
+    hidden_size = int(routed_output.shape[1])
+    weights_num_tokens = int(topk_weights.shape[0])
+    top_k = int(topk_weights.shape[1])
+    if top_k <= 0:
+        raise ValueError("topk_weights must have a positive top_k dimension.")
+    if num_tokens is None:
+        num_tokens = weights_num_tokens
+    else:
+        num_tokens = int(num_tokens)
+        if num_tokens != weights_num_tokens:
+            raise ValueError(f"num_tokens {num_tokens} must match topk_weights tokens {weights_num_tokens}.")
+
+    resolved_token_indices, resolved_topk_indices = _resolve_final_combine_indices(
+        num_rows=num_rows,
+        num_tokens=num_tokens,
+        top_k=top_k,
+        expanded_row_idx=expanded_row_idx,
+        token_indices=token_indices,
+        topk_indices=topk_indices,
+    )
+
+    routed_output_fp32 = routed_output.detach().float().cpu()
+    topk_weights_fp32 = topk_weights.detach().float().cpu()
+    row_weights = topk_weights_fp32[resolved_token_indices, resolved_topk_indices]
+    weighted_expert_output = routed_output_fp32 * row_weights[:, None]
+    combined_output = torch.zeros((num_tokens, hidden_size), dtype=torch.float32)
+    if num_rows:
+        combined_output.index_add_(0, resolved_token_indices, weighted_expert_output)
+
+    stages = {
+        "row_weights": row_weights,
+        "weighted_expert_output": weighted_expert_output,
+        "combined_output": combined_output,
+    }
+    return {
+        "stages": stages,
+        "stage_shapes": {name: list(stages[name].shape) for name in SVDQ_FINAL_COMBINE_STAGE_NAMES},
+        "all_finite": all(bool(torch.isfinite(tensor).all().item()) for tensor in stages.values()),
+        "num_tokens": num_tokens,
+        "top_k": top_k,
+        "resolved_token_indices": resolved_token_indices,
+        "resolved_topk_indices": resolved_topk_indices,
     }
 
 

@@ -15,9 +15,11 @@ from vllm_ascend.ops.fused_moe.moe_runtime_args import build_fused_experts_input
 from vllm_ascend.quantization.methods.svdq_post_load import (
     FINAL_SVDQ_FACTOR_NAMES,
     SVDQ_BF16_DEBUG_STAGE_NAMES,
+    SVDQ_FINAL_COMBINE_STAGE_NAMES,
     SVDQ_MIXED_EPILOGUE_STAGE_NAMES,
     audit_svdq_operator_factors,
     build_svdq_bf16_stage_reference,
+    build_svdq_final_combine_reference,
     build_svdq_mixed_epilogue_reference,
     build_svdq_operator_factors,
 )
@@ -319,6 +321,84 @@ def test_svdq_mixed_epilogue_reference_adds_residual_and_lowrank_before_swiglu()
     assert stages["hidden_scale"].dtype == torch.float32
     assert torch.equal(stages["hidden_scale"], expected_hidden.float().abs().amax(dim=1) / 127.0)
     assert reference["all_finite"]
+
+
+def test_svdq_final_combine_reference_matches_weighted_token_sum():
+    routed_output = torch.tensor(
+        [
+            [1.0, 2.0],
+            [10.0, 20.0],
+            [100.0, 200.0],
+            [1000.0, 2000.0],
+        ],
+        dtype=torch.bfloat16,
+    )
+    topk_weights = torch.tensor(
+        [
+            [0.25, 0.75],
+            [0.40, 0.60],
+        ],
+        dtype=torch.float32,
+    )
+    expanded_row_idx = torch.tensor([0, 1, 2, 3], dtype=torch.int32)
+
+    reference = build_svdq_final_combine_reference(
+        routed_output=routed_output,
+        topk_weights=topk_weights,
+        expanded_row_idx=expanded_row_idx,
+    )
+    stages = reference["stages"]
+
+    assert set(stages) == set(SVDQ_FINAL_COMBINE_STAGE_NAMES)
+    assert reference["stage_shapes"] == {
+        "row_weights": [4],
+        "weighted_expert_output": [4, 2],
+        "combined_output": [2, 2],
+    }
+    expected_weighted = routed_output.float() * torch.tensor([[0.25], [0.75], [0.40], [0.60]])
+    expected_combined = torch.stack(
+        (
+            expected_weighted[0] + expected_weighted[1],
+            expected_weighted[2] + expected_weighted[3],
+        )
+    )
+    torch.testing.assert_close(stages["row_weights"], torch.tensor([0.25, 0.75, 0.40, 0.60]))
+    torch.testing.assert_close(stages["weighted_expert_output"], expected_weighted)
+    torch.testing.assert_close(stages["combined_output"], expected_combined)
+    assert torch.equal(reference["resolved_token_indices"], torch.tensor([0, 0, 1, 1]))
+    assert torch.equal(reference["resolved_topk_indices"], torch.tensor([0, 1, 0, 1]))
+    assert reference["all_finite"]
+
+
+def test_svdq_final_combine_reference_accepts_explicit_token_and_topk_indices():
+    routed_output = torch.tensor([[2.0, 4.0], [8.0, 16.0], [32.0, 64.0]], dtype=torch.float32)
+    topk_weights = torch.tensor([[0.125, 0.25], [0.5, 0.75]], dtype=torch.float32)
+
+    reference = build_svdq_final_combine_reference(
+        routed_output=routed_output,
+        topk_weights=topk_weights,
+        token_indices=torch.tensor([1, 0, 1], dtype=torch.int64),
+        topk_indices=torch.tensor([0, 1, 1], dtype=torch.int64),
+    )
+
+    expected = torch.tensor(
+        [
+            [2.0, 4.0],
+            [25.0, 50.0],
+        ],
+        dtype=torch.float32,
+    )
+    torch.testing.assert_close(reference["stages"]["combined_output"], expected)
+
+
+def test_svdq_final_combine_reference_rejects_invalid_indices():
+    with pytest.raises(ValueError, match="outside"):
+        build_svdq_final_combine_reference(
+            routed_output=torch.ones(1, 2),
+            topk_weights=torch.ones(1, 2),
+            token_indices=torch.tensor([0]),
+            topk_indices=torch.tensor([2]),
+        )
 
 
 def test_svdq_runtime_payload_requires_complete_factor_contract():
