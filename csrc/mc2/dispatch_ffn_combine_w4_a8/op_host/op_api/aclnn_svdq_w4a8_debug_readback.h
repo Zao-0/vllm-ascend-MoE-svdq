@@ -21,8 +21,9 @@ __attribute__((visibility("default"))) aclnnStatus aclnnSVDQW4A8DebugReadbackGet
     const aclTensor* expertId, const aclTensorList* scale1, const aclTensorList* scale2,
     const aclTensorList* bias1, const aclTensorList* bias2, const aclTensor* probs,
     const aclTensor* xActiveMask, const char* group, int64_t maxOutputSize, double swigluLimit,
-    const aclTensor* out, const aclTensor* expertTokenNums, const aclTensor* gmm1PostDequant,
-    const aclTensor* gmm1HiddenPrequant, const aclTensor* gmm2PostDequant,
+    const aclTensor* out, const aclTensor* expertTokenNums, const aclTensor* routedXInt8,
+    const aclTensor* routedXScale, const aclTensor* gmm1PostDequant, const aclTensor* gmm1HiddenPrequant,
+    const aclTensor* gmm2PostDequant,
     uint64_t* workspaceSize, aclOpExecutor** executor);
 
 __attribute__((visibility("default"))) aclnnStatus aclnnSVDQW4A8DebugReadback(

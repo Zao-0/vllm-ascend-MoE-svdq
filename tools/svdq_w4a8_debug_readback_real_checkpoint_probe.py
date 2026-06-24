@@ -260,7 +260,15 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
     x_active_mask = torch.ones((args.num_tokens,), dtype=torch.bool, device=device)
 
     op = torch.ops._C_ascend.svdq_w4a8_debug_readback
-    out, expert_token_nums, gmm1_post_dequant, gmm1_hidden_prequant, gmm2_post_dequant = op(
+    (
+        out,
+        expert_token_nums,
+        routed_x_int8,
+        routed_x_scale,
+        gmm1_post_dequant,
+        gmm1_hidden_prequant,
+        gmm2_post_dequant,
+    ) = op(
         x,
         [layer.w13_weight],
         [layer.w2_weight],
@@ -280,6 +288,8 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
     output_stats = {
         "input": _float_stats(x),
         "out": _float_stats(out),
+        "routed_x_int8_active": _float_stats(routed_x_int8[:active_rows]),
+        "routed_x_scale_active": _float_stats(routed_x_scale[:active_rows]),
         "gmm1_post_dequant_active": _float_stats(gmm1_post_dequant[:active_rows]),
         "gmm1_hidden_prequant_active": _float_stats(gmm1_hidden_prequant[:active_rows]),
         "gmm2_post_dequant_active": _float_stats(gmm2_post_dequant[:active_rows]),
@@ -296,14 +306,27 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
             "finite official debug tap; not assumed zero because the official epilogue adds weight auxiliary/"
             "scale-bias before per-token scaling"
         ),
+        "expected_routed_x_int8": "finite official routed INT8 activation fed to GMM1",
+        "expected_routed_x_scale": "finite official routed per-row activation scale fed to GMM1 epilogue",
         "expected_gmm1_hidden_prequant": "finite official hidden prequant debug tap after SwiGLU",
         "expected_gmm2_post_dequant": "finite official debug tap",
         "expected_out": "finite output",
     }
     out_zero_match = output_stats["out"]["max_abs"] <= args.out_zero_abs_tol
     output_health = output_stats["out"]["finite"] and (args.input_mode != "zero" or out_zero_match)
+    routed_quant_health = (
+        output_stats["routed_x_scale_active"]["finite"]
+        and (
+            args.input_mode == "zero"
+            or (
+                output_stats["routed_x_scale_active"]["nonzero"]
+                and output_stats["routed_x_int8_active"]["nonzero"]
+            )
+        )
+    )
     readback_finite = (
-        output_stats["gmm1_post_dequant_active"]["finite"]
+        routed_quant_health
+        and output_stats["gmm1_post_dequant_active"]["finite"]
         and output_stats["gmm2_post_dequant_active"]["finite"]
         and output_stats["out"]["finite"]
     )
@@ -351,6 +374,7 @@ def _run_real_checkpoint(args: argparse.Namespace, group: str) -> dict[str, Any]
         "out_zero_abs_tolerance": args.out_zero_abs_tol,
         "checks": {
             "input_health_gate_passed": input_health_gate_passed,
+            "routed_quant_health": routed_quant_health,
             "readback_finite": readback_finite,
             "hidden_prequant_health": hidden_prequant_health,
             "debug_boundary_classification": debug_boundary_classification,

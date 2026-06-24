@@ -407,7 +407,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_low_rank_debug_r
     return {gate_up_output, down_output, gate_up_accumulator, down_accumulator};
 }
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_w4a8_debug_readback_meta(
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+svdq_w4a8_debug_readback_meta(
     const at::Tensor& x,
     const at::TensorList& weight1,
     const at::TensorList& weight2,
@@ -467,13 +468,17 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_w4a8
 
     at::Tensor out = at::empty({x.size(0), hidden_size}, x.options().device(at::kMeta));
     at::Tensor expert_token_nums = at::empty({1, num_experts}, expert_idx.options().device(at::kMeta));
+    at::Tensor routed_x_int8 = at::empty({max_output_size, hidden_size},
+                                         x.options().dtype(at::kChar).device(at::kMeta));
+    at::Tensor routed_x_scale = at::empty({max_output_size}, x.options().dtype(at::kFloat).device(at::kMeta));
     at::Tensor gmm1_post_dequant =
         at::empty({max_output_size, gmm1_columns}, x.options().dtype(at::kFloat).device(at::kMeta));
     at::Tensor gmm1_hidden_prequant =
         at::empty({max_output_size, intermediate_size}, x.options().dtype(at::kFloat).device(at::kMeta));
     at::Tensor gmm2_post_dequant =
         at::empty({max_output_size, hidden_size}, x.options().dtype(at::kFloat).device(at::kMeta));
-    return {out, expert_token_nums, gmm1_post_dequant, gmm1_hidden_prequant, gmm2_post_dequant};
+    return {out, expert_token_nums, routed_x_int8, routed_x_scale, gmm1_post_dequant, gmm1_hidden_prequant,
+            gmm2_post_dequant};
 }
 
 at::Tensor npu_lightning_indexer_meta(

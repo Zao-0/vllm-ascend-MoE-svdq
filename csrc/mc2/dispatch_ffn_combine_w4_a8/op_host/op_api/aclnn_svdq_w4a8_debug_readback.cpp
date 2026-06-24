@@ -23,8 +23,9 @@ extern aclnnStatus aclnnInnerSVDQW4A8DebugReadbackGetWorkspaceSize(
     const aclTensorList* bias1, const aclTensorList* bias2, const aclTensor* probs,
     const aclTensor* xActiveMask, const char* group, int64_t maxOutputSize, bool transB,
     bool weightNz, double swigluLimit, const aclTensor* out, const aclTensor* expertTokenNums,
-    const aclTensor* gmm1PostDequant, const aclTensor* gmm1HiddenPrequant, const aclTensor* gmm2PostDequant,
-    uint64_t* workspaceSize, aclOpExecutor** executor);
+    const aclTensor* routedXInt8, const aclTensor* routedXScale, const aclTensor* gmm1PostDequant,
+    const aclTensor* gmm1HiddenPrequant, const aclTensor* gmm2PostDequant, uint64_t* workspaceSize,
+    aclOpExecutor** executor);
 
 extern aclnnStatus aclnnInnerSVDQW4A8DebugReadback(
     void* workspace, uint64_t workspaceSize, aclOpExecutor* executor, aclrtStream stream);
@@ -35,8 +36,9 @@ aclnnStatus aclnnSVDQW4A8DebugReadbackGetWorkspaceSize(
     const aclTensor* expertId, const aclTensorList* scale1, const aclTensorList* scale2,
     const aclTensorList* bias1, const aclTensorList* bias2, const aclTensor* probs,
     const aclTensor* xActiveMask, const char* group, int64_t maxOutputSize, double swigluLimit,
-    const aclTensor* out, const aclTensor* expertTokenNums, const aclTensor* gmm1PostDequant,
-    const aclTensor* gmm1HiddenPrequant, const aclTensor* gmm2PostDequant,
+    const aclTensor* out, const aclTensor* expertTokenNums, const aclTensor* routedXInt8,
+    const aclTensor* routedXScale, const aclTensor* gmm1PostDequant, const aclTensor* gmm1HiddenPrequant,
+    const aclTensor* gmm2PostDequant,
     uint64_t* workspaceSize, aclOpExecutor** executor)
 {
     bool transB = false;
@@ -44,7 +46,7 @@ aclnnStatus aclnnSVDQW4A8DebugReadbackGetWorkspaceSize(
     return aclnnInnerSVDQW4A8DebugReadbackGetWorkspaceSize(
         x, weight1, weight2, expertId, scale1, scale2, bias1, bias2, probs, xActiveMask,
         group, maxOutputSize, transB, weightNz, swigluLimit, out, expertTokenNums,
-        gmm1PostDequant, gmm1HiddenPrequant, gmm2PostDequant, workspaceSize, executor);
+        routedXInt8, routedXScale, gmm1PostDequant, gmm1HiddenPrequant, gmm2PostDequant, workspaceSize, executor);
 }
 
 aclnnStatus aclnnSVDQW4A8DebugReadback(

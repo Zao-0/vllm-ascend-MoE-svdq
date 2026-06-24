@@ -58,7 +58,8 @@ public:
     __aicore__ inline void Init(GM_ADDR xGM, GM_ADDR weight1GM, GM_ADDR weight2GM, GM_ADDR expertIdGM, 
                                 GM_ADDR scale1GM, GM_ADDR scale2GM, GM_ADDR bias1GM, GM_ADDR bias2GM,
                                 GM_ADDR probs, GM_ADDR xActiveMaskGM, GM_ADDR outGM, GM_ADDR expertTokenNums, 
-                                GM_ADDR workspaceGM, GM_ADDR tilingGM, GM_ADDR debugGMM1GM = nullptr,
+                                GM_ADDR workspaceGM, GM_ADDR tilingGM, GM_ADDR debugRoutedXGM = nullptr,
+                                GM_ADDR debugRoutedScaleGM = nullptr, GM_ADDR debugGMM1GM = nullptr,
                                 GM_ADDR debugGMM1HiddenGM = nullptr, GM_ADDR debugGMM2GM = nullptr);
     __aicore__ inline void Process();
 
@@ -77,6 +78,8 @@ private:
     GM_ADDR outGM_;
     GM_ADDR gmExpertTokenNums_;
     GM_ADDR workspaceGM_;
+    GM_ADDR debugRoutedXGM_;
+    GM_ADDR debugRoutedScaleGM_;
     GM_ADDR debugGMM1GM_;
     GM_ADDR debugGMM1HiddenGM_;
     GM_ADDR debugGMM2GM_;
@@ -126,7 +129,8 @@ template <TemplateMMA2AClass>
 __aicore__ inline void DispatchFFNCombineW4A8<TemplateMMA2ACFunc>::Init(GM_ADDR xGM, GM_ADDR weight1GM, GM_ADDR weight2GM, GM_ADDR expertIdGM, 
                                                                     GM_ADDR scale1GM, GM_ADDR scale2GM, GM_ADDR bias1GM, GM_ADDR bias2GM,
                                                                     GM_ADDR probs, GM_ADDR xActiveMaskGM, GM_ADDR outGM, GM_ADDR expertTokenNums,
-                                                                    GM_ADDR workspaceGM, GM_ADDR tilingGM, GM_ADDR debugGMM1GM,
+                                                                    GM_ADDR workspaceGM, GM_ADDR tilingGM, GM_ADDR debugRoutedXGM,
+                                                                    GM_ADDR debugRoutedScaleGM, GM_ADDR debugGMM1GM,
                                                                     GM_ADDR debugGMM1HiddenGM, GM_ADDR debugGMM2GM)
 {
     REGISTER_TILING_DEFAULT(DispatchFFNCombineW4A8TilingData);
@@ -148,6 +152,8 @@ __aicore__ inline void DispatchFFNCombineW4A8<TemplateMMA2ACFunc>::Init(GM_ADDR 
     gmExpertTokenNums_ = expertTokenNums;
 
     workspaceGM_ = workspaceGM;
+    debugRoutedXGM_ = debugRoutedXGM;
+    debugRoutedScaleGM_ = debugRoutedScaleGM;
     debugGMM1GM_ = debugGMM1GM;
     debugGMM1HiddenGM_ = debugGMM1HiddenGM;
     debugGMM2GM_ = debugGMM2GM;
@@ -291,7 +297,7 @@ __aicore__ inline void DispatchFFNCombineW4A8<TemplateMMA2ACFunc>::Process()
         expertIdGM_, moeInitRoutingQuantV2Scale, moeInitRoutingQuantV2Offset,
         expertTokensBeforeCapacity, probs_,
         workspaceGM_, gmExpertTokenNums_, ubMoveNum, xActiveMaskGM_, moeInitRoutingQuantV2TilingData, swigluLimit,
-        nullptr, debugGMM1GM_, debugGMM1HiddenGM_, debugGMM2GM_};
+        nullptr, debugRoutedXGM_, debugRoutedScaleGM_, debugGMM1GM_, debugGMM1HiddenGM_, debugGMM2GM_};
     //Call kernel
     MatmulKernel kernel(params);
     kernel(params);

@@ -102,6 +102,8 @@ public:
         uint32_t rankSize;
         int32_t ubMoveNum;
         GM_ADDR symmetricPtr;
+        GM_ADDR ptrDebugRoutedX;
+        GM_ADDR ptrDebugRoutedScale;
         GM_ADDR ptrDebugGMM1;
         GM_ADDR ptrDebugGMM1Hidden;
         GM_ADDR ptrDebugGMM2;
@@ -139,7 +141,8 @@ public:
                GM_ADDR expertTokensBeforeCapacity_, GM_ADDR probs_, GM_ADDR ptrWorkspace_, GM_ADDR gmExpertTokenNums_,
                int32_t ubMoveNum_, GM_ADDR ptrXActiveMask_,
                optiling::MoeInitRoutingQuantV2TilingData moeInitRoutingQuantV2TilingData_, float swigluLimit_,
-               GM_ADDR symmetricPtr_ = nullptr, GM_ADDR ptrDebugGMM1_ = nullptr,
+               GM_ADDR symmetricPtr_ = nullptr, GM_ADDR ptrDebugRoutedX_ = nullptr,
+               GM_ADDR ptrDebugRoutedScale_ = nullptr, GM_ADDR ptrDebugGMM1_ = nullptr,
                GM_ADDR ptrDebugGMM1Hidden_ = nullptr, GM_ADDR ptrDebugGMM2_ = nullptr)
             : problemShape(problemShape_),
               EP(EP_),
@@ -176,6 +179,8 @@ public:
               ptrExpertTokenNums(gmExpertTokenNums_),
               ubMoveNum(ubMoveNum_),
               symmetricPtr(symmetricPtr_),
+              ptrDebugRoutedX(ptrDebugRoutedX_),
+              ptrDebugRoutedScale(ptrDebugRoutedScale_),
               ptrDebugGMM1(ptrDebugGMM1_),
               ptrDebugGMM1Hidden(ptrDebugGMM1Hidden_),
               ptrDebugGMM2(ptrDebugGMM2_),
@@ -951,6 +956,21 @@ private:
         
         AscendC::SyncAll<true>();
 
+#ifdef W4A8_DEBUG
+        if (coreIdx == 0 && params.ptrDebugRoutedX != nullptr) {
+            AscendC::GlobalTensor<int8_t> routedXPeerGM;
+            AscendC::GlobalTensor<int8_t> routedXDebugGM;
+            routedXPeerGM.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t *>(shmem() + peermemInfo.offsetA));
+            routedXDebugGM.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t *>(params.ptrDebugRoutedX));
+            const uint32_t paddedK = params.problemShape.k() + ALIGN_512;
+            for (uint32_t row = 0; row < params.maxOutputSize; ++row) {
+                CopyGMToGM(routedXDebugGM[row * params.problemShape.k()], routedXPeerGM[row * paddedK],
+                           params.problemShape.k(), params.ubMoveNum);
+            }
+        }
+        AscendC::SyncAll<true>();
+#endif
+
         CrossRankSyncAndlocalTokenPerExpertAllGatherAndGetSumPreRankV2(params, localTokenPerExpertOffset);
 
         if (coreIdx == 0) {
@@ -1026,6 +1046,15 @@ private:
                 dequantSum[nSyncSwiglu] = dequantSumTemp;
             }
         }
+#ifdef W4A8_DEBUG
+        if (coreIdx == 0 && params.ptrDebugRoutedScale != nullptr) {
+            AscendC::GlobalTensor<ElementPerTokenScale> routedScaleDebugGM;
+            routedScaleDebugGM.SetGlobalBuffer(
+                reinterpret_cast<__gm__ ElementPerTokenScale *>(params.ptrDebugRoutedScale));
+            CopyGMToGM(routedScaleDebugGM, gmPerTokenScale1, params.maxOutputSize, params.ubMoveNum);
+        }
+        AscendC::SyncAll<true>();
+#endif
 #ifdef SYNC_MODE
         AscendC::SyncAll<false>();
 #endif

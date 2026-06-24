@@ -309,7 +309,15 @@ def _run_debug_readback(args: argparse.Namespace, group: str) -> dict[str, Any]:
     npu_tensors = _move_inputs_to_device(tensors, device)
     _cast_packed_weights_to_official_format(npu_tensors)
     op = torch.ops._C_ascend.svdq_w4a8_debug_readback
-    out, expert_token_nums, gmm1_post_dequant, gmm1_hidden_prequant, gmm2_post_dequant = op(
+    (
+        out,
+        expert_token_nums,
+        routed_x_int8,
+        routed_x_scale,
+        gmm1_post_dequant,
+        gmm1_hidden_prequant,
+        gmm2_post_dequant,
+    ) = op(
         npu_tensors["x"],
         [npu_tensors["w13_weight"]],
         [npu_tensors["w2_weight"]],
@@ -328,6 +336,8 @@ def _run_debug_readback(args: argparse.Namespace, group: str) -> dict[str, Any]:
     active_rows = args.num_tokens * args.top_k
     output_stats = {
         "out": _float_stats(out),
+        "routed_x_int8_active": _float_stats(routed_x_int8[:active_rows]),
+        "routed_x_scale_active": _float_stats(routed_x_scale[:active_rows]),
         "gmm1_post_dequant_active": _float_stats(gmm1_post_dequant[:active_rows]),
         "gmm1_hidden_prequant_active": _float_stats(gmm1_hidden_prequant[:active_rows]),
         "gmm2_post_dequant_active": _float_stats(gmm2_post_dequant[:active_rows]),
@@ -340,10 +350,15 @@ def _run_debug_readback(args: argparse.Namespace, group: str) -> dict[str, Any]:
     }
     calibration_data_validated = all(check["nonzero_nibbles"] for check in packed_checks.values())
     readback_finite = (
+        output_stats["routed_x_scale_active"]["finite"]
+        and
         output_stats["gmm1_post_dequant_active"]["finite"]
         and output_stats["gmm2_post_dequant_active"]["finite"]
     )
     readback_nonzero = (
+        output_stats["routed_x_int8_active"]["nonzero"]
+        and output_stats["routed_x_scale_active"]["nonzero"]
+        and
         output_stats["gmm1_post_dequant_active"]["nonzero"]
         and output_stats["gmm2_post_dequant_active"]["nonzero"]
     )
@@ -354,6 +369,8 @@ def _run_debug_readback(args: argparse.Namespace, group: str) -> dict[str, Any]:
         "finite": output_stats["gmm1_hidden_prequant_active"]["finite"],
         "nonzero": output_stats["gmm1_hidden_prequant_active"]["nonzero"],
     }
+    hidden_prequant_health_passed = hidden_prequant_health["finite"] and hidden_prequant_health["nonzero"]
+    passed = calibration_stage_passed and readback_health_passed and hidden_prequant_health_passed
     return {
         "stage": "official_svdqw4a8_debug_readback_deterministic_packed_int4_calibration",
         "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_debug_readback -> aclnnSVDQW4A8DebugReadback",
@@ -364,6 +381,7 @@ def _run_debug_readback(args: argparse.Namespace, group: str) -> dict[str, Any]:
         "readback_nonzero": readback_nonzero,
         "readback_health_passed": readback_health_passed,
         "hidden_prequant_health": hidden_prequant_health,
+        "hidden_prequant_health_passed": hidden_prequant_health_passed,
         "routed_rows_match": routed_rows_match,
         "synthetic_calibration_numerical_gate": False,
         "public_grouped_matmul_used": False,
@@ -380,7 +398,7 @@ def _run_debug_readback(args: argparse.Namespace, group: str) -> dict[str, Any]:
         "calibration_metadata": calibration_metadata,
         "packed_int4_checks": packed_checks,
         "outputs": output_stats,
-        "passed": calibration_stage_passed,
+        "passed": passed,
     }
 
 

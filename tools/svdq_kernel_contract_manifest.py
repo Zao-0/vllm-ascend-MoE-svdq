@@ -1241,15 +1241,23 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             in sources["official_w4a8_kernel"]
         ),
         "official_w4a8_debug_output_pointer_hook": (
-            "GM_ADDR ptrDebugGMM1;" in sources["official_w4a8_kernel"]
+            "GM_ADDR ptrDebugRoutedX;" in sources["official_w4a8_kernel"]
+            and "GM_ADDR ptrDebugRoutedScale;" in sources["official_w4a8_kernel"]
+            and "GM_ADDR ptrDebugGMM1;" in sources["official_w4a8_kernel"]
             and "GM_ADDR ptrDebugGMM1Hidden;" in sources["official_w4a8_kernel"]
             and "GM_ADDR ptrDebugGMM2;" in sources["official_w4a8_kernel"]
+            and "GM_ADDR ptrDebugRoutedX_ = nullptr" in sources["official_w4a8_kernel"]
+            and "GM_ADDR ptrDebugRoutedScale_ = nullptr" in sources["official_w4a8_kernel"]
             and "GM_ADDR ptrDebugGMM1_ = nullptr" in sources["official_w4a8_kernel"]
             and "GM_ADDR ptrDebugGMM1Hidden_ = nullptr" in sources["official_w4a8_kernel"]
             and "GM_ADDR ptrDebugGMM2_ = nullptr" in sources["official_w4a8_kernel"]
+            and "ptrDebugRoutedX(ptrDebugRoutedX_)" in sources["official_w4a8_kernel"]
+            and "ptrDebugRoutedScale(ptrDebugRoutedScale_)" in sources["official_w4a8_kernel"]
             and "ptrDebugGMM1(ptrDebugGMM1_)" in sources["official_w4a8_kernel"]
             and "ptrDebugGMM1Hidden(ptrDebugGMM1Hidden_)" in sources["official_w4a8_kernel"]
             and "ptrDebugGMM2(ptrDebugGMM2_)" in sources["official_w4a8_kernel"]
+            and "params.ptrDebugRoutedX != nullptr" in sources["official_w4a8_kernel"]
+            and "params.ptrDebugRoutedScale != nullptr" in sources["official_w4a8_kernel"]
             and "if (params.ptrDebugGMM1 != nullptr)" in sources["official_w4a8_kernel"]
             and "ptrCGMM1 = params.ptrDebugGMM1;" in sources["official_w4a8_kernel"]
             and "if (params.ptrDebugGMM1Hidden != nullptr)" in sources["official_w4a8_kernel"]
@@ -1262,6 +1270,8 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "-DW4A8_DEBUG" in sources["official_w4a8_cmake"]
             and "svdqw4_a8_debug_readback" in sources["official_w4a8_cmake"]
             and "class SVDQW4A8DebugReadback" in sources["official_w4a8_debug_def"]
+            and 'this->Output("routedXInt8")' in sources["official_w4a8_debug_def"]
+            and 'this->Output("routedXScale")' in sources["official_w4a8_debug_def"]
             and 'this->Output("gmm1PostDequant")' in sources["official_w4a8_debug_def"]
             and 'this->Output("gmm1HiddenPrequant")' in sources["official_w4a8_debug_def"]
             and 'this->Output("gmm2PostDequant")' in sources["official_w4a8_debug_def"]
@@ -1275,6 +1285,8 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "aclnnInnerSVDQW4A8DebugReadbackGetWorkspaceSize"
             in sources["official_w4a8_debug_api_wrapper"]
             and "aclnnInnerSVDQW4A8DebugReadback(" in sources["official_w4a8_debug_api_wrapper"]
+            and "routedXInt8" in sources["official_w4a8_debug_api_wrapper"]
+            and "routedXScale" in sources["official_w4a8_debug_api_wrapper"]
             and "gmm1PostDequant" in sources["official_w4a8_debug_api_wrapper"]
             and "gmm1HiddenPrequant" in sources["official_w4a8_debug_api_wrapper"]
             and "gmm2PostDequant" in sources["official_w4a8_debug_api_wrapper"]
@@ -1285,6 +1297,8 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "KERNEL_TYPE_MIX_AIC_1_2" in sources["official_w4a8_debug_kernel_entry"]
             and "DispatchFFNCombineW4A8<DTYPE_A, DTYPE_W1, DTYPE_OUT, false, true> op"
             in sources["official_w4a8_debug_kernel_entry"]
+            and "routedXInt8" in sources["official_w4a8_debug_kernel_entry"]
+            and "routedXScale" in sources["official_w4a8_debug_kernel_entry"]
             and "gmm1PostDequant" in sources["official_w4a8_debug_kernel_entry"]
             and "gmm1HiddenPrequant" in sources["official_w4a8_debug_kernel_entry"]
             and "gmm2PostDequant" in sources["official_w4a8_debug_kernel_entry"]
@@ -1304,6 +1318,8 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "aclnnSVDQW4A8DebugReadback" in sources["w4a8_debug_probe"]
             and "public_grouped_matmul_used" in sources["w4a8_debug_probe"]
             and "real_checkpoint_validation" in sources["w4a8_debug_probe"]
+            and "routed_x_int8_active" in sources["w4a8_debug_probe"]
+            and "routed_x_scale_active" in sources["w4a8_debug_probe"]
             and "gmm1_post_dequant_active" in sources["w4a8_debug_probe"]
             and "gmm1_hidden_prequant_active" in sources["w4a8_debug_probe"]
             and "gmm2_post_dequant_active" in sources["w4a8_debug_probe"]
@@ -1795,13 +1811,16 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "aclnn_launch": "aclnnSVDQW4A8DebugReadback",
                 "kernel_symbol": "svdqw4_a8_debug_readback",
                 "readback_tensors": [
+                    "routed_x_int8",
+                    "routed_x_scale_fp32",
                     "gmm1_post_dequant_fp32",
                     "gmm1_hidden_prequant_fp32",
                     "gmm2_post_dequant_fp32",
                 ],
                 "input_surface": "official DispatchFFNCombineW4A8 inputs plus readback outputs",
                 "debug_output_pointer_hook": (
-                    "MatmulKernel::Params ptrDebugGMM1/ptrDebugGMM1Hidden/ptrDebugGMM2"
+                    "MatmulKernel::Params ptrDebugRoutedX/ptrDebugRoutedScale/"
+                    "ptrDebugGMM1/ptrDebugGMM1Hidden/ptrDebugGMM2"
                 ),
                 "must_reuse": [
                     "DispatchFFNCombineW4A8Kernel",

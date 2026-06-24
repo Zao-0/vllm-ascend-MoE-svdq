@@ -40,7 +40,8 @@ inline void check_svdq_w4a8_debug_rank(const at::Tensor& tensor, int64_t rank, c
 
 }  // namespace
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_w4a8_debug_readback(
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+svdq_w4a8_debug_readback(
     const at::Tensor& x,
     const at::TensorList& weight1,
     const at::TensorList& weight2,
@@ -101,6 +102,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_w4a8
 
     auto out = at::empty({x.size(0), hidden_size}, x.options());
     auto expert_token_nums = at::empty({1, num_experts}, expert_idx.options());
+    auto routed_x_int8 = at::zeros({max_output_size, hidden_size}, x.options().dtype(at::kChar));
+    auto routed_x_scale = at::zeros({max_output_size}, x.options().dtype(at::kFloat));
     auto gmm1_post_dequant = at::zeros({max_output_size, gmm1_columns}, x.options().dtype(at::kFloat));
     auto gmm1_hidden_prequant = at::zeros({max_output_size, intermediate_size}, x.options().dtype(at::kFloat));
     auto gmm2_post_dequant = at::zeros({max_output_size, hidden_size}, x.options().dtype(at::kFloat));
@@ -123,10 +126,13 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_w4a8
         swiglu_limit,
         out,
         expert_token_nums,
+        routed_x_int8,
+        routed_x_scale,
         gmm1_post_dequant,
         gmm1_hidden_prequant,
         gmm2_post_dequant);
-    return {out, expert_token_nums, gmm1_post_dequant, gmm1_hidden_prequant, gmm2_post_dequant};
+    return {out, expert_token_nums, routed_x_int8, routed_x_scale, gmm1_post_dequant, gmm1_hidden_prequant,
+            gmm2_post_dequant};
 }
 
 }  // namespace vllm_ascend

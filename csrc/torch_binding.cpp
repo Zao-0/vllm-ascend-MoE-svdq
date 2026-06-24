@@ -2495,6 +2495,8 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         "                          Tensor[] scale1, Tensor[] scale2, Tensor[] bias1, Tensor[] bias2,"
         "                          Tensor probs, str group, int max_output_size, Tensor? x_active_mask=None,"
         "                          float swiglu_limit=1000000.0) -> (Tensor out, Tensor expert_token_nums,"
+        "                                                             Tensor routed_x_int8,"
+        "                                                             Tensor routed_x_scale,"
         "                                                             Tensor gmm1_post_dequant,"
         "                                                             Tensor gmm1_hidden_prequant,"
         "                                                             Tensor gmm2_post_dequant)"
