@@ -902,14 +902,76 @@ public:
                launch.output != nullptr && launch.expertId != nullptr && launch.probs != nullptr;
     }
 
+    __aicore__ inline int32_t LoadFinalCombineRouteIndex(
+        const SVDQFinalCombineLaunch& launch, uint32_t slot) const
+    {
+        AscendC::GlobalTensor<int32_t> routeIndex;
+        routeIndex.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(launch.routeIndex));
+        return routeIndex.GetValue(slot);
+    }
+
+    __aicore__ inline float LoadFinalCombineProb(
+        const SVDQFinalCombineLaunch& launch, uint32_t slot) const
+    {
+        AscendC::GlobalTensor<float> probs;
+        probs.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(launch.probs));
+        return probs.GetValue(slot);
+    }
+
+    __aicore__ inline bfloat16_t LoadFinalCombineInput(
+        const SVDQFinalCombineLaunch& launch, uint32_t routedRow, uint32_t hiddenOffset) const
+    {
+        AscendC::GlobalTensor<bfloat16_t> input;
+        input.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(launch.input));
+        return input.GetValue(static_cast<uint64_t>(routedRow) * launch.hiddenSize + hiddenOffset);
+    }
+
+    __aicore__ inline void StoreFinalCombineOutput(
+        const SVDQFinalCombineLaunch& launch, uint32_t tokenIndex, uint32_t hiddenOffset,
+        bfloat16_t value) const
+    {
+        AscendC::GlobalTensor<bfloat16_t> output;
+        output.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(launch.output));
+        output.SetValue(static_cast<uint64_t>(tokenIndex) * launch.hiddenSize + hiddenOffset, value);
+    }
+
+    __aicore__ inline float AccumulateFinalCombineOutput(
+        const SVDQFinalCombineLaunch& launch, uint32_t tokenIndex, uint32_t hiddenOffset) const
+    {
+        float accumulator = 0.0F;
+        const uint32_t slotBase = tokenIndex * launch.topK;
+        for (uint32_t topKOffset = 0; topKOffset < launch.topK; ++topKOffset) {
+            const uint32_t slot = slotBase + topKOffset;
+            const int32_t routedRow = LoadFinalCombineRouteIndex(launch, slot);
+            if (routedRow < 0 || static_cast<uint32_t>(routedRow) >= launch.routedRows) {
+                continue;
+            }
+            const float probability = LoadFinalCombineProb(launch, slot);
+            accumulator += static_cast<float>(
+                LoadFinalCombineInput(launch, static_cast<uint32_t>(routedRow), hiddenOffset)) * probability;
+        }
+        return accumulator;
+    }
+
     __aicore__ inline bool RunFinalCombine() const
     {
         if (!FinalCombineReady()) {
             return false;
         }
         SVDQFinalCombineLaunch launch = BuildFinalCombineLaunch();
-        (void)launch;
-        return false;
+        const uint32_t coreIdx = AscendC::GetBlockIdx();
+        const uint32_t coreCount = AscendC::GetBlockNum();
+        if (coreCount == 0) {
+            return false;
+        }
+        const uint64_t outputElements = static_cast<uint64_t>(launch.m) * launch.hiddenSize;
+        for (uint64_t elementIndex = coreIdx; elementIndex < outputElements; elementIndex += coreCount) {
+            const uint32_t tokenIndex = static_cast<uint32_t>(elementIndex / launch.hiddenSize);
+            const uint32_t hiddenOffset = static_cast<uint32_t>(elementIndex % launch.hiddenSize);
+            const float combined = AccumulateFinalCombineOutput(launch, tokenIndex, hiddenOffset);
+            StoreFinalCombineOutput(launch, tokenIndex, hiddenOffset, static_cast<bfloat16_t>(combined));
+        }
+        return true;
     }
 
 private:

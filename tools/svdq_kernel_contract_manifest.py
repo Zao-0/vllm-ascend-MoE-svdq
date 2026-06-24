@@ -946,6 +946,28 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "launch.expertId != nullptr" in sources["kernel_contract"]
             and "launch.probs != nullptr" in sources["kernel_contract"]
         ),
+        "kernel_final_combine_scalar_execution_enabled": (
+            "LoadFinalCombineRouteIndex(" in sources["kernel_contract"]
+            and "LoadFinalCombineProb(" in sources["kernel_contract"]
+            and "LoadFinalCombineInput(" in sources["kernel_contract"]
+            and "StoreFinalCombineOutput(" in sources["kernel_contract"]
+            and "AccumulateFinalCombineOutput(" in sources["kernel_contract"]
+            and "const uint32_t slotBase = tokenIndex * launch.topK" in sources["kernel_contract"]
+            and "for (uint32_t topKOffset = 0; topKOffset < launch.topK; ++topKOffset)" in sources[
+                "kernel_contract"
+            ]
+            and "const int32_t routedRow = LoadFinalCombineRouteIndex(launch, slot)" in sources["kernel_contract"]
+            and "LoadFinalCombineInput(launch, static_cast<uint32_t>(routedRow), hiddenOffset)) * probability"
+            in sources["kernel_contract"]
+            and "const uint64_t outputElements = static_cast<uint64_t>(launch.m) * launch.hiddenSize" in sources[
+                "kernel_contract"
+            ]
+            and "for (uint64_t elementIndex = coreIdx; elementIndex < outputElements; elementIndex += coreCount)"
+            in sources["kernel_contract"]
+            and "StoreFinalCombineOutput(launch, tokenIndex, hiddenOffset, static_cast<bfloat16_t>(combined))"
+            in sources["kernel_contract"]
+            and "return true;" in sources["kernel_contract"]
+        ),
         "kernel_mixed_final_execution_fail_closed": (
             "RunMixedEpilogueStages() const" in sources["kernel_contract"]
             and "MixedEpilogueReady(epilogueId)" in sources["kernel_contract"]
@@ -1355,6 +1377,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "final_combine_launch_descriptor_recorded": source_proof[
                 "kernel_final_combine_launch_descriptor_recorded"
             ],
+            "final_combine_execution_enabled": source_proof[
+                "kernel_final_combine_scalar_execution_enabled"
+            ],
             "w4a8_residual_execution_fail_closed": (
                 "RunW4A8ResidualStages() const" in sources["kernel_contract"]
                 and "RunMixedEpilogueStages() const" in sources["kernel_contract"]
@@ -1363,10 +1388,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "RunMixedEpilogueStages() const" in sources["kernel_contract"]
                 and "MixedEpilogueReady(epilogueId)" in sources["kernel_contract"]
             ),
-            "final_combine_execution_fail_closed": (
-                "RunFinalCombine() const" in sources["kernel_contract"]
-                and "FinalCombineReady()" in sources["kernel_contract"]
-            ),
+            "final_combine_execution_fail_closed": False,
             "w4a8_residual_contract_recorded": True,
             "mixed_epilogue_contract_recorded": True,
             "final_combine_contract_recorded": True,

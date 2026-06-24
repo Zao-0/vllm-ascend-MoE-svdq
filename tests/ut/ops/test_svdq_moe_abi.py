@@ -1300,7 +1300,20 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
         "shape.routedRows >= shape.activeSlots",
         "launch.expertId != nullptr",
         "launch.probs != nullptr",
-        "(void)launch",
+        "LoadFinalCombineRouteIndex(",
+        "LoadFinalCombineProb(",
+        "LoadFinalCombineInput(",
+        "StoreFinalCombineOutput(",
+        "AccumulateFinalCombineOutput(",
+        "const uint32_t slotBase = tokenIndex * launch.topK",
+        "for (uint32_t topKOffset = 0; topKOffset < launch.topK; ++topKOffset)",
+        "const int32_t routedRow = LoadFinalCombineRouteIndex(launch, slot)",
+        "routedRow < 0 || static_cast<uint32_t>(routedRow) >= launch.routedRows",
+        "LoadFinalCombineInput(launch, static_cast<uint32_t>(routedRow), hiddenOffset)) * probability",
+        "const uint64_t outputElements = static_cast<uint64_t>(launch.m) * launch.hiddenSize",
+        "for (uint64_t elementIndex = coreIdx; elementIndex < outputElements; elementIndex += coreCount)",
+        "StoreFinalCombineOutput(launch, tokenIndex, hiddenOffset, static_cast<bfloat16_t>(combined))",
+        "return true;",
     ):
         assert token in final_combine_source
 
@@ -2001,9 +2014,10 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["residual_gmm_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["mixed_epilogue_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["final_combine_launch_descriptor_recorded"]
+    assert loaded["production_fail_closed"]["final_combine_execution_enabled"]
     assert loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
     assert loaded["production_fail_closed"]["mixed_epilogue_execution_fail_closed"]
-    assert loaded["production_fail_closed"]["final_combine_execution_fail_closed"]
+    assert not loaded["production_fail_closed"]["final_combine_execution_fail_closed"]
     assert loaded["production_fail_closed"]["w4a8_residual_contract_recorded"]
     assert loaded["production_fail_closed"]["mixed_epilogue_contract_recorded"]
     assert loaded["production_fail_closed"]["final_combine_contract_recorded"]
@@ -2025,6 +2039,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_mixed_epilogue_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_records_final_combine_contract"]
     assert loaded["source_proof"]["kernel_final_combine_launch_descriptor_recorded"]
+    assert loaded["source_proof"]["kernel_final_combine_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_mixed_final_execution_fail_closed"]
     assert loaded["source_proof"]["lowrank_helper_enabled_by_contract"]
     assert loaded["source_proof"]["lowrank_helper_uses_separate_rank_workspace"]
