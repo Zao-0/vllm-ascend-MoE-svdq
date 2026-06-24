@@ -1081,6 +1081,11 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "args_.rank != nullptr" in lowrank_header
     assert "GM_ADDR inputBase = stageIndex == 0 ? args_.input : args_.rank;" in lowrank_header
     assert "GM_ADDR outputBase = stageIndex == 0 ? args_.rank : args_.output;" in lowrank_header
+    assert "ExecuteStage(stageIndex, coreIdx, scheduledCoreCount)" in lowrank_header
+    assert "StageCoreTileRange(stageIndex, coreIdx, coreCount);" in lowrank_header
+    assert "StageOutputTilePlan(stageIndex, tileRange.tileStart + tileOffset)" in lowrank_header
+    assert "AscendC::SyncAll()" in lowrank_header
+    assert "stage-ordered so L2 stages cannot read rank workspace" in lowrank_header
     assert "IsImplemented() const" in lowrank_header
     assert "return false" in lowrank_header
     assert "args_.tiling.invocationId < SVDQ_LOWRANK_INVOCATION_COUNT" in lowrank_header
@@ -1499,6 +1504,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["w4a8_residual_unblocked"]
     assert loaded["production_fail_closed"]["w4a8_residual_contract_recorded"]
     assert loaded["source_proof"]["lowrank_helper_uses_separate_rank_workspace"]
+    assert loaded["source_proof"]["lowrank_helper_stage_orders_rank_consumers"]
     assert [region["name"] for region in loaded["workspace_regions"][-2:]] == [
         "SVDQ_REGION_LOWRANK_RANK_1",
         "SVDQ_REGION_LOWRANK_RANK_2",

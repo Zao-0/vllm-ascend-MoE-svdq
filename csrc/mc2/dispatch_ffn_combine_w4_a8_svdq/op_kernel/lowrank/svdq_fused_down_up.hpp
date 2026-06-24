@@ -463,6 +463,52 @@ public:
         return {tileStart, baseTiles + extra};
     }
 
+    __aicore__ inline SVDQLowRankCoreTileRange StageCoreTileRange(
+        uint32_t stageIndex, uint32_t coreIdx, uint32_t coreCount) const
+    {
+        const uint32_t tileCount = StageTileCount(stageIndex);
+        if (coreIdx >= coreCount || coreCount == 0 || tileCount == 0) {
+            return {0, 0};
+        }
+        const uint32_t baseTiles = tileCount / coreCount;
+        const uint32_t remainder = tileCount - baseTiles * coreCount;
+        const uint32_t extra = coreIdx < remainder ? 1 : 0;
+        const uint32_t tileStart = coreIdx * baseTiles + Min(coreIdx, remainder);
+        return {tileStart, baseTiles + extra};
+    }
+
+    __aicore__ inline SVDQLowRankOutputTilePlan StageOutputTilePlan(uint32_t stageIndex, uint32_t tileId) const
+    {
+        uint32_t remainingTile = tileId;
+        const SVDQLowRankStagePlan stage = StagePlan(stageIndex);
+        const uint32_t columnTiles = StageColumnTileCount(stage);
+        const uint32_t tilesPerRow = columnTiles;
+        for (uint32_t expertId = 0; expertId < ExpertCount(); ++expertId) {
+            const SVDQLowRankExpertPlan expertPlan = ExpertStagePlan(stageIndex, expertId);
+            const uint32_t rowTiles = ExpertRowTileCount(expertPlan.tokenCount);
+            const uint32_t expertTileCount = rowTiles * tilesPerRow;
+            if (remainingTile >= expertTileCount) {
+                remainingTile -= expertTileCount;
+                continue;
+            }
+
+            const uint32_t rowTileIndex = remainingTile / tilesPerRow;
+            const uint32_t inRowTileOffset = remainingTile - rowTileIndex * tilesPerRow;
+            const uint32_t outputTileIndex = inRowTileOffset;
+            const uint32_t rowOffset = rowTileIndex * args_.tiling.rowTile;
+            const uint32_t outputColumnOffset = outputTileIndex * args_.tiling.outputColumnTile;
+            return SVDQLowRankOutputTilePlan{
+                expertPlan,
+                tileId,
+                expertPlan.tokenStart + rowOffset,
+                Min(args_.tiling.rowTile, expertPlan.tokenCount - rowOffset),
+                outputColumnOffset,
+                Min(args_.tiling.outputColumnTile, stage.outputColumns - outputColumnOffset),
+            };
+        }
+        return {};
+    }
+
     __aicore__ inline SVDQLowRankOutputTilePlan OutputTilePlan(uint32_t tileId) const
     {
         uint32_t remainingTile = tileId;
@@ -495,6 +541,45 @@ public:
             }
         }
         return {};
+    }
+
+    __aicore__ inline bool ExecuteStage(uint32_t stageIndex, uint32_t coreIdx, uint32_t coreCount) const
+    {
+        const SVDQLowRankCoreTileRange tileRange = StageCoreTileRange(stageIndex, coreIdx, coreCount);
+        for (uint32_t tileOffset = 0; tileOffset < tileRange.tileCount; ++tileOffset) {
+            const SVDQLowRankOutputTilePlan outputTilePlan =
+                StageOutputTilePlan(stageIndex, tileRange.tileStart + tileOffset);
+            if (!outputTilePlan.HasWork()) {
+                return false;
+            }
+            const uint32_t kTileCount = OutputTileKTileCount(outputTilePlan);
+            for (uint32_t kTileIndex = 0; kTileIndex < kTileCount; ++kTileIndex) {
+                const SVDQLowRankTilePlan tilePlan = KTilePlan(outputTilePlan, kTileIndex);
+                if (!tilePlan.HasWork()) {
+                    return false;
+                }
+                const SVDQLowRankTileTensorPlan tileTensorPlan = BuildTileTensorPlan(tilePlan);
+                if (!tileTensorPlan.HasWork()) {
+                    return false;
+                }
+                const SVDQLowRankMmadTilePlan mmaTilePlan = BuildMmadTilePlan(tileTensorPlan);
+                if (!mmaTilePlan.HasCompatibleShape()) {
+                    return false;
+                }
+                const SVDQLowRankMmadBufferPlan bufferPlan = BuildMmadBufferPlan(mmaTilePlan);
+                if (!bufferPlan.HasCompleteFootprint()) {
+                    return false;
+                }
+                const SVDQLowRankMmadPipelinePlan pipelinePlan = BuildMmadPipelinePlan(bufferPlan);
+                if (!pipelinePlan.HasCompletePipeline()) {
+                    return false;
+                }
+                if (!RunPlannedTileBF16(pipelinePlan)) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     __aicore__ inline uint32_t OutputTileKTileCount(const SVDQLowRankOutputTilePlan& outputTilePlan) const
@@ -786,7 +871,19 @@ public:
         const uint32_t coreIdx = AscendC::GetBlockIdx();
         const uint32_t runtimeCoreCount = AscendC::GetBlockNum();
         const uint32_t scheduledCoreCount = args_.tiling.coreCount <= runtimeCoreCount ? args_.tiling.coreCount : runtimeCoreCount;
-        const SVDQLowRankCoreTileRange tileRange = CoreTileRange(coreIdx, scheduledCoreCount);
+        for (uint32_t stageIndex = 0; stageIndex < StageCount(); ++stageIndex) {
+            if (!ExecuteStage(stageIndex, coreIdx, scheduledCoreCount)) {
+                return;
+            }
+            AscendC::SyncAll();
+        }
+        /*
+         * Legacy flat scheduling is kept here only as source history until the
+         * production op is enabled. Executable low-rank work must remain
+         * stage-ordered so L2 stages cannot read rank workspace before all L1
+         * writers have reached the cross-core barrier above.
+         *
+         * const SVDQLowRankCoreTileRange tileRange = CoreTileRange(coreIdx, scheduledCoreCount);
         for (uint32_t tileOffset = 0; tileOffset < tileRange.tileCount; ++tileOffset) {
             const SVDQLowRankOutputTilePlan outputTilePlan = OutputTilePlan(tileRange.tileStart + tileOffset);
             if (!outputTilePlan.HasWork()) {
@@ -821,6 +918,7 @@ public:
         }
         // The fused AIC math body will keep the low-rank bottleneck on-chip:
         // input BF16 -> down factor GEMM -> rank tile -> up factor GEMM -> projection BF16 GM.
+         */
     }
 
 private:

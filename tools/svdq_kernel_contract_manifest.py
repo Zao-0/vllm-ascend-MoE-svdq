@@ -578,6 +578,13 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "WorkspaceAddress(invocation.rankRegionId)" in sources["kernel_contract"]
             and "invocation.rankRegionId = rankRegionId;" in sources["host_tiling"]
         ),
+        "lowrank_helper_stage_orders_rank_consumers": (
+            "ExecuteStage(stageIndex, coreIdx, scheduledCoreCount)" in sources["lowrank_header"]
+            and "StageCoreTileRange(stageIndex, coreIdx, coreCount);" in sources["lowrank_header"]
+            and "StageOutputTilePlan(stageIndex, tileRange.tileStart + tileOffset)" in sources["lowrank_header"]
+            and "AscendC::SyncAll()" in sources["lowrank_header"]
+            and "stage-ordered so L2 stages cannot read rank workspace" in sources["lowrank_header"]
+        ),
         "host_tiling_fail_closed": "AscendC kernel is not implemented yet" in sources["host_tiling"]
         and "return ge::GRAPH_FAILED;" in sources["host_tiling"],
         "lowrank_mmad_debug_readback_macro": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK"
