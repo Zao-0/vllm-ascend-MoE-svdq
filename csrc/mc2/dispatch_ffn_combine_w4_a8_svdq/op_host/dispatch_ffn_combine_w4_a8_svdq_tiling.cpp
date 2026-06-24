@@ -11,9 +11,7 @@
 #include <cstring>
 
 #include "dispatch_ffn_combine_w4_a8_svdq_tiling.h"
-#include "../../dispatch_ffn_combine_bf16/op_kernel/moe_init_routing_v2/moe_init_routing_v2_tiling.h"
 #include "lowrank/svdq_lowrank_debug_readback_tiling.h"
-#include "moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"
 #include "register/op_def_registry.h"
 #include "register/tilingdata_base.h"
 #include "tiling/tiling_api.h"
@@ -200,12 +198,16 @@ static void CopyMoeInitRoutingQuantV2TilingData(
     dispatchRouting.moeInitRoutingQuantV2TilingData = routingBase.quantTilingData;
     dispatchRouting.moeInitRoutingQuantV2TilingData.vbsComputeParamsOp =
         routingBase.quantTilingData.vbsComputeParamsOp;
-    dispatchRouting.moeInitRoutingQuantV2TilingData.vmsMiddle = routingBase.quantTilingData.vmsMiddle;
-    dispatchRouting.moeInitRoutingQuantV2TilingData.sortOut = routingBase.quantTilingData.sortOut;
-    dispatchRouting.moeInitRoutingQuantV2TilingData.srcToDst = routingBase.quantTilingData.srcToDst;
-    dispatchRouting.moeInitRoutingQuantV2TilingData.srcToDstCapacity =
-        routingBase.quantTilingData.srcToDstCapacity;
-    dispatchRouting.moeInitRoutingQuantV2TilingData.gatherOut = routingBase.quantTilingData.gatherOut;
+    dispatchRouting.moeInitRoutingQuantV2TilingData.vmsMiddleComputeParamsOp =
+        routingBase.quantTilingData.vmsMiddleComputeParamsOp;
+    dispatchRouting.moeInitRoutingQuantV2TilingData.sortOutComputeParamsOp =
+        routingBase.quantTilingData.sortOutComputeParamsOp;
+    dispatchRouting.moeInitRoutingQuantV2TilingData.srcToDstComputeParamsOp =
+        routingBase.quantTilingData.srcToDstComputeParamsOp;
+    dispatchRouting.moeInitRoutingQuantV2TilingData.srcToDstCapacityComputeParamsOp =
+        routingBase.quantTilingData.srcToDstCapacityComputeParamsOp;
+    dispatchRouting.moeInitRoutingQuantV2TilingData.gatherOutComputeParamsOp =
+        routingBase.quantTilingData.gatherOutComputeParamsOp;
 }
 
 static void CopyMoeInitRoutingV2TilingData(

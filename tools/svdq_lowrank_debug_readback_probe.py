@@ -44,6 +44,7 @@ from vllm_ascend.quantization.methods.svdq_post_load import (  # noqa: E402
 from vllm_ascend.utils import enable_custom_op  # noqa: E402
 
 DEBUG_OP_NAME = "SVDQLowRankDebugReadback"
+PRODUCTION_OP_NAME = "DispatchFFNCombineW4A8SVDQ"
 DEFAULT_SUMMARY_NAME = "phase_j_lowrank_debug_readback_probe_summary.json"
 CUSTOM_OP_CONFIG_ROOT = (
     REPO_ROOT
@@ -134,6 +135,7 @@ def _custom_package_debug_op_support(config_root: Path = CUSTOM_OP_CONFIG_ROOT) 
         entry: dict[str, Any] = {
             "config_path": str(config_file),
             "has_debug_op": False,
+            "has_production_op": False,
             "op_count": 0,
         }
         try:
@@ -143,21 +145,29 @@ def _custom_package_debug_op_support(config_root: Path = CUSTOM_OP_CONFIG_ROOT) 
         else:
             entry["op_count"] = len(payload) if isinstance(payload, dict) else 0
             entry["has_debug_op"] = isinstance(payload, dict) and DEBUG_OP_NAME in payload
+            entry["has_production_op"] = isinstance(payload, dict) and PRODUCTION_OP_NAME in payload
         by_soc[soc] = entry
     return {
         "config_root": str(config_root),
         "config_files": [str(path) for path in config_files],
         "supported_socs": sorted(by_soc),
         "debug_op_name": DEBUG_OP_NAME,
+        "production_op_name": PRODUCTION_OP_NAME,
         "debug_op_supported_socs": sorted(soc for soc, entry in by_soc.items() if entry["has_debug_op"]),
+        "production_op_supported_socs": sorted(soc for soc, entry in by_soc.items() if entry["has_production_op"]),
         "by_soc": by_soc,
     }
 
 
-def _package_supports_runtime_soc(*, package_support: dict[str, Any], runtime_soc: str | None) -> bool:
+def _package_supports_runtime_soc(
+    *,
+    package_support: dict[str, Any],
+    runtime_soc: str | None,
+    supported_socs_key: str = "debug_op_supported_socs",
+) -> bool:
     if runtime_soc is None:
         return False
-    return runtime_soc in set(package_support.get("debug_op_supported_socs", ()))
+    return runtime_soc in set(package_support.get(supported_socs_key, ()))
 
 
 def _write_preflight_failure(

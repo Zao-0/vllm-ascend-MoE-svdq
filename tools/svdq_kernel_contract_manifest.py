@@ -676,7 +676,39 @@ def _production_host_tiling_source(sources: dict[str, str]) -> str:
     return sources["host_tiling"][host_tiling_start:host_tiling_end]
 
 
+def _build_aclnn_branch(source: str, start: str, end: str) -> str:
+    if start not in source or end not in source:
+        return ""
+    branch = source[source.index(start) :]
+    return branch[: branch.index(end)]
+
+
+def _svdq_ops_selected_in_build_branch(branch: str) -> bool:
+    required_ops = (
+        '"dispatch_ffn_combine_w4_a8"',
+        '"dispatch_ffn_combine_w4_a8_svdq"',
+        '"svdq_low_rank_debug_readback"',
+        '"dispatch_ffn_combine_bf16"',
+    )
+    return (
+        all(op in branch for op in required_ops)
+        and branch.index(required_ops[0]) < branch.index(required_ops[1])
+        and branch.index(required_ops[1]) < branch.index(required_ops[2])
+        and branch.index(required_ops[2]) < branch.index(required_ops[3])
+    )
+
+
 def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
+    a2_aclnn_branch = _build_aclnn_branch(
+        sources["build_aclnn"],
+        'elif [[ "$SOC_VERSION" =~ ^ascend910b ]];',
+        'elif [[ "$SOC_VERSION" =~ ^ascend910_93 ]];',
+    )
+    a3_aclnn_branch = _build_aclnn_branch(
+        sources["build_aclnn"],
+        'elif [[ "$SOC_VERSION" =~ ^ascend910_93 ]];',
+        'elif [[ "$SOC_VERSION" =~ ^ascend950 ]];',
+    )
     process_start = sources["kernel_contract"].find("__aicore__ inline void Process()")
     process_end = sources["kernel_contract"].find("__aicore__ inline bool HasCompleteTilingContract()")
     process_source = sources["kernel_contract"][process_start:process_end] if process_start >= 0 else ""
@@ -752,9 +784,10 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "SVDQ_SYNC_DISPATCH_METADATA_TO_UNPERMUTE" in sources["kernel_contract"]
         ),
         "kernel_tiling_contains_dispatch_routing_subtiling": (
-            '#include "../../dispatch_ffn_combine_bf16/op_kernel/moe_init_routing_v2/moe_init_routing_v2_tiling.h"'
-            in sources["kernel_tiling"]
-            and '#include "moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"'
+            (
+                '#include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/'
+                'moe_init_routing_quant_v2_tiling.h"'
+            )
             in sources["kernel_tiling"]
             and "struct SVDQDispatchRoutingTiling" in sources["kernel_tiling"]
             and "bf16RoutingTilingKey" in sources["kernel_tiling"]
@@ -1233,17 +1266,16 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         ),
         "lowrank_debug_install_validator_checks_schema_symbols_and_soc": (
             "REQUIRED_OPAPI_SYMBOLS" in sources["lowrank_debug_install_validate"]
+            and "REQUIRED_PRODUCTION_OPAPI_SYMBOLS" in sources["lowrank_debug_install_validate"]
             and "svdq_low_rank_debug_readback" in sources["lowrank_debug_install_validate"]
+            and "dispatch_ffn_combine_w4a8_svdq" in sources["lowrank_debug_install_validate"]
             and "aclnnInnerSVDQLowRankDebugReadback" in sources["lowrank_debug_install_validate"]
+            and "aclnnInnerDispatchFFNCombineW4A8SVDQ" in sources["lowrank_debug_install_validate"]
             and "_custom_package_debug_op_support()" in sources["lowrank_debug_install_validate"]
             and "require_runtime_soc_support" in sources["lowrank_debug_install_validate"]
         ),
-        "lowrank_debug_op_in_a3_aclnn_package": (
-            '"dispatch_ffn_combine_w4_a8_svdq"' in sources["build_aclnn"]
-            and '"svdq_low_rank_debug_readback"' in sources["build_aclnn"]
-            and sources["build_aclnn"].index('"dispatch_ffn_combine_w4_a8_svdq"')
-            < sources["build_aclnn"].index('"svdq_low_rank_debug_readback"')
-        ),
+        "svdq_ops_in_a2_a3_aclnn_package": _svdq_ops_selected_in_build_branch(a2_aclnn_branch)
+        and _svdq_ops_selected_in_build_branch(a3_aclnn_branch),
     }
 
 
@@ -1477,7 +1509,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "lowrank_debug_probe_launches_real_op",
                 "lowrank_debug_probe_preflights_runtime_soc_package",
                 "lowrank_debug_install_validator_checks_schema_symbols_and_soc",
-                "lowrank_debug_op_in_a3_aclnn_package",
+                "svdq_ops_in_a2_a3_aclnn_package",
             ],
         },
         "rank_split_contract": {

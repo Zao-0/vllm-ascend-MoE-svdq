@@ -29,6 +29,7 @@ if str(TOOLS_DIR) not in sys.path:
 from svdq_loader_pre_kernel_validate import DEFAULT_EVIDENCE_DIR  # noqa: E402
 from svdq_lowrank_debug_readback_probe import (  # noqa: E402
     DEBUG_OP_NAME,
+    PRODUCTION_OP_NAME,
     _custom_package_debug_op_support,
     _package_supports_runtime_soc,
     _runtime_soc,
@@ -44,6 +45,12 @@ REQUIRED_OPAPI_SYMBOLS = (
     "aclnnSVDQLowRankDebugReadback",
     "aclnnInnerSVDQLowRankDebugReadbackGetWorkspaceSize",
     "aclnnInnerSVDQLowRankDebugReadback",
+)
+REQUIRED_PRODUCTION_OPAPI_SYMBOLS = (
+    "aclnnDispatchFFNCombineW4A8SVDQGetWorkspaceSize",
+    "aclnnDispatchFFNCombineW4A8SVDQ",
+    "aclnnInnerDispatchFFNCombineW4A8SVDQGetWorkspaceSize",
+    "aclnnInnerDispatchFFNCombineW4A8SVDQ",
 )
 
 
@@ -65,6 +72,7 @@ def _torch_schema_status() -> dict[str, Any]:
         "custom_op_enabled": False,
         "has_namespace": hasattr(torch.ops, "_C_ascend"),
         "has_debug_op": False,
+        "has_production_op": False,
     }
     try:
         status["custom_op_enabled"] = bool(enable_custom_op())
@@ -74,6 +82,7 @@ def _torch_schema_status() -> dict[str, Any]:
     namespace = getattr(torch.ops, "_C_ascend", None)
     if namespace is not None:
         status["has_debug_op"] = getattr(namespace, "svdq_low_rank_debug_readback", None) is not None
+        status["has_production_op"] = getattr(namespace, "dispatch_ffn_combine_w4a8_svdq", None) is not None
     return status
 
 
@@ -83,6 +92,7 @@ def _opapi_symbol_status(lib_path: Path = CUSTOM_OPAPI_LIB) -> dict[str, Any]:
         "exists": lib_path.exists(),
         "loaded": False,
         "symbols": {name: False for name in REQUIRED_OPAPI_SYMBOLS},
+        "production_symbols": {name: False for name in REQUIRED_PRODUCTION_OPAPI_SYMBOLS},
     }
     if not lib_path.exists():
         return status
@@ -97,6 +107,7 @@ def _opapi_symbol_status(lib_path: Path = CUSTOM_OPAPI_LIB) -> dict[str, Any]:
         return status
     status["loaded"] = True
     status["symbols"] = {name: hasattr(handle, name) for name in REQUIRED_OPAPI_SYMBOLS}
+    status["production_symbols"] = {name: hasattr(handle, name) for name in REQUIRED_PRODUCTION_OPAPI_SYMBOLS}
     return status
 
 
@@ -108,22 +119,34 @@ def build_summary(*, device_id: int, require_runtime_soc_support: bool) -> dict[
     opapi_symbols = _opapi_symbol_status()
     required_static_checks = [
         bool(torch_schema["has_debug_op"]),
+        bool(torch_schema["has_production_op"]),
         bool(opapi_symbols["exists"]),
         bool(opapi_symbols["loaded"]),
         all(opapi_symbols["symbols"].values()),
+        all(opapi_symbols["production_symbols"].values()),
         bool(package_support["debug_op_supported_socs"]),
+        bool(package_support["production_op_supported_socs"]),
     ]
-    runtime_supported = _package_supports_runtime_soc(
+    debug_runtime_supported = _package_supports_runtime_soc(
         package_support=package_support,
         runtime_soc=runtime_soc.get("normalized_soc"),
     )
+    production_runtime_supported = _package_supports_runtime_soc(
+        package_support=package_support,
+        runtime_soc=runtime_soc.get("normalized_soc"),
+        supported_socs_key="production_op_supported_socs",
+    )
+    runtime_supported = debug_runtime_supported and production_runtime_supported
     passed = all(required_static_checks) and (runtime_supported or not require_runtime_soc_support)
     return {
         "passed": passed,
         "require_runtime_soc_support": require_runtime_soc_support,
         "debug_op_name": DEBUG_OP_NAME,
+        "production_op_name": PRODUCTION_OP_NAME,
         "runtime_soc": runtime_soc,
         "runtime_soc_supported": runtime_supported,
+        "debug_runtime_soc_supported": debug_runtime_supported,
+        "production_runtime_soc_supported": production_runtime_supported,
         "torch_schema": torch_schema,
         "opapi_symbols": opapi_symbols,
         "custom_package_debug_op_support": package_support,

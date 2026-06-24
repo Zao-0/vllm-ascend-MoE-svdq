@@ -11,11 +11,12 @@
 #ifndef ASCENDC_DISPATCH_FFN_COMBINE_W4A8_SVDQ_TILING_H
 #define ASCENDC_DISPATCH_FFN_COMBINE_W4A8_SVDQ_TILING_H
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 
-#include "../../dispatch_ffn_combine_bf16/op_kernel/moe_init_routing_v2/moe_init_routing_v2_tiling.h"
 #include "lowrank/svdq_fused_down_up_tiling.h"
-#include "moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"
+#include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"
 
 constexpr uint32_t SVDQ_WORKSPACE_REGION_COUNT = 16;
 constexpr uint32_t SVDQ_SYNC_FLAG_COUNT = 14;

@@ -278,8 +278,10 @@ def test_svdq_host_tiling_builds_official_dispatch_routing_subtiling():
     tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
     tiling_header = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h").read_text()
 
-    assert "../../dispatch_ffn_combine_bf16/op_kernel/moe_init_routing_v2/moe_init_routing_v2_tiling.h" in tiling_header
-    assert '#include "moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"' in tiling_header
+    assert (
+        "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/"
+        "moe_init_routing_quant_v2_tiling.h"
+    ) in tiling_header
     assert "struct SVDQDispatchRoutingTiling" in tiling_header
     assert "uint64_t bf16RoutingTilingKey" in tiling_header
     assert "uint64_t bf16RoutingWorkspaceBytes" in tiling_header
@@ -291,8 +293,6 @@ def test_svdq_host_tiling_builds_official_dispatch_routing_subtiling():
     assert "SVDQDispatchRoutingTiling dispatchRouting" in tiling_header
 
     for token in (
-        "../../dispatch_ffn_combine_bf16/op_kernel/moe_init_routing_v2/moe_init_routing_v2_tiling.h",
-        '#include "moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"',
         "constexpr uint32_t SVDQ_ROUTING_BLOCK_NUM = 20",
         "constexpr uint64_t SVDQ_ROUTING_UB_SIZE = 196352",
         "MoeInitRoutingV2TilingBase bf16RoutingBase",
@@ -313,6 +313,10 @@ def test_svdq_host_tiling_builds_official_dispatch_routing_subtiling():
         "dispatchRouting.routingWorkspaceBytes = routingBase.workspaceSize_",
         "dispatchRouting.aivNum = aivNumInitRouting",
         "dispatchRouting.moeInitRoutingQuantV2TilingData = routingBase.quantTilingData",
+        "vmsMiddleComputeParamsOp",
+        "sortOutComputeParamsOp",
+        "srcToDstComputeParamsOp",
+        "srcToDstCapacityComputeParamsOp",
         "BuildDispatchRoutingTiling(tilingData)",
         "workSpaces[0] = SVDQ_SYSTEM_WORKSPACE + info.workspaceBytes +",
         "tilingData->dispatchRouting.bf16RoutingWorkspaceBytes",
@@ -321,22 +325,46 @@ def test_svdq_host_tiling_builds_official_dispatch_routing_subtiling():
         assert token in tiling
 
 
-def test_svdq_cann_op_is_selected_by_a3_aclnn_build_script():
-    build_script = (REPO_ROOT / "csrc/build_aclnn.sh").read_text()
-    a3_branch = build_script[build_script.index('elif [[ "$SOC_VERSION" =~ ^ascend910_93 ]];') :]
-    a3_ops = a3_branch[: a3_branch.index('elif [[ "$SOC_VERSION" =~ ^ascend950 ]];')]
+def _build_aclnn_branch(build_script: str, start: str, end: str) -> str:
+    branch = build_script[build_script.index(start) :]
+    return branch[: branch.index(end)]
 
-    assert '"dispatch_ffn_combine_w4_a8"' in a3_ops
-    assert '"dispatch_ffn_combine_w4_a8_svdq"' in a3_ops
-    assert '"svdq_low_rank_debug_readback"' in a3_ops
-    assert a3_ops.index('"dispatch_ffn_combine_w4_a8"') < a3_ops.index('"dispatch_ffn_combine_w4_a8_svdq"')
-    assert a3_ops.index('"dispatch_ffn_combine_w4_a8_svdq"') < a3_ops.index('"svdq_low_rank_debug_readback"')
-    assert a3_ops.index('"svdq_low_rank_debug_readback"') < a3_ops.index('"dispatch_ffn_combine_bf16"')
+
+def _assert_svdq_ops_selected(build_branch: str):
+    assert '"dispatch_ffn_combine_w4_a8"' in build_branch
+    assert '"dispatch_ffn_combine_w4_a8_svdq"' in build_branch
+    assert '"svdq_low_rank_debug_readback"' in build_branch
+    assert '"dispatch_ffn_combine_bf16"' in build_branch
+    assert build_branch.index('"dispatch_ffn_combine_w4_a8"') < build_branch.index(
+        '"dispatch_ffn_combine_w4_a8_svdq"'
+    )
+    assert build_branch.index('"dispatch_ffn_combine_w4_a8_svdq"') < build_branch.index(
+        '"svdq_low_rank_debug_readback"'
+    )
+    assert build_branch.index('"svdq_low_rank_debug_readback"') < build_branch.index('"dispatch_ffn_combine_bf16"')
+
+
+def test_svdq_cann_ops_are_selected_by_a2_and_a3_aclnn_build_script():
+    build_script = (REPO_ROOT / "csrc/build_aclnn.sh").read_text()
+    a2_ops = _build_aclnn_branch(
+        build_script,
+        'elif [[ "$SOC_VERSION" =~ ^ascend910b ]];',
+        'elif [[ "$SOC_VERSION" =~ ^ascend910_93 ]];',
+    )
+    a3_ops = _build_aclnn_branch(
+        build_script,
+        'elif [[ "$SOC_VERSION" =~ ^ascend910_93 ]];',
+        'elif [[ "$SOC_VERSION" =~ ^ascend950 ]];',
+    )
+
+    _assert_svdq_ops_selected(a2_ops)
+    _assert_svdq_ops_selected(a3_ops)
 
 
 def test_svdq_lowrank_debug_probe_preflights_runtime_soc_package_support(tmp_path):
     from tools.svdq_lowrank_debug_readback_probe import (
         DEBUG_OP_NAME,
+        PRODUCTION_OP_NAME,
         _custom_package_debug_op_support,
         _normalize_soc_name,
         _package_supports_runtime_soc,
@@ -345,34 +373,48 @@ def test_svdq_lowrank_debug_probe_preflights_runtime_soc_package_support(tmp_pat
     config_root = tmp_path / "config"
     a3_config = config_root / "ascend910_93" / "binary_info_config.json"
     a3_config.parent.mkdir(parents=True)
-    a3_config.write_text(json.dumps({DEBUG_OP_NAME: {}, "OtherOp": {}}), encoding="utf-8")
+    a3_config.write_text(json.dumps({DEBUG_OP_NAME: {}, PRODUCTION_OP_NAME: {}, "OtherOp": {}}), encoding="utf-8")
     a2_config = config_root / "ascend910b" / "binary_info_config.json"
     a2_config.parent.mkdir(parents=True)
-    a2_config.write_text(json.dumps({"OtherOp": {}}), encoding="utf-8")
+    a2_config.write_text(json.dumps({DEBUG_OP_NAME: {}, PRODUCTION_OP_NAME: {}, "OtherOp": {}}), encoding="utf-8")
 
     support = _custom_package_debug_op_support(config_root)
 
     assert _normalize_soc_name("Ascend910B4") == "ascend910b"
     assert _normalize_soc_name("Ascend910_9391") == "ascend910_93"
-    assert support["debug_op_supported_socs"] == ["ascend910_93"]
+    assert support["debug_op_supported_socs"] == ["ascend910_93", "ascend910b"]
+    assert support["production_op_supported_socs"] == ["ascend910_93", "ascend910b"]
     assert support["by_soc"]["ascend910_93"]["has_debug_op"]
-    assert not support["by_soc"]["ascend910b"]["has_debug_op"]
+    assert support["by_soc"]["ascend910_93"]["has_production_op"]
+    assert support["by_soc"]["ascend910b"]["has_debug_op"]
+    assert support["by_soc"]["ascend910b"]["has_production_op"]
     assert _package_supports_runtime_soc(package_support=support, runtime_soc="ascend910_93")
-    assert not _package_supports_runtime_soc(package_support=support, runtime_soc="ascend910b")
+    assert _package_supports_runtime_soc(package_support=support, runtime_soc="ascend910b")
+    assert _package_supports_runtime_soc(
+        package_support=support,
+        runtime_soc="ascend910b",
+        supported_socs_key="production_op_supported_socs",
+    )
 
 
 def test_svdq_lowrank_debug_install_validator_checks_static_package_surfaces():
     validator = (REPO_ROOT / "tools/svdq_lowrank_debug_install_validate.py").read_text()
 
     assert "REQUIRED_OPAPI_SYMBOLS" in validator
+    assert "REQUIRED_PRODUCTION_OPAPI_SYMBOLS" in validator
     for symbol in (
         "aclnnSVDQLowRankDebugReadbackGetWorkspaceSize",
         "aclnnSVDQLowRankDebugReadback",
         "aclnnInnerSVDQLowRankDebugReadbackGetWorkspaceSize",
         "aclnnInnerSVDQLowRankDebugReadback",
+        "aclnnDispatchFFNCombineW4A8SVDQGetWorkspaceSize",
+        "aclnnDispatchFFNCombineW4A8SVDQ",
+        "aclnnInnerDispatchFFNCombineW4A8SVDQGetWorkspaceSize",
+        "aclnnInnerDispatchFFNCombineW4A8SVDQ",
     ):
         assert symbol in validator
     assert "svdq_low_rank_debug_readback" in validator
+    assert "dispatch_ffn_combine_w4a8_svdq" in validator
     assert "_custom_package_debug_op_support()" in validator
     assert "_package_supports_runtime_soc(" in validator
     assert "require_runtime_soc_support" in validator
@@ -2324,7 +2366,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
             "lowrank_debug_probe_launches_real_op",
             "lowrank_debug_probe_preflights_runtime_soc_package",
             "lowrank_debug_install_validator_checks_schema_symbols_and_soc",
-            "lowrank_debug_op_in_a3_aclnn_package",
+            "svdq_ops_in_a2_a3_aclnn_package",
         ],
     }
 
