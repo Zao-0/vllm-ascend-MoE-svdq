@@ -5,21 +5,27 @@
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 #
-"""Smoke-test and gate official W4A8 residual GMM kernels on NPU.
+"""Smoke-test and gate W4A8 residual GMM launch surfaces on NPU.
 
 This probe exercises the real residual GMM dimensions used by the Qwen3.5
-W4A8-SVDQ MoE path without enabling the production fused SVDQ op. It uses
-synthetic zero packed-W4 weights with valid ModelSlim per-channel scale packing
-so the expected residual accumulator is exactly zero.
+W4A8-SVDQ MoE path without enabling the production fused SVDQ op.
 
-With ``--real-checkpoint`` it also loads real ModelSlim residual tensors through
-the official W4A8 post-load path, launches the same grouped-matmul surface, and
-compares against a CPU reference for the official boundary:
+The default mode uses synthetic zero packed-W4 weights with valid ModelSlim
+per-channel scale packing through ``torch_npu.npu_grouped_matmul`` as a launch
+smoke test. A zero-weight test cannot validate packed INT4 value or scale
+semantics, so ``--calibrate-packed-int4`` runs a nonzero all-ones calibration.
+
+With ``--real-checkpoint`` it loads real ModelSlim residual tensors through
+the official W4A8 post-load path and launches the public grouped-matmul
+compatibility surface. This mode records whether that public API matches the
+post-loaded packed-INT4 boundary:
 
 ``INT4 dot with per-channel weight scale + scale_bias, then per-token scale``.
 
-The real-checkpoint mode is an acceptance gate. It is expected to fail until the
-official W4A8 launch surface is correctly isolated for SVDQ validation.
+The real-checkpoint and packed-INT4 calibration modes are acceptance gates for
+the probe only. They do not replace the Appendix-1 requirement to isolate and
+numerically validate the official mixed AIC/AIV W4A8 path before enabling the
+production fused SVDQ op.
 """
 
 from __future__ import annotations
@@ -70,6 +76,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--num-experts", type=int, default=2)
     parser.add_argument("--layers", type=int, nargs="+", default=[0])
     parser.add_argument("--real-checkpoint", action="store_true")
+    parser.add_argument("--calibrate-packed-int4", action="store_true")
     parser.add_argument("--seed", type=int, default=20260624)
     parser.add_argument("--zero-abs-tol", type=float, default=1e-30)
     parser.add_argument("--real-max-abs-tol", type=float, default=0.5)
@@ -110,6 +117,33 @@ def _npu_environment(device_id: int) -> dict[str, Any]:
         except Exception as exc:
             info["npu_query_error"] = f"{type(exc).__name__}: {exc}"
     return info
+
+
+def _public_grouped_matmul_api_contract() -> dict[str, Any]:
+    return {
+        "surface": "torch_npu.npu_grouped_matmul",
+        "purpose": "launch compatibility probe for the public grouped-matmul API",
+        "production_acceptance_surface": "official dispatch_ffn_combine_w4_a8 mixed AIC/AIV kernel",
+        "documented_per_token_quant": {
+            "formula": "y_i=(x_i * weight_i + bias_i) * scale_i + per_token_scale_i",
+            "x_dtype": "torch.int8",
+            "weight_dtype": "torch.int8 or int4 when group_list is a Tensor",
+            "bias_dtype": "torch.int32",
+            "scale_dtype": "torch.float32, torch.bfloat16, or torch.int64",
+            "per_token_scale_dtype": "torch.float32",
+        },
+        "official_postload_w4a8_boundary": {
+            "weight_dtype": "torch.int32 packed INT4 storage",
+            "scale_dtype": "torch.int64 ModelSlim float-bit packing",
+            "scale_bias_dtype": "torch.float32",
+            "reference_formula": (
+                "(sum(int8_activation * signed_int4_weight) * weight_scale + scale_bias) * per_token_scale"
+            ),
+        },
+        "appendix1_status": (
+            "This API probe is not a production substitute for the required official AIC GMM and AIV epilogue ports."
+        ),
+    }
 
 
 def _target_metadata(model_path: str) -> dict[str, Any]:
@@ -404,12 +438,28 @@ def _run_real_gmm_stage(
         output_columns=output_columns,
     )
     error = _tensor_error(npu_output, reference)
+    passed = (
+        error["actual_finite"]
+        and error["expected_finite"]
+        and error["diff_finite"]
+        and error["max_abs"] <= max_abs_tol
+        and error["mean_abs"] <= mean_abs_tol
+    )
     return {
         "stage": stage_name,
+        "validation_surface": "torch_npu.npu_grouped_matmul public API compatibility",
+        "official_aic_aiv_validation": False,
+        "appendix1_required_before_production_enablement": (
+            "isolate the official dispatch_ffn_combine_w4_a8 AIC GMM producer and AIV dequant epilogue path"
+        ),
         "input_shape": list(x.shape),
+        "input_dtype": str(x.dtype),
         "weight_shape": list(weight[:experts].shape),
+        "weight_dtype": str(weight.dtype),
         "scale_shape": list(weight_scale[:experts].shape),
+        "scale_dtype": str(weight_scale.dtype),
         "bias_shape": list(scale_bias[:experts].shape),
+        "bias_dtype": str(scale_bias.dtype),
         "group_list": group_list.detach().cpu().tolist(),
         "per_token_scale": per_token_scale.detach().cpu().tolist(),
         "reference_formula": (
@@ -418,13 +468,110 @@ def _run_real_gmm_stage(
         "error": error,
         "max_abs_tolerance": max_abs_tol,
         "mean_abs_tolerance": mean_abs_tol,
-        "passed": (
-            error["actual_finite"]
-            and error["expected_finite"]
-            and error["diff_finite"]
-            and error["max_abs"] <= max_abs_tol
-            and error["mean_abs"] <= mean_abs_tol
+        "failure_reason": None
+        if passed
+        else (
+            "public torch_npu.npu_grouped_matmul output does not match the post-loaded official W4A8 "
+            "packed-INT4 reference; production remains fail-closed until the official mixed AIC/AIV path is validated"
         ),
+        "passed": passed,
+    }
+
+
+def _run_packed_int4_calibration(
+    *,
+    rows: int,
+    experts: int,
+    device: torch.device,
+) -> dict[str, Any]:
+    import torch_npu  # type: ignore[import-untyped]
+
+    x_width = 2048
+    output_columns = 1024
+    x_cpu = torch.ones((rows, x_width), dtype=torch.int8)
+    x = x_cpu.to(device=device)
+    one_nibble_word = sum((1 & 0xF) << (4 * index) for index in range(8))
+    weight = torch.full(
+        (experts, x_width, output_columns // 8),
+        one_nibble_word,
+        dtype=torch.int32,
+        device=device,
+    )
+    raw_scale = torch.ones((experts, output_columns, 1), dtype=torch.float32)
+    packed_scale = _pack_modelslim_per_channel_scale(raw_scale).to(device=device)
+    bias = torch.zeros((experts, output_columns), dtype=torch.float32, device=device)
+    per_token_scale = torch.ones((rows,), dtype=torch.float32, device=device)
+    group_list = _make_group_list(rows, experts, device=device)
+    expected = x_cpu.to(torch.int32).sum(dim=1).float().reshape(rows, 1).expand(rows, output_columns)
+
+    cases: list[dict[str, Any]] = []
+    for name, scale in (
+        ("gmm1_postload_scale_shape", packed_scale.squeeze(1)),
+        ("gmm2_postload_scale_shape", packed_scale),
+    ):
+        try:
+            output = torch_npu.npu_grouped_matmul(
+                x=[x],
+                weight=[weight],
+                scale=[scale],
+                bias=[bias],
+                per_token_scale=[per_token_scale],
+                group_list=group_list,
+                group_list_type=1,
+                group_type=0,
+                split_item=2,
+                output_dtype=torch.bfloat16,
+            )[0]
+            torch.npu.synchronize()
+            error = _tensor_error(output, expected)
+            passed = (
+                error["actual_finite"]
+                and error["expected_finite"]
+                and error["diff_finite"]
+                and error["max_abs"] == 0.0
+            )
+            cases.append(
+                {
+                    "case": name,
+                    "scale_shape": list(scale.shape),
+                    "scale_dtype": str(scale.dtype),
+                    "output_sample": output.detach().cpu().float()[0, :8].tolist(),
+                    "expected_sample": expected[0, :8].tolist(),
+                    "error": error,
+                    "passed": passed,
+                }
+            )
+        except Exception as exc:
+            cases.append(
+                {
+                    "case": name,
+                    "scale_shape": list(scale.shape),
+                    "scale_dtype": str(scale.dtype),
+                    "exception": f"{type(exc).__name__}: {exc}",
+                    "passed": False,
+                }
+            )
+
+    passed = all(case["passed"] for case in cases)
+    return {
+        "stage": "packed_int4_all_ones_grouped_matmul_calibration",
+        "validation_surface": "torch_npu.npu_grouped_matmul public API compatibility",
+        "official_aic_aiv_validation": False,
+        "input_shape": list(x.shape),
+        "input_dtype": str(x.dtype),
+        "weight_shape": list(weight.shape),
+        "weight_dtype": str(weight.dtype),
+        "packed_int4_word_hex": hex(one_nibble_word),
+        "group_list": group_list.detach().cpu().tolist(),
+        "expected_formula": "sum(all_one_int8_activation * all_one_signed_int4_weight)",
+        "cases": cases,
+        "failure_reason": None
+        if passed
+        else (
+            "public grouped-matmul packed-INT4 behavior does not match the simple all-ones W4A8 reference for "
+            "post-load ModelSlim scale shapes"
+        ),
+        "passed": passed,
     }
 
 
@@ -507,7 +654,12 @@ def main() -> int:
         "model_path": args.model_path,
         "metadata": metadata,
         "environment": env,
-        "mode": "real_checkpoint" if args.real_checkpoint else "synthetic_zero",
+        "mode": "real_checkpoint"
+        if args.real_checkpoint
+        else "packed_int4_calibration"
+        if args.calibrate_packed_int4
+        else "synthetic_zero",
+        "grouped_matmul_api_contract": _public_grouped_matmul_api_contract(),
         "stages": [],
         "passed": False,
         "skipped": False,
@@ -530,6 +682,8 @@ def main() -> int:
         raise ValueError(f"expected ModelSlim W4A8 version=1.0.0 group_size=0, got {metadata!r}")
     if args.num_tokens < args.num_experts:
         raise ValueError("--num-tokens must be >= --num-experts so every synthetic expert receives at least one row.")
+    if args.real_checkpoint and args.calibrate_packed_int4:
+        raise ValueError("--real-checkpoint and --calibrate-packed-int4 are mutually exclusive.")
 
     device = torch.device(f"npu:{args.device_id}")
     torch.npu.set_device(device)
@@ -549,6 +703,14 @@ def main() -> int:
         ]
         summary["layers"] = layers
         summary["passed"] = all(layer["passed"] for layer in layers)
+    elif args.calibrate_packed_int4:
+        calibration = _run_packed_int4_calibration(
+            rows=args.num_tokens,
+            experts=args.num_experts,
+            device=device,
+        )
+        summary["stages"] = [calibration]
+        summary["passed"] = calibration["passed"]
     else:
         stages = [
             _run_gmm1(

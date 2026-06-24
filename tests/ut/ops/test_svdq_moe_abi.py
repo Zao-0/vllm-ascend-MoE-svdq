@@ -474,6 +474,15 @@ def test_svdq_w4a8_residual_gmm_device_probe_executes_official_stage_shapes():
         "phase_f_residual_gmm_device_probe_summary.json",
         "--require-npu",
         "--real-checkpoint",
+        "--calibrate-packed-int4",
+        "_public_grouped_matmul_api_contract",
+        "production_acceptance_surface",
+        "official dispatch_ffn_combine_w4_a8 mixed AIC/AIV kernel",
+        "_run_packed_int4_calibration",
+        "packed_int4_all_ones_grouped_matmul_calibration",
+        "gmm1_postload_scale_shape",
+        "gmm2_postload_scale_shape",
+        "public grouped-matmul packed-INT4 behavior does not match",
         "_load_real_residual_layer",
         "build_svdq_moe_layer_spec",
         "_make_official_w4a8_method",
@@ -486,6 +495,8 @@ def test_svdq_w4a8_residual_gmm_device_probe_executes_official_stage_shapes():
         "signed_int4_weight",
         "scale_bias",
         "per_token_scale",
+        "official_aic_aiv_validation",
+        "appendix1_required_before_production_enablement",
     ):
         assert token in probe
 
