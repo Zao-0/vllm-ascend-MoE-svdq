@@ -5,20 +5,22 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 #
 
+from types import SimpleNamespace
+
 import pytest
 import torch
-from types import SimpleNamespace
 
 import vllm_ascend.quantization.methods.w4a8_svdq as w4a8_svdq
 from vllm_ascend.ops.fused_moe.moe_runtime_args import build_fused_experts_input
-from vllm_ascend.quantization.methods.w4a8_svdq import AscendW4A8SVDQFusedMoEMethod
 from vllm_ascend.quantization.methods.svdq_post_load import (
-    SVDQ_BF16_DEBUG_STAGE_NAMES,
     FINAL_SVDQ_FACTOR_NAMES,
+    SVDQ_BF16_DEBUG_STAGE_NAMES,
     audit_svdq_operator_factors,
     build_svdq_bf16_stage_reference,
     build_svdq_operator_factors,
 )
+from vllm_ascend.quantization.methods.w4a8 import AscendW4A8DynamicFusedMoEMethod
+from vllm_ascend.quantization.methods.w4a8_svdq import AscendW4A8SVDQFusedMoEMethod
 from vllm_ascend.quantization.quant_type import QuantType
 
 
@@ -44,6 +46,87 @@ def _make_raw_factor_layer():
     for name, tensor in raw.items():
         layer.register_parameter(name, torch.nn.Parameter(tensor, requires_grad=False))
     return layer
+
+
+def _make_svdq_residual_identity_layer(include_factors: bool = True):
+    layer = torch.nn.Module()
+    layer.layer_name = "model.language_model.layers.0.mlp.experts"
+    layer.local_num_experts = 2
+    layer.w13_weight = torch.nn.Parameter(
+        torch.arange(2 * 4 * 8, dtype=torch.int8).reshape(2, 4, 8),
+        requires_grad=False,
+    )
+    layer.w2_weight = torch.nn.Parameter(
+        torch.arange(2 * 4 * 4, dtype=torch.int8).reshape(2, 4, 4),
+        requires_grad=False,
+    )
+    layer.w13_weight_scale = torch.nn.Parameter(torch.ones((2, 8, 1), dtype=torch.float32), requires_grad=False)
+    layer.w13_weight_offset = torch.nn.Parameter(torch.zeros((2, 8, 1), dtype=torch.float32), requires_grad=False)
+    layer.w2_weight_scale = torch.nn.Parameter(torch.ones((2, 8, 1), dtype=torch.float32), requires_grad=False)
+    layer.w2_weight_offset = torch.nn.Parameter(torch.zeros((2, 8, 1), dtype=torch.float32), requires_grad=False)
+    layer.w13_scale_bias = torch.nn.Parameter(torch.zeros((2, 8, 1), dtype=torch.float32), requires_grad=False)
+    layer.w2_scale_bias = torch.nn.Parameter(torch.zeros((2, 8, 16), dtype=torch.float32), requires_grad=False)
+    if not include_factors:
+        return layer
+
+    raw = {
+        "svdq_w1_l1": torch.ones((2, 2, 8), dtype=torch.bfloat16),
+        "svdq_w1_l2": torch.ones((2, 4, 2), dtype=torch.bfloat16),
+        "svdq_w3_l1": torch.ones((2, 1, 8), dtype=torch.bfloat16),
+        "svdq_w3_l2": torch.ones((2, 4, 1), dtype=torch.bfloat16),
+        "svdq_w2_l1": torch.ones((2, 2, 4), dtype=torch.bfloat16),
+        "svdq_w2_l2": torch.ones((2, 8, 2), dtype=torch.bfloat16),
+    }
+    for name, tensor in raw.items():
+        param = torch.nn.Parameter(tensor, requires_grad=False)
+        param.svdq_loaded_experts = {0, 1}
+        layer.register_parameter(name, param)
+    return layer
+
+
+def _make_w4a8_method(method_cls):
+    method = method_cls.__new__(method_cls)
+    method.quant_method = ""
+    method.new_quant_version = True
+    method.is_per_channel_weight = True
+    method.dynamic_eplb = False
+    method.tp_size = 1
+    method.group_size = 0
+    return method
+
+
+def test_svdq_post_load_preserves_official_w4a8_residual_transform(monkeypatch):
+    import vllm_ascend.quantization.methods.w4a8 as w4a8
+
+    monkeypatch.setattr(torch.Tensor, "npu", lambda self: self, raising=False)
+    monkeypatch.setattr(w4a8, "maybe_trans_nz", lambda tensor: tensor)
+
+    official_layer = _make_svdq_residual_identity_layer(include_factors=False)
+    svdq_layer = _make_svdq_residual_identity_layer(include_factors=True)
+    official_method = _make_w4a8_method(AscendW4A8DynamicFusedMoEMethod)
+    svdq_method = _make_w4a8_method(AscendW4A8SVDQFusedMoEMethod)
+
+    official_method.process_weights_after_loading(official_layer)
+    svdq_method.process_weights_after_loading(svdq_layer)
+
+    for name in (
+        "w13_weight",
+        "w2_weight",
+        "w13_weight_scale",
+        "w2_weight_scale",
+        "w13_scale_bias",
+        "w2_scale_bias",
+    ):
+        official = getattr(official_layer, name)
+        svdq = getattr(svdq_layer, name)
+        assert torch.equal(svdq, official), f"SVDQ residual tensor {name} diverged from official W4A8."
+
+    assert set(FINAL_SVDQ_FACTOR_NAMES).issubset(dict(svdq_layer.named_parameters()))
+    assert tuple(svdq_layer.gate_up_svdq_l1.shape) == (2, 3, 8)
+    assert tuple(svdq_layer.gate_svdq_l2.shape) == (2, 4, 2)
+    assert tuple(svdq_layer.up_svdq_l2.shape) == (2, 4, 1)
+    assert tuple(svdq_layer.down_svdq_l1.shape) == (2, 2, 4)
+    assert tuple(svdq_layer.down_svdq_l2.shape) == (2, 8, 2)
 
 
 def test_svdq_post_load_builds_five_operator_factors_and_audits_branches():
