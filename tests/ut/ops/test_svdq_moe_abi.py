@@ -973,6 +973,31 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
     assert contract.index("RunMixedEpilogueStages()") < contract.index("RunFinalCombine()")
 
 
+def test_svdq_kernel_records_dispatch_routing_contract_before_lowrank():
+    op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
+    contract = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq.h").read_text()
+
+    for token in (
+        "SVDQDispatchRoutingContract",
+        "DispatchRoutingContract() const",
+        "DispatchRoutingReady() const",
+        "RunDispatchRoutingStage() const",
+        "SVDQ_STAGE_BF16_DISPATCH",
+        "SVDQ_REGION_ROUTED_X",
+        "SVDQ_REGION_EXPANDED_ROW_IDX",
+        "SVDQ_SYNC_DISPATCH_TO_QUANT_1",
+        "SVDQ_SYNC_DISPATCH_TO_LOWRANK_1",
+        "SVDQ_SYNC_DISPATCH_METADATA_TO_UNPERMUTE",
+        "runtime_.x != nullptr",
+        "runtime_.expertId != nullptr",
+        "runtime_.probs != nullptr",
+        "runtime_.expertTokenNums != nullptr",
+    ):
+        assert token in contract
+
+    assert contract.index("RunDispatchRoutingStage()") < contract.index("RunBF16LowRankStages()")
+
+
 def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
     tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
@@ -1572,6 +1597,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["rank_split_contract"]["up_rank_offset"] == "gateRank"
     assert loaded["production_fail_closed"]["host_tiling_returns_graph_failed"]
     assert loaded["production_fail_closed"]["lowrank_is_implemented_uses_complete_contract"]
+    assert loaded["production_fail_closed"]["dispatch_routing_execution_fail_closed"]
     assert loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
     assert loaded["production_fail_closed"]["mixed_epilogue_execution_fail_closed"]
     assert loaded["production_fail_closed"]["final_combine_execution_fail_closed"]
@@ -1579,6 +1605,8 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["mixed_epilogue_contract_recorded"]
     assert loaded["production_fail_closed"]["final_combine_contract_recorded"]
     assert loaded["source_proof"]["kernel_resolves_rank_workspace_regions"]
+    assert loaded["source_proof"]["kernel_records_dispatch_routing_contract"]
+    assert loaded["source_proof"]["kernel_dispatch_routing_execution_fail_closed"]
     assert loaded["source_proof"]["kernel_binds_residual_weight_scale_slots"]
     assert loaded["source_proof"]["kernel_residual_execution_fail_closed"]
     assert loaded["source_proof"]["kernel_records_mixed_epilogue_contracts"]

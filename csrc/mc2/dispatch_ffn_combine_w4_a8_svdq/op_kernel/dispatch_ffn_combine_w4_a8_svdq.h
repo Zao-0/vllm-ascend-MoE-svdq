@@ -93,6 +93,16 @@ struct SVDQBF16StageContract {
     uint32_t signalFlagId;
 };
 
+struct SVDQDispatchRoutingContract {
+    uint32_t stageId;
+    uint32_t inputRegionId;
+    uint32_t routedOutputRegionId;
+    uint32_t routeIndexRegionId;
+    uint32_t signalQuantFlagId;
+    uint32_t signalLowRankFlagId;
+    uint32_t signalFinalCombineFlagId;
+};
+
 struct SVDQResidualStageContract {
     uint32_t stageId;
     uint32_t tilingStageId;
@@ -169,6 +179,9 @@ public:
     __aicore__ inline void Process()
     {
         if (!HasCompleteTilingContract()) {
+            return;
+        }
+        if (!RunDispatchRoutingStage()) {
             return;
         }
         if (!RunBF16LowRankStages()) {
@@ -332,6 +345,29 @@ public:
                 return {SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID,
                     SVDQ_INVALID_ID, SVDQ_INVALID_ID};
         }
+    }
+
+    __aicore__ inline SVDQDispatchRoutingContract DispatchRoutingContract() const
+    {
+        return {SVDQ_STAGE_BF16_DISPATCH, SVDQ_INVALID_ID, SVDQ_REGION_ROUTED_X,
+            SVDQ_REGION_EXPANDED_ROW_IDX, SVDQ_SYNC_DISPATCH_TO_QUANT_1,
+            SVDQ_SYNC_DISPATCH_TO_LOWRANK_1, SVDQ_SYNC_DISPATCH_METADATA_TO_UNPERMUTE};
+    }
+
+    __aicore__ inline bool DispatchRoutingReady() const
+    {
+        SVDQDispatchRoutingContract contract = DispatchRoutingContract();
+        return runtime_.x != nullptr && runtime_.expertId != nullptr && runtime_.probs != nullptr &&
+               runtime_.expertTokenNums != nullptr && WorkspaceAddress(contract.routedOutputRegionId) != nullptr &&
+               WorkspaceAddress(contract.routeIndexRegionId) != nullptr;
+    }
+
+    __aicore__ inline bool RunDispatchRoutingStage() const
+    {
+        if (!DispatchRoutingReady()) {
+            return false;
+        }
+        return false;
     }
 
     __aicore__ inline SVDQResidualStageContract ResidualStageContract(uint32_t stageId) const

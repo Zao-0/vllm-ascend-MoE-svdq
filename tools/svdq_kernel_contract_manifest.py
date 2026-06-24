@@ -564,6 +564,23 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "workspace_.lowRankRank2 = WorkspaceAddress(SVDQ_REGION_LOWRANK_RANK_2)" in sources["kernel_contract"]
         ),
         "kernel_exposes_bf16_stage_contracts": "BF16StageContract(uint32_t stageId)" in sources["kernel_contract"],
+        "kernel_records_dispatch_routing_contract": (
+            "SVDQDispatchRoutingContract" in sources["kernel_contract"]
+            and "DispatchRoutingContract() const" in sources["kernel_contract"]
+            and "DispatchRoutingReady() const" in sources["kernel_contract"]
+            and "RunDispatchRoutingStage() const" in sources["kernel_contract"]
+            and "SVDQ_STAGE_BF16_DISPATCH" in sources["kernel_contract"]
+            and "SVDQ_REGION_ROUTED_X" in sources["kernel_contract"]
+            and "SVDQ_REGION_EXPANDED_ROW_IDX" in sources["kernel_contract"]
+            and "SVDQ_SYNC_DISPATCH_TO_QUANT_1" in sources["kernel_contract"]
+            and "SVDQ_SYNC_DISPATCH_TO_LOWRANK_1" in sources["kernel_contract"]
+            and "SVDQ_SYNC_DISPATCH_METADATA_TO_UNPERMUTE" in sources["kernel_contract"]
+        ),
+        "kernel_dispatch_routing_execution_fail_closed": (
+            "RunDispatchRoutingStage() const" in sources["kernel_contract"]
+            and "DispatchRoutingReady()" in sources["kernel_contract"]
+            and "RunBF16LowRankStages()" in sources["kernel_contract"]
+        ),
         "kernel_exposes_residual_stage_contracts": (
             "ResidualStageShape(uint32_t stageId)" in sources["kernel_contract"]
             and "ResidualStageContract(uint32_t stageId)" in sources["kernel_contract"]
@@ -940,7 +957,11 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "IsImplemented() const\n    {\n        return HasCompleteContract();" in sources["lowrank_header"]
             ),
             "reason": (
-                "W4A8 residual execution, mixed epilogues, and final combine are incomplete."
+                "Dispatch routing, W4A8 residual execution, mixed epilogues, and final combine are incomplete."
+            ),
+            "dispatch_routing_execution_fail_closed": (
+                "RunDispatchRoutingStage() const" in sources["kernel_contract"]
+                and "DispatchRoutingReady()" in sources["kernel_contract"]
             ),
             "w4a8_residual_execution_fail_closed": (
                 "RunW4A8ResidualStages() const" in sources["kernel_contract"]
