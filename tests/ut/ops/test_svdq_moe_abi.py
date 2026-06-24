@@ -420,6 +420,13 @@ def test_official_w4a8_debug_readback_compile_flag_is_default_off():
     assert "copyUbToGmGMM1(gmTileGMM1, ubCFp32, layoutGMM1, layoutGMM1);" in gmm1_epilogue
     assert "layout::RowMajor layoutGMM1Hidden{1, ChunkTileLen};" in gmm1_epilogue
     assert "copyUbToGmGMM1Hidden(gmTileGMM1Hidden, ubCFp32ChunkN, layoutGMM1Hidden, layoutGMM1Hidden);" in gmm1_epilogue
+    hidden_copy = gmm1_epilogue.index(
+        "copyUbToGmGMM1Hidden(gmTileGMM1Hidden, ubCFp32ChunkN, layoutGMM1Hidden, layoutGMM1Hidden);"
+    )
+    quantization = gmm1_epilogue.index("// Quantization", hidden_copy)
+    hidden_copy_block = gmm1_epilogue[hidden_copy:quantization]
+    assert "AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID5);" in hidden_copy_block
+    assert hidden_copy_block.count("AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID5);") >= 2
     assert "copyUbToGmGMM2(gmTileGMM2, ubFp32, layoutGM, layoutUB);" in gmm2_epilogue
 
     assert "GM_ADDR debugGMM1GM = nullptr" in op_class

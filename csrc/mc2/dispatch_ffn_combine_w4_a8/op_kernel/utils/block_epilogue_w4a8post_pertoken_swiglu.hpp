@@ -344,6 +344,8 @@ public:
             layout::RowMajor layoutGMM1Hidden{1, ChunkTileLen};
             copyUbToGmGMM1Hidden(gmTileGMM1Hidden, ubCFp32ChunkN, layoutGMM1Hidden, layoutGMM1Hidden);
             AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID5);
+            AscendC::WaitFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID5);
+            AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID5);
 #endif
 
             // Quantization
