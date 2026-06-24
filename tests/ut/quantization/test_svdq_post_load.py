@@ -14,6 +14,7 @@ import vllm_ascend.quantization.methods.w4a8_svdq as w4a8_svdq
 from vllm_ascend.ops.fused_moe.moe_runtime_args import build_fused_experts_input
 from vllm_ascend.quantization.methods.svdq_post_load import (
     FINAL_SVDQ_FACTOR_NAMES,
+    FORBIDDEN_SVDQ_FACTOR_NAMES,
     SVDQ_BF16_DEBUG_STAGE_NAMES,
     SVDQ_FINAL_COMBINE_STAGE_NAMES,
     SVDQ_MIXED_EPILOGUE_STAGE_NAMES,
@@ -159,6 +160,25 @@ def test_svdq_post_load_builds_five_operator_factors_and_audits_branches():
     assert audit["bf16_stage_names"] == list(SVDQ_BF16_DEBUG_STAGE_NAMES)
     assert audit["bf16_stage_max_abs"] == 0.0
     assert audit["bf16_stage_all_finite"]
+    assert audit["operator_contract"] == {
+        "operator_factor_names": list(FINAL_SVDQ_FACTOR_NAMES),
+        "operator_factor_count": 5,
+        "missing_operator_factors": [],
+        "forbidden_factor_names": list(FORBIDDEN_SVDQ_FACTOR_NAMES),
+        "forbidden_factors_present": [],
+        "uses_fused_gate_up_l1": True,
+        "uses_separate_gate_up_l2": True,
+        "bf16_lowrank_stage_names": list(SVDQ_BF16_DEBUG_STAGE_NAMES),
+        "mixed_epilogue_stage_names": list(SVDQ_MIXED_EPILOGUE_STAGE_NAMES),
+        "final_combine_stage_names": list(SVDQ_FINAL_COMBINE_STAGE_NAMES),
+        "pre_swiglu_addends": {
+            "gate": ["w4a8_residual_gate", "bf16_gate_lowrank"],
+            "up": ["w4a8_residual_up", "bf16_up_lowrank"],
+        },
+        "pre_final_combine_addends": {
+            "down": ["w4a8_residual_down", "bf16_down_lowrank"],
+        },
+    }
     assert len(audit["branch_errors"]) == 2
     for entry in audit["branch_errors"]:
         assert set(entry["stage_shapes"]) == set(SVDQ_BF16_DEBUG_STAGE_NAMES)
@@ -240,6 +260,18 @@ def test_svdq_post_load_builds_five_operator_factors_and_audits_branches():
         "hidden": 4,
         "rank": 2,
     }
+
+
+def test_svdq_operator_audit_rejects_forbidden_fused_gate_up_l2_factor():
+    layer = _make_raw_factor_layer()
+    build_svdq_operator_factors(layer)
+    layer.register_parameter(
+        "gate_up_svdq_l2",
+        torch.nn.Parameter(torch.empty(2, 3, 3, dtype=torch.bfloat16), requires_grad=False),
+    )
+
+    with pytest.raises(ValueError, match="forbidden fused SVDQ factors"):
+        audit_svdq_operator_factors(layer)
 
 
 def test_svdq_bf16_stage_reference_exposes_e2_e7_intermediates():

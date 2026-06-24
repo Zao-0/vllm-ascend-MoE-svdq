@@ -208,7 +208,7 @@ def _validate_loaded_sets(layer: torch.nn.Module, spec: Any) -> dict[str, list[i
     expected = set(range(spec.num_experts))
     loaded_summary = {}
     for param_name in SVDQ_FACTOR_SPECS:
-        loaded = getattr(getattr(layer, param_name), "svdq_loaded_experts")
+        loaded = getattr(layer, param_name).svdq_loaded_experts
         if loaded != expected:
             raise ValueError(
                 f"{spec.prefix}.{param_name} incomplete: "
@@ -298,6 +298,7 @@ def _validate_layer(
         "bf16_stage_names": audit["bf16_stage_names"],
         "bf16_stage_max_abs": audit["bf16_stage_max_abs"],
         "bf16_stage_all_finite": audit["bf16_stage_all_finite"],
+        "operator_contract": audit["operator_contract"],
         "rank_metadata": audit["rank_metadata"],
         "mapping_first_factor_entries": [
             mapping for mapping in expert_params_mapping[:6] if mapping[3] in SVDQ_FACTOR_SPECS

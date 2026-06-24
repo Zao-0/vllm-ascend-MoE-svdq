@@ -18,7 +18,6 @@ import vllm_ascend.patch.worker.patch_svdq_moe_loading  # noqa: F401
 from vllm_ascend.quantization.methods.svdq_weight_loader import make_svdq_factor_weight_loader
 from vllm_ascend.quantization.svdq_spec import build_svdq_moe_layer_spec, detect_svdq_moe_layer
 
-
 MODEL_PATH = "/root/workspace/lza/LLM/Qwen3.5-35B-A3B-W4A8-svdq-r64-mtp-canonical"
 
 

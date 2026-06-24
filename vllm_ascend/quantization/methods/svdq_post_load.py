@@ -23,6 +23,10 @@ FINAL_SVDQ_FACTOR_NAMES = (
     "down_svdq_l2",
 )
 
+FORBIDDEN_SVDQ_FACTOR_NAMES = (
+    "gate_up_svdq_l2",
+)
+
 SVDQ_BF16_DEBUG_STAGE_NAMES = (
     "routing_input",
     "gate_up_l1_rank",
@@ -218,6 +222,36 @@ def _tensor_metadata(
         "expert_dimension": expert_dimension,
         "tp_local_dimensions": tp_local_dimensions,
         "sample_checksum": _sample_checksum(tensor[0]) if tensor.shape[0] > 0 else None,
+    }
+
+
+def _svdq_operator_contract_metadata(layer: torch.nn.Module) -> dict[str, Any]:
+    forbidden_present = [name for name in FORBIDDEN_SVDQ_FACTOR_NAMES if hasattr(layer, name)]
+    if forbidden_present:
+        raise ValueError(
+            "forbidden fused SVDQ factors are present in the operator ABI: "
+            f"{', '.join(forbidden_present)}."
+        )
+
+    missing_factors = [name for name in FINAL_SVDQ_FACTOR_NAMES if not hasattr(layer, name)]
+    return {
+        "operator_factor_names": list(FINAL_SVDQ_FACTOR_NAMES),
+        "operator_factor_count": len(FINAL_SVDQ_FACTOR_NAMES),
+        "missing_operator_factors": missing_factors,
+        "forbidden_factor_names": list(FORBIDDEN_SVDQ_FACTOR_NAMES),
+        "forbidden_factors_present": forbidden_present,
+        "uses_fused_gate_up_l1": True,
+        "uses_separate_gate_up_l2": True,
+        "bf16_lowrank_stage_names": list(SVDQ_BF16_DEBUG_STAGE_NAMES),
+        "mixed_epilogue_stage_names": list(SVDQ_MIXED_EPILOGUE_STAGE_NAMES),
+        "final_combine_stage_names": list(SVDQ_FINAL_COMBINE_STAGE_NAMES),
+        "pre_swiglu_addends": {
+            "gate": ["w4a8_residual_gate", "bf16_gate_lowrank"],
+            "up": ["w4a8_residual_up", "bf16_up_lowrank"],
+        },
+        "pre_final_combine_addends": {
+            "down": ["w4a8_residual_down", "bf16_down_lowrank"],
+        },
     }
 
 
@@ -680,6 +714,7 @@ def audit_svdq_operator_factors(
     local_experts = int(gate_up_l1.shape[0])
     hidden_size = int(gate_up_l1.shape[2])
     intermediate_size = int(gate_l2.shape[1])
+    operator_contract = _svdq_operator_contract_metadata(layer)
 
     expected_shapes = {
         "gate_up_svdq_l1": (local_experts, gate_rank + up_rank, hidden_size),
@@ -756,6 +791,7 @@ def audit_svdq_operator_factors(
         "bf16_stage_names": list(SVDQ_BF16_DEBUG_STAGE_NAMES),
         "bf16_stage_max_abs": bf16_stage_max_abs,
         "bf16_stage_all_finite": bf16_stage_all_finite,
+        "operator_contract": operator_contract,
         "sampled_experts": sampled_experts,
         "branch_errors": branch_errors,
         "factor_metadata": {
