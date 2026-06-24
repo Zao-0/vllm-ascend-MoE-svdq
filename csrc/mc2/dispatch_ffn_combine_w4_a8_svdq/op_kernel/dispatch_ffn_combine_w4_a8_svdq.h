@@ -13,7 +13,6 @@
 
 #include "kernel_operator.h"
 #include "dispatch_ffn_combine_w4_a8_svdq_tiling.h"
-#include "../../dispatch_ffn_combine_bf16/op_kernel/moe_init_routing_v2/moe_init_routing_v2.cpp"
 #include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2.cpp"
 #include "lowrank/svdq_fused_down_up.hpp"
 
@@ -460,8 +459,7 @@ public:
 
     __aicore__ inline GM_ADDR DispatchQuantRoutingTempWorkspace() const
     {
-        return runtime_.workspace + tilingData_.info.workspaceBytes +
-               tilingData_.dispatchRouting.bf16RoutingWorkspaceBytes;
+        return runtime_.workspace + tilingData_.info.workspaceBytes;
     }
 
     __aicore__ inline GM_ADDR FactorAddress(uint32_t factorId) const
@@ -603,28 +601,12 @@ public:
 
     __aicore__ inline bool DispatchRoutingReady() const
     {
-        SVDQDispatchRoutingContract contract = DispatchRoutingContract();
-        SVDQDispatchRoutingTiling routingTiling = DispatchRoutingTiling();
-        return runtime_.x != nullptr && runtime_.expertId != nullptr && runtime_.probs != nullptr &&
-               runtime_.expertTokenNums != nullptr && WorkspaceAddress(contract.routedOutputRegionId) != nullptr &&
-               WorkspaceAddress(contract.routeIndexRegionId) != nullptr &&
-               DispatchRoutingTempWorkspace() != nullptr && routingTiling.bf16RoutingTilingKey != 0 &&
-               routingTiling.bf16RoutingWorkspaceBytes > 0 && routingTiling.initRoutingQuantTilingKey != 0 &&
-               routingTiling.routingWorkspaceBytes > 0 && routingTiling.aivNum > 0;
+        return false;
     }
 
     __aicore__ inline bool RunDispatchRoutingStage() const
     {
-        if (!DispatchRoutingReady()) {
-            return false;
-        }
-        SVDQDispatchRoutingContract contract = DispatchRoutingContract();
-        SVDQDispatchRoutingTiling routingTiling = DispatchRoutingTiling();
-        moe_init_routing_v2<bfloat16_t>(runtime_.x, runtime_.expertId,
-            WorkspaceAddress(contract.routedOutputRegionId), WorkspaceAddress(contract.routeIndexRegionId),
-            runtime_.expertTokenNums, nullptr, DispatchRoutingTempWorkspace(),
-            &routingTiling.moeInitRoutingV2TilingData, routingTiling.bf16RoutingTilingKey);
-        return true;
+        return false;
     }
 
     __aicore__ inline SVDQResidualStageContract ResidualStageContract(uint32_t stageId) const

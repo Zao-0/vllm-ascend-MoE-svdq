@@ -9,6 +9,7 @@ endif()
 if (EXISTS ${CMAKE_SOURCE_DIR}/third_party/catlass/include)
     list(APPEND _DISPATCH_FFN_SVDQ_INC_OPTS -I${CMAKE_SOURCE_DIR}/third_party/catlass/include)
 endif()
+list(APPEND _DISPATCH_FFN_SVDQ_INC_OPTS -I${CMAKE_CURRENT_SOURCE_DIR}/../op_kernel)
 option(SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK
        "Mirror SVDQ low-rank MMAD FP32 L0C accumulators to GM for debug readback."
        OFF)

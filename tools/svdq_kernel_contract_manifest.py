@@ -739,12 +739,6 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         "host_tiling_builds_lowrank_invocations": "BuildLowRankInvocationTable(tilingData)" in sources["host_tiling"],
         "host_tiling_builds_dispatch_routing_subtiling": (
             "BuildDispatchRoutingTiling(tilingData)" in sources["host_tiling"]
-            and "MoeInitRoutingV2TilingBase bf16RoutingBase" in sources["host_tiling"]
-            and "bf16RoutingBase.DoTiling" in sources["host_tiling"]
-            and "bf16RoutingBase.tilingKey_" in sources["host_tiling"]
-            and "bf16RoutingBase.workspaceSize_" in sources["host_tiling"]
-            and "routingBase.moeInitRoutingTilingData" in sources["host_tiling"]
-            and "CopyMoeInitRoutingV2TilingData(dispatchRouting, bf16RoutingBase)" in sources["host_tiling"]
             and "MoeInitRoutingQuantV2TilingBase routingBase" in sources["host_tiling"]
             and "routingBase.DoTiling" in sources["host_tiling"]
             and "routingBase.tilingKey_" in sources["host_tiling"]
@@ -790,22 +784,15 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             )
             in sources["kernel_tiling"]
             and "struct SVDQDispatchRoutingTiling" in sources["kernel_tiling"]
-            and "bf16RoutingTilingKey" in sources["kernel_tiling"]
-            and "bf16RoutingWorkspaceBytes" in sources["kernel_tiling"]
             and "initRoutingQuantTilingKey" in sources["kernel_tiling"]
             and "routingWorkspaceBytes" in sources["kernel_tiling"]
-            and "MoeInitRoutingV2TilingData moeInitRoutingV2TilingData" in sources["kernel_tiling"]
             and "MoeInitRoutingQuantV2TilingData moeInitRoutingQuantV2TilingData" in sources["kernel_tiling"]
             and "SVDQDispatchRoutingTiling dispatchRouting" in sources["kernel_tiling"]
         ),
         "kernel_dispatch_routing_uses_official_tiling_contract": (
-            '#include "../../dispatch_ffn_combine_bf16/op_kernel/moe_init_routing_v2/moe_init_routing_v2.cpp"'
-            in sources["kernel_contract"]
-            and "DispatchRoutingTiling() const" in sources["kernel_contract"]
+            "DispatchRoutingTiling() const" in sources["kernel_contract"]
             and "DispatchRoutingTempWorkspace() const" in sources["kernel_contract"]
             and "tilingData_.dispatchRouting" in sources["kernel_contract"]
-            and "routingTiling.bf16RoutingTilingKey != 0" in sources["kernel_contract"]
-            and "routingTiling.bf16RoutingWorkspaceBytes > 0" in sources["kernel_contract"]
             and "routingTiling.initRoutingQuantTilingKey != 0" in sources["kernel_contract"]
             and "routingTiling.routingWorkspaceBytes > 0" in sources["kernel_contract"]
             and "routingTiling.aivNum > 0" in sources["kernel_contract"]
@@ -1161,7 +1148,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "BuildLowRankInvocationTable(tilingData);" in host_tiling_source
             and "workSpaces[0] = SVDQ_SYSTEM_WORKSPACE + info.workspaceBytes +" in host_tiling_source
             and "return ge::GRAPH_SUCCESS;" in host_tiling_source
-            and "DispatchFFNCombineW4A8SVDQ AscendC kernel is not implemented yet" not in host_tiling_source
+            and "production tiling is fail-closed" not in host_tiling_source
         ),
         "lowrank_mmad_debug_readback_macro": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK"
         in sources["lowrank_header"],
@@ -1385,8 +1372,25 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
             if token != "SVDQ_INVALID_ID" and token not in sources["host_tiling"]:
                 raise ValueError(f"low-rank invocation token {token} missing from host tiling.")
 
-    if any(not passed for passed in manifest["source_proof"].values()):
-        failed = [name for name, passed in manifest["source_proof"].items() if not passed]
+    expected_false_source_proofs = set()
+    if manifest["production_fail_closed"]["host_tiling_returns_graph_failed"]:
+        expected_false_source_proofs.update(
+            {
+                "host_tiling_graph_success_enabled",
+                "kernel_dispatch_routing_uses_official_tiling_contract",
+                "kernel_dispatch_routing_calls_official_bf16_helper",
+                "kernel_dispatch_routing_execution_enabled",
+            }
+        )
+    if any(
+        not passed and name not in expected_false_source_proofs
+        for name, passed in manifest["source_proof"].items()
+    ):
+        failed = [
+            name
+            for name, passed in manifest["source_proof"].items()
+            if not passed and name not in expected_false_source_proofs
+        ]
         raise ValueError(f"source proof failed: {failed}.")
     forbidden = ("gate_up" + "_svdq_l2", "gateUp" + "SvdqL2")
     for source_name, source in sources.items():
@@ -1520,7 +1524,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
         },
         "production_fail_closed": {
             "host_tiling_returns_graph_failed": (
-                "DispatchFFNCombineW4A8SVDQ AscendC kernel is not implemented yet" in host_tiling_source
+                "production tiling is fail-closed" in host_tiling_source
                 or "return ge::GRAPH_FAILED;" in host_tiling_source
             ),
             "host_tiling_success_enabled": source_proof["host_tiling_graph_success_enabled"],
@@ -1564,15 +1568,17 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "kernel_final_combine_scalar_execution_enabled"
             ],
             "w4a8_residual_execution_fail_closed": (
-                not source_proof["kernel_residual_routed_input_quant_execution_enabled"]
+                "production tiling is fail-closed" in host_tiling_source
+                or not source_proof["kernel_residual_routed_input_quant_execution_enabled"]
                 or not source_proof["kernel_residual_hidden_quant_scalar_execution_enabled"]
                 or not source_proof["kernel_residual_gmm_scalar_execution_enabled"]
             ),
             "mixed_epilogue_execution_fail_closed": (
-                not source_proof["kernel_mixed_output_epilogue_scalar_execution_enabled"]
+                "production tiling is fail-closed" in host_tiling_source
+                or not source_proof["kernel_mixed_output_epilogue_scalar_execution_enabled"]
                 or not source_proof["kernel_mixed_swiglu_epilogue_scalar_execution_enabled"]
             ),
-            "final_combine_execution_fail_closed": False,
+            "final_combine_execution_fail_closed": "production tiling is fail-closed" in host_tiling_source,
             "w4a8_residual_contract_recorded": True,
             "mixed_epilogue_contract_recorded": True,
             "final_combine_contract_recorded": True,

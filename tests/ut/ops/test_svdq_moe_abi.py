@@ -283,25 +283,19 @@ def test_svdq_host_tiling_builds_official_dispatch_routing_subtiling():
         "moe_init_routing_quant_v2_tiling.h"
     ) in tiling_header
     assert "struct SVDQDispatchRoutingTiling" in tiling_header
-    assert "uint64_t bf16RoutingTilingKey" in tiling_header
-    assert "uint64_t bf16RoutingWorkspaceBytes" in tiling_header
     assert "uint64_t initRoutingQuantTilingKey" in tiling_header
     assert "uint64_t routingWorkspaceBytes" in tiling_header
     assert "uint32_t aivNum" in tiling_header
-    assert "optiling::MoeInitRoutingV2TilingData moeInitRoutingV2TilingData" in tiling_header
     assert "optiling::MoeInitRoutingQuantV2TilingData moeInitRoutingQuantV2TilingData" in tiling_header
     assert "SVDQDispatchRoutingTiling dispatchRouting" in tiling_header
+    assert "bf16RoutingTilingKey" not in tiling_header
+    assert "bf16RoutingWorkspaceBytes" not in tiling_header
+    assert "MoeInitRoutingV2TilingData moeInitRoutingV2TilingData" not in tiling_header
 
     for token in (
+        "production tiling is fail-closed",
         "constexpr uint32_t SVDQ_ROUTING_BLOCK_NUM = 20",
         "constexpr uint64_t SVDQ_ROUTING_UB_SIZE = 196352",
-        "MoeInitRoutingV2TilingBase bf16RoutingBase",
-        "bf16RoutingBase.DoTiling",
-        "bf16ExpertNum",
-        "dispatchRouting.bf16RoutingTilingKey = bf16RoutingBase.tilingKey_",
-        "dispatchRouting.bf16RoutingWorkspaceBytes = bf16RoutingBase.workspaceSize_",
-        "dispatchRouting.moeInitRoutingV2TilingData = routingBase.moeInitRoutingTilingData",
-        "CopyMoeInitRoutingV2TilingData(dispatchRouting, bf16RoutingBase)",
         "MoeInitRoutingQuantV2TilingBase routingBase",
         "routingBase.DoTiling",
         "expertTokensCountOrCumsumFlag = 2",
@@ -319,7 +313,6 @@ def test_svdq_host_tiling_builds_official_dispatch_routing_subtiling():
         "srcToDstCapacityComputeParamsOp",
         "BuildDispatchRoutingTiling(tilingData)",
         "workSpaces[0] = SVDQ_SYSTEM_WORKSPACE + info.workspaceBytes +",
-        "tilingData->dispatchRouting.bf16RoutingWorkspaceBytes",
         "tilingData->dispatchRouting.routingWorkspaceBytes",
     ):
         assert token in tiling
@@ -415,6 +408,8 @@ def test_svdq_lowrank_debug_install_validator_checks_static_package_surfaces():
         assert symbol in validator
     assert "svdq_low_rank_debug_readback" in validator
     assert "dispatch_ffn_combine_w4a8_svdq" in validator
+    assert "--require-production-runtime-soc-support" in validator
+    assert '"production_fail_closed"' in validator
     assert "_custom_package_debug_op_support()" in validator
     assert "_package_supports_runtime_soc(" in validator
     assert "require_runtime_soc_support" in validator
@@ -1462,26 +1457,12 @@ def test_svdq_kernel_records_dispatch_routing_contract_before_lowrank():
         "DispatchRoutingTiling() const",
         "DispatchRoutingTempWorkspace() const",
         "tilingData_.dispatchRouting",
-        "routingTiling.bf16RoutingTilingKey != 0",
-        "routingTiling.bf16RoutingWorkspaceBytes > 0",
-        "routingTiling.initRoutingQuantTilingKey != 0",
-        "routingTiling.routingWorkspaceBytes > 0",
-        "routingTiling.aivNum > 0",
-        "moe_init_routing_v2<bfloat16_t>",
-        "WorkspaceAddress(contract.routedOutputRegionId)",
-        "WorkspaceAddress(contract.routeIndexRegionId)",
-        "&routingTiling.moeInitRoutingV2TilingData",
-        "routingTiling.bf16RoutingTilingKey",
         "SVDQ_STAGE_BF16_DISPATCH",
         "SVDQ_REGION_ROUTED_X",
         "SVDQ_REGION_EXPANDED_ROW_IDX",
         "SVDQ_SYNC_DISPATCH_TO_QUANT_1",
         "SVDQ_SYNC_DISPATCH_TO_LOWRANK_1",
         "SVDQ_SYNC_DISPATCH_METADATA_TO_UNPERMUTE",
-        "runtime_.x != nullptr",
-        "runtime_.expertId != nullptr",
-        "runtime_.probs != nullptr",
-        "runtime_.expertTokenNums != nullptr",
     ):
         assert token in contract
 
@@ -1490,8 +1471,14 @@ def test_svdq_kernel_records_dispatch_routing_contract_before_lowrank():
             "__aicore__ inline SVDQResidualStageContract"
         )
     ]
-    assert "moe_init_routing_v2<bfloat16_t>" in dispatch_source
-    assert "return true;" in dispatch_source
+    assert "moe_init_routing_v2<bfloat16_t>" not in dispatch_source
+    assert "return false;" in dispatch_source
+    dispatch_ready_source = contract[
+        contract.index("__aicore__ inline bool DispatchRoutingReady() const") : contract.index(
+            "__aicore__ inline bool RunDispatchRoutingStage() const"
+        )
+    ]
+    assert "return false;" in dispatch_ready_source
 
     process = contract[
         contract.index("__aicore__ inline void Process()") : contract.index(
@@ -2140,11 +2127,11 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert "gate_up_svdq_l2" not in json.dumps(loaded)
     assert loaded["rank_split_contract"]["split_source"] == "explicit gateRank/upRank offsets"
     assert loaded["rank_split_contract"]["up_rank_offset"] == "gateRank"
-    assert not loaded["production_fail_closed"]["host_tiling_returns_graph_failed"]
-    assert loaded["production_fail_closed"]["host_tiling_success_enabled"]
+    assert loaded["production_fail_closed"]["host_tiling_returns_graph_failed"]
+    assert not loaded["production_fail_closed"]["host_tiling_success_enabled"]
     assert loaded["production_fail_closed"]["sync_handoff_source_enabled"]
     assert loaded["production_fail_closed"]["lowrank_is_implemented_uses_complete_contract"]
-    assert loaded["production_fail_closed"]["dispatch_routing_execution_enabled"]
+    assert not loaded["production_fail_closed"]["dispatch_routing_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_routed_input_quant_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_hidden_quant_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_quant_launch_descriptor_recorded"]
@@ -2155,9 +2142,9 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["mixed_swiglu_epilogue_execution_enabled"]
     assert loaded["production_fail_closed"]["final_combine_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["final_combine_execution_enabled"]
-    assert not loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
-    assert not loaded["production_fail_closed"]["mixed_epilogue_execution_fail_closed"]
-    assert not loaded["production_fail_closed"]["final_combine_execution_fail_closed"]
+    assert loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
+    assert loaded["production_fail_closed"]["mixed_epilogue_execution_fail_closed"]
+    assert loaded["production_fail_closed"]["final_combine_execution_fail_closed"]
     assert loaded["production_fail_closed"]["w4a8_residual_contract_recorded"]
     assert loaded["production_fail_closed"]["mixed_epilogue_contract_recorded"]
     assert loaded["production_fail_closed"]["final_combine_contract_recorded"]
@@ -2165,9 +2152,9 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_records_dispatch_routing_contract"]
     assert loaded["source_proof"]["host_tiling_builds_dispatch_routing_subtiling"]
     assert loaded["source_proof"]["kernel_tiling_contains_dispatch_routing_subtiling"]
-    assert loaded["source_proof"]["kernel_dispatch_routing_uses_official_tiling_contract"]
-    assert loaded["source_proof"]["kernel_dispatch_routing_calls_official_bf16_helper"]
-    assert loaded["source_proof"]["kernel_dispatch_routing_execution_enabled"]
+    assert not loaded["source_proof"]["kernel_dispatch_routing_uses_official_tiling_contract"]
+    assert not loaded["source_proof"]["kernel_dispatch_routing_calls_official_bf16_helper"]
+    assert not loaded["source_proof"]["kernel_dispatch_routing_execution_enabled"]
     assert loaded["source_proof"]["kernel_process_orders_svdq_data_dependencies"]
     assert loaded["source_proof"]["kernel_validates_complete_sync_flag_table"]
     assert loaded["source_proof"]["kernel_synchronizes_stage_boundaries"]
@@ -2302,7 +2289,15 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "uses_expert_idx": True,
         "uses_probs": True,
     }
-    assert all(loaded["source_proof"].values())
+    expected_false_source_proofs = {
+        "kernel_dispatch_routing_uses_official_tiling_contract",
+        "kernel_dispatch_routing_calls_official_bf16_helper",
+        "kernel_dispatch_routing_execution_enabled",
+        "host_tiling_graph_success_enabled",
+    }
+    assert {
+        name for name, passed in loaded["source_proof"].items() if not passed
+    } == expected_false_source_proofs
     assert loaded["debug_readback_contract"] == {
         "compile_macro": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK",
         "cmake_option": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK",

@@ -210,29 +210,10 @@ static void CopyMoeInitRoutingQuantV2TilingData(
         routingBase.quantTilingData.gatherOutComputeParamsOp;
 }
 
-static void CopyMoeInitRoutingV2TilingData(
-    SVDQDispatchRoutingTiling& dispatchRouting, const optiling::MoeInitRoutingV2TilingBase& routingBase)
-{
-    dispatchRouting.moeInitRoutingV2TilingData = routingBase.moeInitRoutingTilingData;
-    dispatchRouting.moeInitRoutingV2TilingData.vbsComputeParamsOp =
-        routingBase.moeInitRoutingTilingData.vbsComputeParamsOp;
-    dispatchRouting.moeInitRoutingV2TilingData.vmsMiddleComputeParamsOp =
-        routingBase.moeInitRoutingTilingData.vmsMiddleComputeParamsOp;
-    dispatchRouting.moeInitRoutingV2TilingData.sortOutComputeParamsOp =
-        routingBase.moeInitRoutingTilingData.sortOutComputeParamsOp;
-    dispatchRouting.moeInitRoutingV2TilingData.srcToDstComputeParamsOp =
-        routingBase.moeInitRoutingTilingData.srcToDstComputeParamsOp;
-    dispatchRouting.moeInitRoutingV2TilingData.srcToDstCapacityComputeParamsOp =
-        routingBase.moeInitRoutingTilingData.srcToDstCapacityComputeParamsOp;
-    dispatchRouting.moeInitRoutingV2TilingData.gatherOutComputeParamsOp =
-        routingBase.moeInitRoutingTilingData.gatherOutComputeParamsOp;
-}
-
 static void BuildDispatchRoutingTiling(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
 {
     auto& info = tilingData->info;
     auto& dispatchRouting = tilingData->dispatchRouting;
-    optiling::MoeInitRoutingV2TilingBase bf16RoutingBase;
     optiling::MoeInitRoutingQuantV2TilingBase routingBase;
 
     constexpr int64_t inputDtypeSize = sizeof(int16_t);
@@ -243,18 +224,9 @@ static void BuildDispatchRoutingTiling(DispatchFFNCombineW4A8SVDQTilingData* til
     constexpr bool expertTokensBeforeCapacityFlag = false;
     constexpr int64_t quantMode = 1;
     constexpr uint32_t aivNumInitRouting = 2 * SVDQ_ROUTING_BLOCK_NUM;
-    const int64_t bf16ExpertNum =
-        static_cast<int64_t>(info.expertPerRank) * static_cast<int64_t>(info.worldSize);
     const int64_t expertNum =
         static_cast<int64_t>(info.expertPerRank) * static_cast<int64_t>(info.worldSize) + 1;
     const int64_t activeNum = static_cast<int64_t>(info.m) * static_cast<int64_t>(info.topK);
-
-    bf16RoutingBase.DoTiling(info.m, info.hiddenSize, info.topK, expertCapacity, bf16ExpertNum, activeNum,
-        dropPadMode, expertTokensCountOrCumsumFlag, expertTokensBeforeCapacityFlag, inputDtypeSize, quantMode,
-        scaleDim0, aivNumInitRouting, SVDQ_ROUTING_UB_SIZE);
-    dispatchRouting.bf16RoutingTilingKey = bf16RoutingBase.tilingKey_;
-    dispatchRouting.bf16RoutingWorkspaceBytes = bf16RoutingBase.workspaceSize_;
-    CopyMoeInitRoutingV2TilingData(dispatchRouting, bf16RoutingBase);
 
     routingBase.DoTiling(info.m, info.hiddenSize, info.topK, expertCapacity, expertNum, activeNum, dropPadMode,
         expertTokensCountOrCumsumFlag, expertTokensBeforeCapacityFlag, inputDtypeSize, quantMode, scaleDim0,
@@ -760,6 +732,10 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
         context->GetTilingData<DispatchFFNCombineW4A8SVDQTilingData>();
     OP_TILING_CHECK(tilingData == nullptr,
         OP_LOGE(nodeName, "tilingData is nullptr."), return ge::GRAPH_FAILED);
+    OP_LOGE(nodeName,
+        "DispatchFFNCombineW4A8SVDQ production tiling is fail-closed until official W4A8 AIC/AIV "
+        "residual and mixed-epilogue stages pass real-device numerical validation.");
+    return ge::GRAPH_FAILED;
 
     auto& info = tilingData->info;
     OP_TILING_CHECK(DispatchFFNCombineW4A8SVDQCheckAttrAndSetTiling(context, info) != ge::GRAPH_SUCCESS,
@@ -785,7 +761,6 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
     OP_TILING_CHECK(workSpaces == nullptr,
         OP_LOGE(nodeName, "workSpaces is nullptr."), return ge::GRAPH_FAILED);
     workSpaces[0] = SVDQ_SYSTEM_WORKSPACE + info.workspaceBytes +
-                    tilingData->dispatchRouting.bf16RoutingWorkspaceBytes +
                     tilingData->dispatchRouting.routingWorkspaceBytes;
 
     return ge::GRAPH_SUCCESS;

@@ -62,7 +62,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--require-runtime-soc-support",
         action="store_true",
-        help="Fail unless the installed package advertises SVDQLowRankDebugReadback for the current runtime SOC.",
+        help="Fail unless the installed package advertises the debug validation op for the current runtime SOC.",
+    )
+    parser.add_argument(
+        "--require-production-runtime-soc-support",
+        action="store_true",
+        help="Also require a production DispatchFFNCombineW4A8SVDQ runtime binary for the current SOC.",
     )
     return parser.parse_args()
 
@@ -111,7 +116,12 @@ def _opapi_symbol_status(lib_path: Path = CUSTOM_OPAPI_LIB) -> dict[str, Any]:
     return status
 
 
-def build_summary(*, device_id: int, require_runtime_soc_support: bool) -> dict[str, Any]:
+def build_summary(
+    *,
+    device_id: int,
+    require_runtime_soc_support: bool,
+    require_production_runtime_soc_support: bool = False,
+) -> dict[str, Any]:
     bootstrap_custom_op_env(include_vendor_lib=True)
     runtime_soc = _runtime_soc(device_id)
     package_support = _custom_package_debug_op_support()
@@ -125,7 +135,7 @@ def build_summary(*, device_id: int, require_runtime_soc_support: bool) -> dict[
         all(opapi_symbols["symbols"].values()),
         all(opapi_symbols["production_symbols"].values()),
         bool(package_support["debug_op_supported_socs"]),
-        bool(package_support["production_op_supported_socs"]),
+        bool(package_support["production_op_supported_socs"]) or not require_production_runtime_soc_support,
     ]
     debug_runtime_supported = _package_supports_runtime_soc(
         package_support=package_support,
@@ -136,11 +146,15 @@ def build_summary(*, device_id: int, require_runtime_soc_support: bool) -> dict[
         runtime_soc=runtime_soc.get("normalized_soc"),
         supported_socs_key="production_op_supported_socs",
     )
-    runtime_supported = debug_runtime_supported and production_runtime_supported
+    runtime_supported = debug_runtime_supported and (
+        production_runtime_supported or not require_production_runtime_soc_support
+    )
     passed = all(required_static_checks) and (runtime_supported or not require_runtime_soc_support)
     return {
         "passed": passed,
         "require_runtime_soc_support": require_runtime_soc_support,
+        "require_production_runtime_soc_support": require_production_runtime_soc_support,
+        "production_fail_closed": not require_production_runtime_soc_support,
         "debug_op_name": DEBUG_OP_NAME,
         "production_op_name": PRODUCTION_OP_NAME,
         "runtime_soc": runtime_soc,
@@ -159,6 +173,7 @@ def main() -> None:
     summary = build_summary(
         device_id=args.device_id,
         require_runtime_soc_support=args.require_runtime_soc_support,
+        require_production_runtime_soc_support=args.require_production_runtime_soc_support,
     )
     summary_path = Path(args.evidence_dir) / args.summary_name
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")

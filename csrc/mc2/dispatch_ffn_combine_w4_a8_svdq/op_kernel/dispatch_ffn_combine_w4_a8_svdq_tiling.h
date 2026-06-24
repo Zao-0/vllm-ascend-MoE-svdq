@@ -231,12 +231,9 @@ struct DispatchFFNCombineW4A8SVDQInfo {
 };
 
 struct SVDQDispatchRoutingTiling {
-    uint64_t bf16RoutingTilingKey;
-    uint64_t bf16RoutingWorkspaceBytes;
     uint64_t initRoutingQuantTilingKey;
     uint64_t routingWorkspaceBytes;
     uint32_t aivNum;
-    optiling::MoeInitRoutingV2TilingData moeInitRoutingV2TilingData;
     optiling::MoeInitRoutingQuantV2TilingData moeInitRoutingQuantV2TilingData;
 };
 
