@@ -425,6 +425,43 @@ static void BuildResidualGmmShapeTable(DispatchFFNCombineW4A8SVDQTilingData* til
         weight2Slot, scale2Slot, bias2Slot, info.expertPerRank);
 }
 
+static void SetMixedEpilogueShape(
+    DispatchFFNCombineW4A8SVDQTilingData* tilingData, uint32_t epilogueId, uint32_t stageId,
+    uint32_t residualRegionId, uint32_t lowRankRegionId, uint32_t scaleRegionId, uint32_t outputRegionId,
+    uint32_t m, uint32_t residualColumns, uint32_t lowRankColumns, uint32_t outputColumns,
+    uint32_t gateColumnOffset, uint32_t upColumnOffset, bool appliesSwiGLU)
+{
+    auto& epilogue = tilingData->mixedEpilogueShapes[epilogueId];
+    epilogue.stageId = stageId;
+    epilogue.residualRegionId = residualRegionId;
+    epilogue.lowRankRegionId = lowRankRegionId;
+    epilogue.scaleRegionId = scaleRegionId;
+    epilogue.outputRegionId = outputRegionId;
+    epilogue.m = m;
+    epilogue.residualColumns = residualColumns;
+    epilogue.lowRankColumns = lowRankColumns;
+    epilogue.outputColumns = outputColumns;
+    epilogue.gateColumnOffset = gateColumnOffset;
+    epilogue.upColumnOffset = upColumnOffset;
+    epilogue.swigluLimit = tilingData->info.swigluLimit;
+    epilogue.appliesSwiGLU = appliesSwiGLU;
+}
+
+static void BuildMixedEpilogueShapeTable(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
+{
+    auto& info = tilingData->info;
+    const uint32_t routedRows = info.maxOutputSize;
+
+    SetMixedEpilogueShape(tilingData, 0, SVDQ_STAGE_MIXED_EPILOGUE_1,
+        SVDQ_REGION_ACCUMULATOR_1, SVDQ_REGION_PROJECTION_1, SVDQ_REGION_X_SCALE, SVDQ_REGION_HIDDEN,
+        routedRows, info.intermediateSize * 2, info.intermediateSize * 2, info.intermediateSize,
+        0, info.intermediateSize, true);
+    SetMixedEpilogueShape(tilingData, 1, SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE,
+        SVDQ_REGION_ACCUMULATOR_2, SVDQ_REGION_PROJECTION_2, SVDQ_REGION_HIDDEN_SCALE, SVDQ_REGION_PEER_OUTPUT,
+        routedRows, info.hiddenSize, info.hiddenSize, info.hiddenSize,
+        SVDQ_INVALID_ID, SVDQ_INVALID_ID, false);
+}
+
 static void SetLowRankInvocation(
     DispatchFFNCombineW4A8SVDQTilingData* tilingData, uint32_t invocationId, uint32_t inputRegionId,
     uint32_t rankRegionId, uint32_t outputRegionId, uint32_t downFactorId, uint32_t upFactorId,
@@ -725,6 +762,7 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
     BuildResidualStageShapeTable(tilingData);
     BuildResidualQuantShapeTable(tilingData);
     BuildResidualGmmShapeTable(tilingData);
+    BuildMixedEpilogueShapeTable(tilingData);
     BuildLowRankInvocationTable(tilingData);
     size_t* workSpaces = context->GetWorkspaceSizes(1);
     OP_TILING_CHECK(workSpaces == nullptr,

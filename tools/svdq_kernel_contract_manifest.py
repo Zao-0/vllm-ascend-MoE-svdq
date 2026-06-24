@@ -501,6 +501,39 @@ RESIDUAL_GMM_LAUNCHES = [
     },
 ]
 
+MIXED_EPILOGUE_LAUNCHES = [
+    {
+        "id": 0,
+        "name": "SVDQ_STAGE_MIXED_EPILOGUE_1",
+        "residual_region": "SVDQ_REGION_ACCUMULATOR_1",
+        "lowrank_region": "SVDQ_REGION_PROJECTION_1",
+        "scale_region": "SVDQ_REGION_X_SCALE",
+        "output_region": "SVDQ_REGION_HIDDEN",
+        "m": "routedRows",
+        "residual_columns": "info.intermediateSize * 2",
+        "lowrank_columns": "info.intermediateSize * 2",
+        "output_columns": "info.intermediateSize",
+        "gate_column_offset": 0,
+        "up_column_offset": "info.intermediateSize",
+        "applies_swiglu": True,
+    },
+    {
+        "id": 1,
+        "name": "SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE",
+        "residual_region": "SVDQ_REGION_ACCUMULATOR_2",
+        "lowrank_region": "SVDQ_REGION_PROJECTION_2",
+        "scale_region": "SVDQ_REGION_HIDDEN_SCALE",
+        "output_region": "SVDQ_REGION_PEER_OUTPUT",
+        "m": "routedRows",
+        "residual_columns": "info.hiddenSize",
+        "lowrank_columns": "info.hiddenSize",
+        "output_columns": "info.hiddenSize",
+        "gate_column_offset": "SVDQ_INVALID_ID",
+        "up_column_offset": "SVDQ_INVALID_ID",
+        "applies_swiglu": False,
+    },
+]
+
 LOWRANK_INVOCATIONS = [
     {
         "id": 0,
@@ -852,6 +885,24 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "SVDQ_REGION_PROJECTION_2" in sources["kernel_contract"]
             and "SVDQ_REGION_PEER_OUTPUT" in sources["kernel_contract"]
         ),
+        "kernel_mixed_epilogue_launch_descriptor_recorded": (
+            "SVDQ_MIXED_EPILOGUE_COUNT = 2" in sources["kernel_tiling"]
+            and "struct SVDQMixedEpilogueShape" in sources["kernel_tiling"]
+            and "SVDQMixedEpilogueShape mixedEpilogueShapes[SVDQ_MIXED_EPILOGUE_COUNT]" in sources["kernel_tiling"]
+            and "SetMixedEpilogueShape" in sources["host_tiling"]
+            and "BuildMixedEpilogueShapeTable" in sources["host_tiling"]
+            and "BuildMixedEpilogueShapeTable(tilingData)" in sources["host_tiling"]
+            and "epilogue.swigluLimit = tilingData->info.swigluLimit" in sources["host_tiling"]
+            and "epilogue.appliesSwiGLU = appliesSwiGLU" in sources["host_tiling"]
+            and "SVDQMixedEpilogueLaunch" in sources["kernel_contract"]
+            and "MixedEpilogueShape(uint32_t epilogueId)" in sources["kernel_contract"]
+            and "BuildMixedEpilogueLaunch(uint32_t epilogueId)" in sources["kernel_contract"]
+            and "BuildMixedEpilogueLaunch(epilogueId)" in sources["kernel_contract"]
+            and "shape.gateColumnOffset == 0" in sources["kernel_contract"]
+            and "shape.upColumnOffset == tilingData_.info.intermediateSize" in sources["kernel_contract"]
+            and "shape.gateColumnOffset == SVDQ_INVALID_ID" in sources["kernel_contract"]
+            and "shape.upColumnOffset == SVDQ_INVALID_ID" in sources["kernel_contract"]
+        ),
         "kernel_records_final_combine_contract": (
             "SVDQFinalCombineContract" in sources["kernel_contract"]
             and "FinalCombineContract() const" in sources["kernel_contract"]
@@ -1076,6 +1127,20 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
             if token not in sources["kernel_contract"]:
                 raise ValueError(f"residual GMM launch helper {token} missing from kernel contract.")
 
+    for launch in manifest["mixed_epilogue_launches"]:
+        for token in (
+            launch["name"],
+            launch["residual_region"],
+            launch["lowrank_region"],
+            launch["scale_region"],
+            launch["output_region"],
+        ):
+            if token not in sources["host_tiling"] or token not in sources["kernel_contract"]:
+                raise ValueError(f"mixed epilogue launch token {token} missing from source.")
+        for token in ("SVDQMixedEpilogueShape", "SVDQMixedEpilogueLaunch", "BuildMixedEpilogueLaunch"):
+            if token not in sources["kernel_contract"]:
+                raise ValueError(f"mixed epilogue launch helper {token} missing from kernel contract.")
+
     for invocation in manifest["lowrank_invocations"]:
         for token in (
             invocation["name"],
@@ -1146,6 +1211,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
         "residual_stages": _residual_stage_records(),
         "residual_quant_launches": RESIDUAL_QUANT_LAUNCHES,
         "residual_gmm_launches": RESIDUAL_GMM_LAUNCHES,
+        "mixed_epilogue_launches": MIXED_EPILOGUE_LAUNCHES,
         "lowrank_invocations": LOWRANK_INVOCATIONS,
         "lowrank_tile_shape": {"m": 16, "n": 64, "k": 64},
         "debug_readback_contract": {
@@ -1238,6 +1304,9 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "residual_gmm_launch_descriptor_recorded": source_proof[
                 "kernel_residual_gmm_launch_descriptor_recorded"
             ],
+            "mixed_epilogue_launch_descriptor_recorded": source_proof[
+                "kernel_mixed_epilogue_launch_descriptor_recorded"
+            ],
             "w4a8_residual_execution_fail_closed": (
                 "RunW4A8ResidualStages() const" in sources["kernel_contract"]
                 and "RunMixedEpilogueStages() const" in sources["kernel_contract"]
@@ -1263,6 +1332,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "residual_stages": len(RESIDUAL_STAGES),
             "residual_quant_launches": len(RESIDUAL_QUANT_LAUNCHES),
             "residual_gmm_launches": len(RESIDUAL_GMM_LAUNCHES),
+            "mixed_epilogue_launches": len(MIXED_EPILOGUE_LAUNCHES),
             "lowrank_invocations": len(LOWRANK_INVOCATIONS),
         },
     }

@@ -189,6 +189,22 @@ struct SVDQMixedEpilogueContract {
     bool appliesSwiGLU;
 };
 
+struct SVDQMixedEpilogueLaunch {
+    uint32_t stageId;
+    GM_ADDR residualAccumulator;
+    GM_ADDR lowRankOutput;
+    GM_ADDR activationScale;
+    GM_ADDR output;
+    uint32_t m;
+    uint32_t residualColumns;
+    uint32_t lowRankColumns;
+    uint32_t outputColumns;
+    uint32_t gateColumnOffset;
+    uint32_t upColumnOffset;
+    float swigluLimit;
+    bool appliesSwiGLU;
+};
+
 struct SVDQFinalCombineContract {
     uint32_t stageId;
     uint32_t inputRegionId;
@@ -309,6 +325,11 @@ public:
     __aicore__ inline SVDQResidualGmmShape ResidualGmmShape(uint32_t gmmId) const
     {
         return tilingData_.residualGmmShapes[gmmId];
+    }
+
+    __aicore__ inline SVDQMixedEpilogueShape MixedEpilogueShape(uint32_t epilogueId) const
+    {
+        return tilingData_.mixedEpilogueShapes[epilogueId];
     }
 
     __aicore__ inline SVDQDispatchRoutingTiling DispatchRoutingTiling() const
@@ -769,19 +790,49 @@ public:
         }
     }
 
+    __aicore__ inline SVDQMixedEpilogueLaunch BuildMixedEpilogueLaunch(uint32_t epilogueId) const
+    {
+        SVDQMixedEpilogueContract contract = MixedEpilogueContract(epilogueId);
+        if (contract.stageId == SVDQ_INVALID_ID || epilogueId >= SVDQ_MIXED_EPILOGUE_COUNT) {
+            return {SVDQ_INVALID_ID, nullptr, nullptr, nullptr, nullptr,
+                0, 0, 0, 0, SVDQ_INVALID_ID, SVDQ_INVALID_ID, 0.0f, false};
+        }
+        SVDQMixedEpilogueShape shape = MixedEpilogueShape(epilogueId);
+        return {shape.stageId, WorkspaceAddress(shape.residualRegionId),
+            WorkspaceAddress(shape.lowRankRegionId), WorkspaceAddress(shape.scaleRegionId),
+            WorkspaceAddress(shape.outputRegionId), shape.m, shape.residualColumns, shape.lowRankColumns,
+            shape.outputColumns, shape.gateColumnOffset, shape.upColumnOffset, shape.swigluLimit,
+            shape.appliesSwiGLU};
+    }
+
     __aicore__ inline bool MixedEpilogueReady(uint32_t epilogueId) const
     {
         SVDQMixedEpilogueContract contract = MixedEpilogueContract(epilogueId);
-        if (contract.stageId == SVDQ_INVALID_ID) {
+        if (contract.stageId == SVDQ_INVALID_ID || epilogueId >= SVDQ_MIXED_EPILOGUE_COUNT) {
             return false;
         }
-        if (WorkspaceAddress(contract.residualRegionId) == nullptr ||
-            WorkspaceAddress(contract.lowRankRegionId) == nullptr ||
-            WorkspaceAddress(contract.scaleRegionId) == nullptr ||
-            WorkspaceAddress(contract.outputRegionId) == nullptr) {
+        SVDQMixedEpilogueShape shape = MixedEpilogueShape(epilogueId);
+        SVDQMixedEpilogueLaunch launch = BuildMixedEpilogueLaunch(epilogueId);
+        if (shape.stageId != contract.stageId || shape.residualRegionId != contract.residualRegionId ||
+            shape.lowRankRegionId != contract.lowRankRegionId || shape.scaleRegionId != contract.scaleRegionId ||
+            shape.outputRegionId != contract.outputRegionId || shape.appliesSwiGLU != contract.appliesSwiGLU ||
+            shape.m == 0 || shape.residualColumns == 0 || shape.lowRankColumns == 0 ||
+            shape.outputColumns == 0 || launch.residualAccumulator == nullptr ||
+            launch.lowRankOutput == nullptr || launch.activationScale == nullptr || launch.output == nullptr) {
             return false;
         }
-        return true;
+        if (shape.appliesSwiGLU) {
+            return shape.residualColumns == tilingData_.info.intermediateSize * 2 &&
+                   shape.lowRankColumns == tilingData_.info.intermediateSize * 2 &&
+                   shape.outputColumns == tilingData_.info.intermediateSize &&
+                   shape.gateColumnOffset == 0 &&
+                   shape.upColumnOffset == tilingData_.info.intermediateSize;
+        }
+        return shape.residualColumns == tilingData_.info.hiddenSize &&
+               shape.lowRankColumns == tilingData_.info.hiddenSize &&
+               shape.outputColumns == tilingData_.info.hiddenSize &&
+               shape.gateColumnOffset == SVDQ_INVALID_ID &&
+               shape.upColumnOffset == SVDQ_INVALID_ID;
     }
 
     __aicore__ inline bool RunMixedEpilogueStage(uint32_t epilogueId) const
@@ -789,6 +840,8 @@ public:
         if (!MixedEpilogueReady(epilogueId)) {
             return false;
         }
+        SVDQMixedEpilogueLaunch launch = BuildMixedEpilogueLaunch(epilogueId);
+        (void)launch;
         return false;
     }
 

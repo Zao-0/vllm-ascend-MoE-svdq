@@ -1151,10 +1151,16 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
 def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
     op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
     contract = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq.h").read_text()
+    tiling_header = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h").read_text()
+    tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
 
     for token in (
         "SVDQ_MIXED_EPILOGUE_COUNT = 2",
+        "SVDQMixedEpilogueShape",
         "SVDQMixedEpilogueContract",
+        "SVDQMixedEpilogueLaunch",
+        "MixedEpilogueShape(uint32_t epilogueId)",
+        "BuildMixedEpilogueLaunch(uint32_t epilogueId)",
         "MixedEpilogueContract(uint32_t epilogueId)",
         "MixedEpilogueReady(uint32_t epilogueId)",
         "RunMixedEpilogueStage(uint32_t epilogueId)",
@@ -1180,6 +1186,55 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
         "SVDQ_SYNC_MIXED_OUTPUT_EPILOGUE_TO_UNPERMUTE",
     ):
         assert token in contract
+
+    for token in (
+        "SVDQ_MIXED_EPILOGUE_COUNT = 2",
+        "SVDQMixedEpilogueShape",
+        "mixedEpilogueShapes[SVDQ_MIXED_EPILOGUE_COUNT]",
+    ):
+        assert token in tiling_header
+
+    for token in (
+        "SetMixedEpilogueShape",
+        "BuildMixedEpilogueShapeTable",
+        "BuildMixedEpilogueShapeTable(tilingData)",
+        "epilogue.swigluLimit = tilingData->info.swigluLimit",
+        "epilogue.appliesSwiGLU = appliesSwiGLU",
+        "SetMixedEpilogueShape(tilingData, 0, SVDQ_STAGE_MIXED_EPILOGUE_1",
+        "SVDQ_REGION_ACCUMULATOR_1, SVDQ_REGION_PROJECTION_1, SVDQ_REGION_X_SCALE, SVDQ_REGION_HIDDEN",
+        "routedRows, info.intermediateSize * 2, info.intermediateSize * 2, info.intermediateSize",
+        "0, info.intermediateSize, true",
+        "SetMixedEpilogueShape(tilingData, 1, SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE",
+        "SVDQ_REGION_ACCUMULATOR_2, SVDQ_REGION_PROJECTION_2, SVDQ_REGION_HIDDEN_SCALE, SVDQ_REGION_PEER_OUTPUT",
+        "routedRows, info.hiddenSize, info.hiddenSize, info.hiddenSize",
+        "SVDQ_INVALID_ID, SVDQ_INVALID_ID, false",
+    ):
+        assert token in tiling
+
+    epilogue_source = contract[
+        contract.index("__aicore__ inline SVDQMixedEpilogueContract MixedEpilogueContract") : contract.index(
+            "__aicore__ inline bool RunMixedEpilogueStages"
+        )
+    ]
+    for token in (
+        "BuildMixedEpilogueLaunch(epilogueId)",
+        "WorkspaceAddress(shape.residualRegionId)",
+        "WorkspaceAddress(shape.lowRankRegionId)",
+        "WorkspaceAddress(shape.scaleRegionId)",
+        "WorkspaceAddress(shape.outputRegionId)",
+        "shape.residualColumns == tilingData_.info.intermediateSize * 2",
+        "shape.lowRankColumns == tilingData_.info.intermediateSize * 2",
+        "shape.outputColumns == tilingData_.info.intermediateSize",
+        "shape.gateColumnOffset == 0",
+        "shape.upColumnOffset == tilingData_.info.intermediateSize",
+        "shape.residualColumns == tilingData_.info.hiddenSize",
+        "shape.lowRankColumns == tilingData_.info.hiddenSize",
+        "shape.outputColumns == tilingData_.info.hiddenSize",
+        "shape.gateColumnOffset == SVDQ_INVALID_ID",
+        "shape.upColumnOffset == SVDQ_INVALID_ID",
+        "(void)launch",
+    ):
+        assert token in epilogue_source
 
     for token in (
         "SVDQFinalCombineContract",
@@ -1872,6 +1927,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "residual_stages": 4,
         "residual_quant_launches": 2,
         "residual_gmm_launches": 2,
+        "mixed_epilogue_launches": 2,
         "lowrank_invocations": 2,
     }
     assert [factor["operator_tensor"] for factor in loaded["factor_abi"]] == [
@@ -1890,6 +1946,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["residual_routed_input_quant_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_quant_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_launch_descriptor_recorded"]
+    assert loaded["production_fail_closed"]["mixed_epilogue_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
     assert loaded["production_fail_closed"]["mixed_epilogue_execution_fail_closed"]
     assert loaded["production_fail_closed"]["final_combine_execution_fail_closed"]
@@ -1911,6 +1968,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_residual_routed_input_quant_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_execution_fail_closed"]
     assert loaded["source_proof"]["kernel_records_mixed_epilogue_contracts"]
+    assert loaded["source_proof"]["kernel_mixed_epilogue_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_records_final_combine_contract"]
     assert loaded["source_proof"]["kernel_mixed_final_execution_fail_closed"]
     assert loaded["source_proof"]["lowrank_helper_enabled_by_contract"]
@@ -1986,6 +2044,36 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["residual_gmm_launches"][1]["residual_scale_slot"] == "scale2"
     assert loaded["residual_gmm_launches"][1]["residual_bias_slot"] == "bias2"
     assert all(launch["residual_only"] for launch in loaded["residual_gmm_launches"])
+    assert loaded["mixed_epilogue_launches"][0] == {
+        "id": 0,
+        "name": "SVDQ_STAGE_MIXED_EPILOGUE_1",
+        "residual_region": "SVDQ_REGION_ACCUMULATOR_1",
+        "lowrank_region": "SVDQ_REGION_PROJECTION_1",
+        "scale_region": "SVDQ_REGION_X_SCALE",
+        "output_region": "SVDQ_REGION_HIDDEN",
+        "m": "routedRows",
+        "residual_columns": "info.intermediateSize * 2",
+        "lowrank_columns": "info.intermediateSize * 2",
+        "output_columns": "info.intermediateSize",
+        "gate_column_offset": 0,
+        "up_column_offset": "info.intermediateSize",
+        "applies_swiglu": True,
+    }
+    assert loaded["mixed_epilogue_launches"][1] == {
+        "id": 1,
+        "name": "SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE",
+        "residual_region": "SVDQ_REGION_ACCUMULATOR_2",
+        "lowrank_region": "SVDQ_REGION_PROJECTION_2",
+        "scale_region": "SVDQ_REGION_HIDDEN_SCALE",
+        "output_region": "SVDQ_REGION_PEER_OUTPUT",
+        "m": "routedRows",
+        "residual_columns": "info.hiddenSize",
+        "lowrank_columns": "info.hiddenSize",
+        "output_columns": "info.hiddenSize",
+        "gate_column_offset": "SVDQ_INVALID_ID",
+        "up_column_offset": "SVDQ_INVALID_ID",
+        "applies_swiglu": False,
+    }
     assert all(loaded["source_proof"].values())
     assert loaded["debug_readback_contract"] == {
         "compile_macro": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK",

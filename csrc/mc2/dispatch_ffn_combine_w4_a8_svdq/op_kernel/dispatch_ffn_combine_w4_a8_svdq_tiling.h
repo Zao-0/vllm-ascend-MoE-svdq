@@ -23,6 +23,7 @@ constexpr uint32_t SVDQ_BF16_STAGE_COUNT = 7;
 constexpr uint32_t SVDQ_RESIDUAL_STAGE_COUNT = 4;
 constexpr uint32_t SVDQ_RESIDUAL_QUANT_COUNT = 2;
 constexpr uint32_t SVDQ_RESIDUAL_GMM_COUNT = 2;
+constexpr uint32_t SVDQ_MIXED_EPILOGUE_COUNT = 2;
 constexpr uint32_t SVDQ_INVALID_ID = 0xffffffffU;
 
 enum SVDQWorkspaceRegionId : uint32_t {
@@ -182,6 +183,22 @@ struct SVDQResidualGmmShape {
     bool residualOnly;
 };
 
+struct SVDQMixedEpilogueShape {
+    uint32_t stageId;
+    uint32_t residualRegionId;
+    uint32_t lowRankRegionId;
+    uint32_t scaleRegionId;
+    uint32_t outputRegionId;
+    uint32_t m;
+    uint32_t residualColumns;
+    uint32_t lowRankColumns;
+    uint32_t outputColumns;
+    uint32_t gateColumnOffset;
+    uint32_t upColumnOffset;
+    float swigluLimit;
+    bool appliesSwiGLU;
+};
+
 struct DispatchFFNCombineW4A8SVDQInfo {
     uint32_t m;
     uint32_t hiddenSize;
@@ -220,6 +237,7 @@ struct DispatchFFNCombineW4A8SVDQTilingData {
     SVDQResidualStageShape residualStageShapes[SVDQ_RESIDUAL_STAGE_COUNT];
     SVDQResidualQuantShape residualQuantShapes[SVDQ_RESIDUAL_QUANT_COUNT];
     SVDQResidualGmmShape residualGmmShapes[SVDQ_RESIDUAL_GMM_COUNT];
+    SVDQMixedEpilogueShape mixedEpilogueShapes[SVDQ_MIXED_EPILOGUE_COUNT];
     DispatchFFNCombineW4A8SVDQImpl::SVDQFusedDownUpTiling
         lowRankInvocations[DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_COUNT];
 };
