@@ -1309,7 +1309,11 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         ),
         "official_w4a8_gmm1_epilogue_debug_copies_fp32": (
             "#ifdef W4A8_DEBUG" in sources["official_w4a8_gmm1_epilogue"]
-            and "DataCopy(gmTileGMM1, ubCFp32, blockN);"
+            and "using CopyUbToGmGMM1 = typename TileCopyDebug::CopyUbToGmD;"
+            in sources["official_w4a8_gmm1_epilogue"]
+            and "layout::RowMajor layoutGMM1{1, blockN};"
+            in sources["official_w4a8_gmm1_epilogue"]
+            and "copyUbToGmGMM1(gmTileGMM1, ubCFp32, layoutGMM1, layoutGMM1);"
             in sources["official_w4a8_gmm1_epilogue"]
         ),
         "official_w4a8_gmm2_epilogue_debug_copies_fp32": (
@@ -1757,7 +1761,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "source": "block_epilogue_w4a8post_pertoken_swiglu.hpp",
                 "dtype": "FP32",
                 "semantic_point": "post-dequant pre-SwiGLU GMM1",
-                "copy_token": "DataCopy(gmTileGMM1, ubCFp32, blockN);",
+                "copy_token": "copyUbToGmGMM1(gmTileGMM1, ubCFp32, layoutGMM1, layoutGMM1);",
             },
             "gmm2_readback": {
                 "workspace_ptr": "ptrCGMM2",

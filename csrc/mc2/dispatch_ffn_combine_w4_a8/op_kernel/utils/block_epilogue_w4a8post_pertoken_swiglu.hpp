@@ -57,6 +57,11 @@ public:
     using CopyUbToGmD = typename TileCopy_::CopyUbToGmD;
     using CopyUbToGmDequantScale =
         Epilogue::Tile::CopyUb2Gm<ArchTag, Gemm::GemmType<ElementPerTokenScale, LayoutPerTokenScale>>;
+    using TileCopyDebug =
+        Epilogue::Tile::TileCopy<Arch::AtlasA2, Gemm::GemmType<float32_t, layout::RowMajor>,
+                                 Gemm::GemmType<uint64_t, layout::VectorLayout>,
+                                 Gemm::GemmType<float, layout::VectorLayout>, Gemm::GemmType<float, layout::RowMajor>>;
+    using CopyUbToGmGMM1 = typename TileCopyDebug::CopyUbToGmD;
 
     struct Params {
         __gm__ ElementPerTokenScale *ptrPerTokenScale{nullptr};
@@ -309,7 +314,8 @@ public:
             // PipeBarrier<PIPE_ALL>();
             AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID5);
             AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID5);
-            DataCopy(gmTileGMM1, ubCFp32, blockN);
+            layout::RowMajor layoutGMM1{1, blockN};
+            copyUbToGmGMM1(gmTileGMM1, ubCFp32, layoutGMM1, layoutGMM1);
             AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID5);
             // PipeBarrier<PIPE_ALL>();
 #endif
@@ -442,6 +448,7 @@ private:
     CopyGmToUbC copyGmToUbC;
     CopyUbToGmD copyUbToGmD;
     CopyUbToGmDequantScale copyUbToGmDequantScale;
+    CopyUbToGmGMM1 copyUbToGmGMM1;
 };
 
 }  // namespace Catlass::Epilogue::Block

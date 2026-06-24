@@ -407,7 +407,9 @@ def test_official_w4a8_debug_readback_compile_flag_is_default_off():
     assert "if (params.ptrDebugGMM2 != nullptr)" in kernel
     assert "ptrCGMM2 = params.ptrDebugGMM2;" in kernel
     assert "workspaceOffset += params.maxOutputSize * n2 * sizeof(float);" in kernel
-    assert "DataCopy(gmTileGMM1, ubCFp32, blockN);" in gmm1_epilogue
+    assert "using CopyUbToGmGMM1 = typename TileCopyDebug::CopyUbToGmD;" in gmm1_epilogue
+    assert "layout::RowMajor layoutGMM1{1, blockN};" in gmm1_epilogue
+    assert "copyUbToGmGMM1(gmTileGMM1, ubCFp32, layoutGMM1, layoutGMM1);" in gmm1_epilogue
     assert "copyUbToGmGMM2(gmTileGMM2, ubFp32, layoutGM, layoutUB);" in gmm2_epilogue
 
     assert "GM_ADDR debugGMM1GM = nullptr" in op_class
@@ -2626,7 +2628,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
             "source": "block_epilogue_w4a8post_pertoken_swiglu.hpp",
             "dtype": "FP32",
             "semantic_point": "post-dequant pre-SwiGLU GMM1",
-            "copy_token": "DataCopy(gmTileGMM1, ubCFp32, blockN);",
+            "copy_token": "copyUbToGmGMM1(gmTileGMM1, ubCFp32, layoutGMM1, layoutGMM1);",
         },
         "gmm2_readback": {
             "workspace_ptr": "ptrCGMM2",
