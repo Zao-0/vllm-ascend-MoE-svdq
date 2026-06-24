@@ -2294,6 +2294,10 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_files"]["official_w4a8_debug_kernel_entry"] == (
         "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/svdqw4_a8_debug_readback.cpp"
     )
+    assert loaded["source_files"]["w4a8_debug_torch_adapter"] == (
+        "csrc/mc2/svdq_w4a8_debug_readback/svdq_w4a8_debug_readback_torch_adpt.h"
+    )
+    assert loaded["source_files"]["w4a8_debug_probe"] == "tools/svdq_w4a8_debug_readback_probe.py"
     assert loaded["source_files"]["official_w4a8_op"] == (
         "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h"
     )
@@ -2579,7 +2583,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     }
     assert loaded["w4a8_debug_readback_contract"] == {
         "cann_operator_surface_wired": True,
-        "launch_operator_wired": False,
+        "launch_operator_wired": True,
         "acceptance_gate_claimed": False,
         "public_grouped_matmul_allowed": False,
         "required_compile_option": "SVDQ_W4A8_DEBUG_READBACK",
@@ -2605,7 +2609,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
             "semantic_point": "post-dequant GMM2 before BF16/output copy",
             "copy_token": "copyUbToGmGMM2(gmTileGMM2, ubFp32, layoutGM, layoutUB);",
         },
-        "future_debug_op_abi": {
+        "debug_op_abi": {
             "op_name": "SVDQW4A8DebugReadback",
             "aclnn_get_workspace": "aclnnSVDQW4A8DebugReadbackGetWorkspaceSize",
             "aclnn_launch": "aclnnSVDQW4A8DebugReadback",
@@ -2634,6 +2638,8 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
             "official_w4a8_debug_op_surface_wired",
             "official_w4a8_debug_op_aclnn_wrapper",
             "official_w4a8_debug_kernel_reuses_official_path",
+            "official_w4a8_debug_torch_adapter_registered",
+            "official_w4a8_debug_probe_launches_real_op",
             "official_w4a8_kernel_binds_block_mmad_and_epilogues",
             "official_w4a8_gmm1_epilogue_debug_copies_fp32",
             "official_w4a8_gmm2_epilogue_debug_copies_fp32",

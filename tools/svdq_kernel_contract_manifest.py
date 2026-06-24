@@ -39,6 +39,8 @@ TORCH_BINDING = Path("csrc/torch_binding.cpp")
 TORCH_BINDING_META = Path("csrc/torch_binding_meta.cpp")
 LOWRANK_DEBUG_PROBE = Path("tools/svdq_lowrank_debug_readback_probe.py")
 LOWRANK_DEBUG_INSTALL_VALIDATE = Path("tools/svdq_lowrank_debug_install_validate.py")
+W4A8_DEBUG_TORCH_ADAPTER = Path("csrc/mc2/svdq_w4a8_debug_readback/svdq_w4a8_debug_readback_torch_adpt.h")
+W4A8_DEBUG_PROBE = Path("tools/svdq_w4a8_debug_readback_probe.py")
 BUILD_ACLNN = Path("csrc/build_aclnn.sh")
 
 OFFICIAL_W4A8_ROOT = Path("csrc/mc2/dispatch_ffn_combine_w4_a8")
@@ -630,9 +632,11 @@ def _read_sources(repo_root: Path) -> dict[str, str]:
         "lowrank_debug_alias_cmake": (repo_root / LOWRANK_DEBUG_ALIAS_CMAKE).read_text(encoding="utf-8"),
         "lowrank_debug_alias_kernel": (repo_root / LOWRANK_DEBUG_ALIAS_KERNEL).read_text(encoding="utf-8"),
         "lowrank_debug_torch_adapter": (repo_root / LOWRANK_DEBUG_TORCH_ADAPTER).read_text(encoding="utf-8"),
+        "w4a8_debug_torch_adapter": (repo_root / W4A8_DEBUG_TORCH_ADAPTER).read_text(encoding="utf-8"),
         "torch_binding": (repo_root / TORCH_BINDING).read_text(encoding="utf-8"),
         "torch_binding_meta": (repo_root / TORCH_BINDING_META).read_text(encoding="utf-8"),
         "lowrank_debug_probe": (repo_root / LOWRANK_DEBUG_PROBE).read_text(encoding="utf-8"),
+        "w4a8_debug_probe": (repo_root / W4A8_DEBUG_PROBE).read_text(encoding="utf-8"),
         "lowrank_debug_install_validate": (repo_root / LOWRANK_DEBUG_INSTALL_VALIDATE).read_text(
             encoding="utf-8"
         ),
@@ -1277,6 +1281,25 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "gmm1PostDequant" in sources["official_w4a8_debug_kernel_entry"]
             and "gmm2PostDequant" in sources["official_w4a8_debug_kernel_entry"]
         ),
+        "official_w4a8_debug_torch_adapter_registered": (
+            "aclnnSVDQW4A8DebugReadback" in sources["w4a8_debug_torch_adapter"]
+            and "svdq_w4a8_debug_readback" in sources["w4a8_debug_torch_adapter"]
+            and 'ops.def(\n        "svdq_w4a8_debug_readback' in sources["torch_binding"]
+            and 'ops.impl("svdq_w4a8_debug_readback", torch::kPrivateUse1'
+            in sources["torch_binding"]
+            and "svdq_w4a8_debug_readback_meta" in sources["torch_binding_meta"]
+            and 'ops.impl("svdq_w4a8_debug_readback", &vllm_ascend::meta::svdq_w4a8_debug_readback_meta)'
+            in sources["torch_binding_meta"]
+        ),
+        "official_w4a8_debug_probe_launches_real_op": (
+            "torch.ops._C_ascend.svdq_w4a8_debug_readback" in sources["w4a8_debug_probe"]
+            and "aclnnSVDQW4A8DebugReadback" in sources["w4a8_debug_probe"]
+            and "public_grouped_matmul_used" in sources["w4a8_debug_probe"]
+            and "real_checkpoint_validation" in sources["w4a8_debug_probe"]
+            and "gmm1_post_dequant_active" in sources["w4a8_debug_probe"]
+            and "gmm2_post_dequant_active" in sources["w4a8_debug_probe"]
+            and "npu_grouped_matmul" not in sources["w4a8_debug_probe"]
+        ),
         "official_w4a8_kernel_binds_block_mmad_and_epilogues": (
             "using BlockMmad = Gemm::Block::BlockMmad" in sources["official_w4a8_op"]
             and "EpilogueAtlasA2W4A8PostPerTokenDequantSwigluQuant"
@@ -1632,6 +1655,8 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "official_w4a8_kernel": str(OFFICIAL_W4A8_KERNEL),
             "official_w4a8_kernel_entry": str(OFFICIAL_W4A8_KERNEL_ENTRY),
             "official_w4a8_debug_kernel_entry": str(OFFICIAL_W4A8_DEBUG_KERNEL_ENTRY),
+            "w4a8_debug_torch_adapter": str(W4A8_DEBUG_TORCH_ADAPTER),
+            "w4a8_debug_probe": str(W4A8_DEBUG_PROBE),
             "official_w4a8_op": str(OFFICIAL_W4A8_OP),
             "official_w4a8_gmm1_epilogue": str(OFFICIAL_W4A8_GMM1_EPILOGUE),
             "official_w4a8_gmm2_epilogue": str(OFFICIAL_W4A8_GMM2_EPILOGUE),
@@ -1715,7 +1740,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
         },
         "w4a8_debug_readback_contract": {
             "cann_operator_surface_wired": True,
-            "launch_operator_wired": False,
+            "launch_operator_wired": True,
             "acceptance_gate_claimed": False,
             "public_grouped_matmul_allowed": False,
             "required_compile_option": "SVDQ_W4A8_DEBUG_READBACK",
@@ -1741,7 +1766,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "semantic_point": "post-dequant GMM2 before BF16/output copy",
                 "copy_token": "copyUbToGmGMM2(gmTileGMM2, ubFp32, layoutGM, layoutUB);",
             },
-            "future_debug_op_abi": {
+            "debug_op_abi": {
                 "op_name": "SVDQW4A8DebugReadback",
                 "aclnn_get_workspace": "aclnnSVDQW4A8DebugReadbackGetWorkspaceSize",
                 "aclnn_launch": "aclnnSVDQW4A8DebugReadback",
@@ -1770,6 +1795,8 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
                 "official_w4a8_debug_op_surface_wired",
                 "official_w4a8_debug_op_aclnn_wrapper",
                 "official_w4a8_debug_kernel_reuses_official_path",
+                "official_w4a8_debug_torch_adapter_registered",
+                "official_w4a8_debug_probe_launches_real_op",
                 "official_w4a8_kernel_binds_block_mmad_and_epilogues",
                 "official_w4a8_gmm1_epilogue_debug_copies_fp32",
                 "official_w4a8_gmm2_epilogue_debug_copies_fp32",

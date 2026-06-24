@@ -38,6 +38,7 @@
 #include "mc2/dispatch_ffn_combine/dispatch_ffn_combine_torch_adpt.h"
 #include "mc2/dispatch_ffn_combine_w4_a8_svdq/dispatch_ffn_combine_w4_a8_svdq_torch_adpt.h"
 #include "mc2/svdq_low_rank_debug_readback/svdq_low_rank_debug_readback_torch_adpt.h"
+#include "mc2/svdq_w4a8_debug_readback/svdq_w4a8_debug_readback_torch_adpt.h"
 #include "mc2/dispatch_gmm_combine_decode/dispatch_gmm_combine_decode_torch_adpt.h"
 #include "mc2/dispatch_layout/dispatch_layout_torch_adpt.h"
 #include "gmm/grouped_matmul_swiglu_quant_weight_nz_tensor_list/grouped_matmul_swiglu_quant_torch_adpt.h"
@@ -2488,6 +2489,16 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         "                                                    Tensor gate_up_accumulator, Tensor down_accumulator)"
     );
     ops.impl("svdq_low_rank_debug_readback", torch::kPrivateUse1, &vllm_ascend::svdq_low_rank_debug_readback);
+
+    ops.def(
+        "svdq_w4a8_debug_readback(Tensor x, Tensor[] weight1, Tensor[] weight2, Tensor expert_idx,"
+        "                          Tensor[] scale1, Tensor[] scale2, Tensor[] bias1, Tensor[] bias2,"
+        "                          Tensor probs, str group, int max_output_size, Tensor? x_active_mask=None,"
+        "                          float swiglu_limit=1000000.0) -> (Tensor out, Tensor expert_token_nums,"
+        "                                                             Tensor gmm1_post_dequant,"
+        "                                                             Tensor gmm2_post_dequant)"
+    );
+    ops.impl("svdq_w4a8_debug_readback", torch::kPrivateUse1, &vllm_ascend::svdq_w4a8_debug_readback);
 
     ops.def("matmul_allreduce_add_rmsnorm(Tensor x1, Tensor x2, Tensor residual, Tensor gamma, \
         str groupTp, int tpRankSize, int tpRankId, float epsilon, bool isTransB, bool isGatherAddOut) -> (Tensor output, Tensor add_out)");
