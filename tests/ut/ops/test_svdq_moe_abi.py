@@ -800,6 +800,33 @@ def test_svdq_w4a8_debug_readback_real_checkpoint_probe_uses_official_debug_path
     assert "npu_grouped_matmul" not in probe
 
 
+def test_svdq_w4a8_tap_mixed_epilogue_probe_uses_official_taps_and_records_limitations():
+    probe = (REPO_ROOT / "tools/svdq_w4a8_tap_mixed_epilogue_probe.py").read_text()
+
+    for token in (
+        "torch.ops._C_ascend.svdq_w4a8_debug_readback",
+        "_official_gmm1_unfused_reference",
+        "_official_gmm2_unfused_reference",
+        "_launch_lowrank_debug",
+        "_run_npu_mixed_epilogue",
+        "build_svdq_mixed_epilogue_reference",
+        "source_for_mixed_epilogue",
+        "finite_fp32_accumulator_readback_cast_to_bf16",
+        "bf16_output_used_for_mixed_epilogue",
+        "False",
+        "production_svdq_host_tiling_fail_closed",
+        "public_grouped_matmul_used",
+        "GMM2 residual tap comes from the official W4A8 debug path",
+        "relaunch official GMM2 from the SVDQ-modified hidden activation",
+        "hidden_q_mismatch_count_tolerance",
+        "--hidden-q-mismatch-count-tol",
+        "phase_w4a8_tap_mixed_epilogue_summary.json",
+        "--require-npu",
+    ):
+        assert token in probe
+    assert "npu_grouped_matmul" not in probe
+
+
 def test_svdq_final_combine_device_probe_executes_official_token_unpermute_surface():
     probe = (REPO_ROOT / "tools/svdq_final_combine_device_probe.py").read_text()
 
