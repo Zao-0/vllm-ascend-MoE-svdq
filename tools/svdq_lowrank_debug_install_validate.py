@@ -40,12 +40,33 @@ from vllm_ascend.utils import bootstrap_custom_op_env, enable_custom_op  # noqa:
 DEFAULT_SUMMARY_NAME = "phase_z_lowrank_debug_install_validate_summary.json"
 CUSTOM_OP_VENDOR_DIR = REPO_ROOT / "vllm_ascend/_cann_ops_custom/vendors/custom_transformer"
 CUSTOM_OPAPI_LIB = CUSTOM_OP_VENDOR_DIR / "op_api/lib/libcust_opapi.so"
+CUSTOM_LOWRANK_DEBUG_SOURCE_DIR = (
+    CUSTOM_OP_VENDOR_DIR
+    / "op_impl/ai_core/tbe/custom_transformer_impl/ascendc/"
+    "dispatch_ffn_combine_w4_a8_svdq/lowrank"
+)
 REQUIRED_OPAPI_SYMBOLS = (
     "aclnnSVDQLowRankDebugReadbackGetWorkspaceSize",
     "aclnnSVDQLowRankDebugReadback",
     "aclnnInnerSVDQLowRankDebugReadbackGetWorkspaceSize",
     "aclnnInnerSVDQLowRankDebugReadback",
 )
+REQUIRED_PACKAGE_SOURCE_SNIPPETS = {
+    "svdq_lowrank_debug_readback.h": (
+        "GM_ADDR rankWorkspace",
+        "GM_ADDR workspaceGM",
+        "runtime_.rankWorkspace = workspaceGM",
+        "args.rank = runtime_.rankWorkspace",
+    ),
+    "svdq_lowrank_debug_readback.cpp": (
+        "downAccumulator, workspaceGM, tilingGM",
+    ),
+}
+FORBIDDEN_PACKAGE_SOURCE_SNIPPETS = {
+    "svdq_lowrank_debug_readback.cpp": (
+        "(void)workspaceGM",
+    ),
+}
 REQUIRED_PRODUCTION_OPAPI_SYMBOLS = (
     "aclnnDispatchFFNCombineW4A8SVDQGetWorkspaceSize",
     "aclnnDispatchFFNCombineW4A8SVDQ",
@@ -116,6 +137,49 @@ def _opapi_symbol_status(lib_path: Path = CUSTOM_OPAPI_LIB) -> dict[str, Any]:
     return status
 
 
+def _package_lowrank_debug_source_status(
+    source_dir: Path = CUSTOM_LOWRANK_DEBUG_SOURCE_DIR,
+) -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "source_dir": str(source_dir),
+        "exists": source_dir.exists(),
+        "checked": False,
+        "passed": True,
+        "required_snippets": {},
+        "forbidden_snippets": {},
+    }
+    if not source_dir.exists():
+        return status
+
+    status["checked"] = True
+    required_results: dict[str, dict[str, bool]] = {}
+    forbidden_results: dict[str, dict[str, bool]] = {}
+    passed = True
+    for filename, snippets in REQUIRED_PACKAGE_SOURCE_SNIPPETS.items():
+        path = source_dir / filename
+        if not path.exists():
+            required_results[filename] = {snippet: False for snippet in snippets}
+            passed = False
+            continue
+        content = path.read_text(encoding="utf-8")
+        required_results[filename] = {snippet: snippet in content for snippet in snippets}
+        passed = passed and all(required_results[filename].values())
+
+    for filename, snippets in FORBIDDEN_PACKAGE_SOURCE_SNIPPETS.items():
+        path = source_dir / filename
+        if not path.exists():
+            forbidden_results[filename] = {snippet: False for snippet in snippets}
+            continue
+        content = path.read_text(encoding="utf-8")
+        forbidden_results[filename] = {snippet: snippet in content for snippet in snippets}
+        passed = passed and not any(forbidden_results[filename].values())
+
+    status["required_snippets"] = required_results
+    status["forbidden_snippets"] = forbidden_results
+    status["passed"] = passed
+    return status
+
+
 def build_summary(
     *,
     device_id: int,
@@ -127,6 +191,7 @@ def build_summary(
     package_support = _custom_package_debug_op_support()
     torch_schema = _torch_schema_status()
     opapi_symbols = _opapi_symbol_status()
+    package_lowrank_debug_source = _package_lowrank_debug_source_status()
     required_static_checks = [
         bool(torch_schema["has_debug_op"]),
         bool(torch_schema["has_production_op"]),
@@ -134,6 +199,7 @@ def build_summary(
         bool(opapi_symbols["loaded"]),
         all(opapi_symbols["symbols"].values()),
         all(opapi_symbols["production_symbols"].values()),
+        bool(package_lowrank_debug_source["passed"]),
         bool(package_support["debug_op_supported_socs"]),
         bool(package_support["production_op_supported_socs"]) or not require_production_runtime_soc_support,
     ]
@@ -163,6 +229,7 @@ def build_summary(
         "production_runtime_soc_supported": production_runtime_supported,
         "torch_schema": torch_schema,
         "opapi_symbols": opapi_symbols,
+        "package_lowrank_debug_source": package_lowrank_debug_source,
         "custom_package_debug_op_support": package_support,
     }
 

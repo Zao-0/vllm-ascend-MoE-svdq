@@ -623,6 +623,15 @@ def test_svdq_lowrank_debug_probe_preflights_runtime_soc_package_support(tmp_pat
 def test_svdq_lowrank_debug_install_validator_checks_static_package_surfaces():
     validator = (REPO_ROOT / "tools/svdq_lowrank_debug_install_validate.py").read_text()
 
+    assert "CUSTOM_LOWRANK_DEBUG_SOURCE_DIR" in validator
+    assert "REQUIRED_PACKAGE_SOURCE_SNIPPETS" in validator
+    assert "FORBIDDEN_PACKAGE_SOURCE_SNIPPETS" in validator
+    assert "package_lowrank_debug_source" in validator
+    assert "GM_ADDR rankWorkspace" in validator
+    assert "runtime_.rankWorkspace = workspaceGM" in validator
+    assert "args.rank = runtime_.rankWorkspace" in validator
+    assert "downAccumulator, workspaceGM, tilingGM" in validator
+    assert '"(void)workspaceGM"' in validator
     assert "REQUIRED_OPAPI_SYMBOLS" in validator
     assert "REQUIRED_PRODUCTION_OPAPI_SYMBOLS" in validator
     for symbol in (
@@ -644,6 +653,60 @@ def test_svdq_lowrank_debug_install_validator_checks_static_package_surfaces():
     assert "_package_supports_runtime_soc(" in validator
     assert "require_runtime_soc_support" in validator
     assert "libcust_opapi.so" in validator
+
+
+def test_svdq_lowrank_debug_install_validator_rejects_stale_package_source(tmp_path):
+    from tools.svdq_lowrank_debug_install_validate import _package_lowrank_debug_source_status
+
+    source_dir = tmp_path / "lowrank"
+    source_dir.mkdir()
+    (source_dir / "svdq_lowrank_debug_readback.h").write_text(
+        """
+        struct SVDQLowRankDebugRuntimeGM {};
+        __aicore__ inline void Init(GM_ADDR tilingGM) {}
+        """,
+        encoding="utf-8",
+    )
+    (source_dir / "svdq_lowrank_debug_readback.cpp").write_text(
+        """
+        (void)workspaceGM;
+        op.Init(routedX, hidden, gateUpSvdqL1, gateSvdqL2, upSvdqL2, downSvdqL1,
+            downSvdqL2, expertTokenNums, gateUpOutput, downOutput, gateUpAccumulator,
+            downAccumulator, tilingGM);
+        """,
+        encoding="utf-8",
+    )
+
+    stale_status = _package_lowrank_debug_source_status(source_dir)
+
+    assert stale_status["checked"]
+    assert not stale_status["passed"]
+    assert not stale_status["required_snippets"]["svdq_lowrank_debug_readback.h"]["GM_ADDR rankWorkspace"]
+    assert stale_status["forbidden_snippets"]["svdq_lowrank_debug_readback.cpp"]["(void)workspaceGM"]
+
+    (source_dir / "svdq_lowrank_debug_readback.h").write_text(
+        """
+        GM_ADDR rankWorkspace;
+        __aicore__ inline void Init(GM_ADDR workspaceGM, GM_ADDR tilingGM) {
+            runtime_.rankWorkspace = workspaceGM;
+        }
+        args.rank = runtime_.rankWorkspace;
+        """,
+        encoding="utf-8",
+    )
+    (source_dir / "svdq_lowrank_debug_readback.cpp").write_text(
+        """
+        op.Init(routedX, hidden, gateUpSvdqL1, gateSvdqL2, upSvdqL2, downSvdqL1,
+            downSvdqL2, expertTokenNums, gateUpOutput, downOutput, gateUpAccumulator,
+            downAccumulator, workspaceGM, tilingGM);
+        """,
+        encoding="utf-8",
+    )
+
+    fixed_status = _package_lowrank_debug_source_status(source_dir)
+
+    assert fixed_status["checked"]
+    assert fixed_status["passed"]
 
 
 def test_svdq_w4a8_activation_quant_probe_matches_residual_stage_contract():
