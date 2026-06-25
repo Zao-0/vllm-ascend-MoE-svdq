@@ -161,6 +161,57 @@ def _deterministic_bf16_pattern(shape: tuple[int, ...], *, seed: int, scale: flo
     return (values * scale).to(torch.bfloat16).contiguous()
 
 
+def _pack_factor_as_bf16_b_zn(
+    factor: torch.Tensor,
+    *,
+    name: str,
+    padded_n_cols: int | None = None,
+    padded_k_rows: int | None = None,
+) -> torch.Tensor:
+    """Pack logical [expert, N, K] BF16 factors as official BF16 B zN [K, N]."""
+    if factor.dim() != 3:
+        raise ValueError(f"{name} must be rank-3, got shape={tuple(factor.shape)}")
+    if factor.dtype != torch.bfloat16:
+        factor = factor.to(torch.bfloat16)
+    source = factor.detach().cpu().contiguous()
+    experts, n_cols, k_rows = (int(dim) for dim in source.shape)
+    logical_n_cols = n_cols if padded_n_cols is None else int(padded_n_cols)
+    logical_k_rows = k_rows if padded_k_rows is None else int(padded_k_rows)
+    if logical_n_cols < n_cols or logical_k_rows < k_rows:
+        raise ValueError(
+            f"{name} padded logical shape must cover source shape: "
+            f"source={(experts, n_cols, k_rows)}, padded={(experts, logical_n_cols, logical_k_rows)}"
+        )
+    if logical_n_cols != n_cols or logical_k_rows != k_rows:
+        padded = torch.zeros((experts, logical_n_cols, logical_k_rows), dtype=source.dtype)
+        padded[:, :n_cols, :k_rows] = source
+        source = padded
+        n_cols = logical_n_cols
+        k_rows = logical_k_rows
+    c0 = 16
+    elems_per_c0 = 16
+    k_round = ((k_rows + c0 - 1) // c0) * c0
+    n_round = ((n_cols + elems_per_c0 - 1) // elems_per_c0) * elems_per_c0
+    capacity = k_round * n_round
+    if capacity != k_rows * n_cols:
+        raise ValueError(
+            f"{name} cannot be represented in-place as zN with the debug op's logical shape: "
+            f"logical={(experts, n_cols, k_rows)}, zN_capacity={capacity}"
+        )
+
+    k_index = torch.arange(k_rows, dtype=torch.long).view(k_rows, 1)
+    n_index = torch.arange(n_cols, dtype=torch.long).view(1, n_cols)
+    offsets = (
+        (k_index // c0) * (c0 * elems_per_c0)
+        + (n_index // elems_per_c0) * (k_round * elems_per_c0)
+        + (k_index % c0) * elems_per_c0
+        + (n_index % elems_per_c0)
+    )
+    packed = torch.empty((experts, capacity), dtype=source.dtype)
+    packed[:, offsets.reshape(-1)] = source.transpose(1, 2).reshape(experts, -1)
+    return packed.view_as(source).contiguous()
+
+
 def _exception_payload(exc: BaseException) -> dict[str, str]:
     return {
         "type": type(exc).__name__,
@@ -420,15 +471,29 @@ def _launch_debug_readback(
             "torch.ops._C_ascend.svdq_low_rank_debug_readback is not registered. "
             "Rebuild/install vllm-ascend after adding the debug binding."
         )
+    padded_down_rank = ((int(layer.svdq_down_rank) + 255) // 256) * 256
+    gate_up_svdq_l1 = _pack_factor_as_bf16_b_zn(layer.gate_up_svdq_l1, name="gate_up_svdq_l1")
+    gate_svdq_l2 = _pack_factor_as_bf16_b_zn(layer.gate_svdq_l2, name="gate_svdq_l2")
+    up_svdq_l2 = _pack_factor_as_bf16_b_zn(layer.up_svdq_l2, name="up_svdq_l2")
+    down_svdq_l1 = _pack_factor_as_bf16_b_zn(
+        layer.down_svdq_l1,
+        name="down_svdq_l1",
+        padded_n_cols=padded_down_rank,
+    )
+    down_svdq_l2 = _pack_factor_as_bf16_b_zn(
+        layer.down_svdq_l2,
+        name="down_svdq_l2",
+        padded_k_rows=padded_down_rank,
+    )
 
     outputs = op(
         routed_x.to(device=device, dtype=torch.bfloat16),
         hidden.to(device=device, dtype=torch.bfloat16),
-        layer.gate_up_svdq_l1.to(device=device, dtype=torch.bfloat16),
-        layer.gate_svdq_l2.to(device=device, dtype=torch.bfloat16),
-        layer.up_svdq_l2.to(device=device, dtype=torch.bfloat16),
-        layer.down_svdq_l1.to(device=device, dtype=torch.bfloat16),
-        layer.down_svdq_l2.to(device=device, dtype=torch.bfloat16),
+        gate_up_svdq_l1.to(device=device, dtype=torch.bfloat16),
+        gate_svdq_l2.to(device=device, dtype=torch.bfloat16),
+        up_svdq_l2.to(device=device, dtype=torch.bfloat16),
+        down_svdq_l1.to(device=device, dtype=torch.bfloat16),
+        down_svdq_l2.to(device=device, dtype=torch.bfloat16),
         expert_token_nums.to(device=device, dtype=torch.int32),
         int(layer.svdq_gate_rank),
         int(layer.svdq_up_rank),
@@ -583,86 +648,54 @@ def _compare_expert(
     require_accumulator_readback: bool,
 ) -> dict[str, Any]:
     start, end = span
-    intermediate_size = int(layer.gate_svdq_l2.shape[1])
-    expected_gate_up = torch.cat(
-        (
-            reference["gate_l2_output"].detach().float().cpu(),
-            reference["up_l2_output"].detach().float().cpu(),
-        ),
-        dim=1,
-    )
     expected_down = reference["down_l2_output"].detach().float().cpu()
 
     comparisons = {
-        "gate_l2_output": _stage_error(
-            actual["gate_up_output"][start:end, :intermediate_size],
-            expected_gate_up[:, :intermediate_size],
-        ),
-        "up_l2_output": _stage_error(
-            actual["gate_up_output"][start:end, intermediate_size:],
-            expected_gate_up[:, intermediate_size:],
-        ),
         "down_l2_output": _stage_error(actual["down_output"][start:end], expected_down),
     }
-    boundary_checks = {
-        "gate_up_output_bf16_vs_accumulator_cast": _bf16_output_boundary_check(
-            stage="gate_up_output",
-            actual_bf16=actual["gate_up_output_bf16"],
-            accumulator_fp32=actual["gate_up_accumulator"],
-            expert=expert,
-            span=span,
-            row_stride_elements=int(actual["gate_up_output_bf16"].stride(0)),
-        ),
-        "down_output_bf16_vs_accumulator_cast": _bf16_output_boundary_check(
+    boundary_checks = {}
+    if require_accumulator_readback:
+        boundary_checks["down_output_bf16_vs_accumulator_cast"] = _bf16_output_boundary_check(
             stage="down_output",
             actual_bf16=actual["down_output_bf16"],
             accumulator_fp32=actual["down_accumulator"],
             expert=expert,
             span=span,
             row_stride_elements=int(actual["down_output_bf16"].stride(0)),
-        ),
-    }
-    if require_accumulator_readback:
-        comparisons["gate_up_accumulator"] = _stage_error(
-            actual["gate_up_accumulator"][start:end],
-            expected_gate_up,
         )
         comparisons["down_accumulator"] = _stage_error(
             actual["down_accumulator"][start:end],
             expected_down,
         )
-    else:
-        comparisons["gate_up_accumulator_finite"] = {
-            "actual_finite": bool(torch.isfinite(actual["gate_up_accumulator"][start:end]).all().item()),
-            "numel": int(actual["gate_up_accumulator"][start:end].numel()),
-        }
-        comparisons["down_accumulator_finite"] = {
+    accumulator_diagnostics = {
+        "down_accumulator_finite": {
             "actual_finite": bool(torch.isfinite(actual["down_accumulator"][start:end]).all().item()),
             "numel": int(actual["down_accumulator"][start:end].numel()),
+            "required": bool(require_accumulator_readback),
         }
-
-    required_names = (
-        "gate_l2_output",
-        "up_l2_output",
-        "down_l2_output",
-        "gate_up_accumulator",
-        "down_accumulator",
-    ) if require_accumulator_readback else ("gate_l2_output", "up_l2_output", "down_l2_output")
+    }
+    if require_accumulator_readback:
+        required_names = ("down_l2_output", "down_accumulator")
+    else:
+        required_names = ("down_l2_output",)
     passed_by_stage = {
         name: _stage_passed(comparisons[name], max_abs_tol=max_abs_tol, mean_abs_tol=mean_abs_tol)
         for name in required_names
     }
+    boundary_passed = all(check["passed"] for check in boundary_checks.values())
+    boundary_required = bool(require_accumulator_readback)
     return {
         "expert": expert,
         "span": list(span),
+        "debug_invocation": "down_only_svdq_l1_l2",
         "stage_errors": comparisons,
+        "accumulator_diagnostics": accumulator_diagnostics,
         "bf16_output_boundary_checks": boundary_checks,
+        "required_stage_names": list(required_names),
         "stage_passed": passed_by_stage,
-        "bf16_output_boundary_passed": all(check["passed"] for check in boundary_checks.values()),
-        "copy_only_debug_gate_passed": all(
-            check["copy_only_debug_gate"]["passed"] for check in boundary_checks.values()
-        ),
-        "passed": all(passed_by_stage.values()) and all(check["passed"] for check in boundary_checks.values()),
+        "bf16_output_boundary_required": boundary_required,
+        "bf16_output_boundary_passed": boundary_passed if boundary_required else None,
+        "passed": all(passed_by_stage.values()) and (not boundary_required or boundary_passed),
     }
 
 

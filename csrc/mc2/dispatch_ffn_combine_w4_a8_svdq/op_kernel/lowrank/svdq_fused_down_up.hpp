@@ -12,18 +12,26 @@
 #define SVDQ_FUSED_DOWN_UP_HPP
 
 #include "kernel_operator.h"
+#include "lib/matmul_intf.h"
+#include "catlass/arch/arch.hpp"
+#include "catlass/epilogue/tile/tile_copy.hpp"
+#include "catlass/gemm/block/block_mmad.hpp"
+#include "catlass/gemm/block/block_swizzle.hpp"
+#include "catlass/gemm/gemm_type.hpp"
+#include "catlass/layout/layout.hpp"
 #include "../dispatch_ffn_combine_w4_a8_svdq_tiling.h"
 #include "svdq_fused_down_up_tiling.h"
 #include "layout.h"
+#ifdef SVDQ_LOWRANK_ENABLE_LEGACY_MMAD_DEBUG
 #include "mem.h"
 #include "gm_to_l1_iterator.h"
 #include "l1_to_l0_iterator.h"
 #include "l0c_to_gm_iterator.h"
 #include "mma.h"
+#endif
+#include "../../../dispatch_ffn_combine_bf16/op_kernel/utils/const_args.hpp"
 #include "../../../dispatch_ffn_combine_bf16/op_kernel/utils/block_mmad_preload_async_fixpipe_quant.hpp"
 #include "../../../dispatch_ffn_combine_bf16/op_kernel/utils/copy_gm_to_l1_custom.hpp"
-#include "../../../dispatch_ffn_combine_bf16/op_kernel/utils/copy_l0c_to_gm_custom.hpp"
-#include "catlass/gemm/block/block_swizzle.hpp"
 
 namespace DispatchFFNCombineW4A8SVDQImpl {
 
@@ -58,7 +66,7 @@ constexpr uint32_t SVDQ_LOWRANK_BF16_RANK_N_TILE = 64;
 
 using SVDQOfficialBF16ArchTag = Catlass::Arch::AtlasA2;
 using SVDQOfficialBF16LayoutA = Catlass::layout::RowMajor;
-using SVDQOfficialBF16LayoutB = Catlass::layout::ColumnMajor;
+using SVDQOfficialBF16LayoutB = Catlass::layout::zN;
 using SVDQOfficialBF16LayoutC = Catlass::layout::RowMajor;
 using SVDQOfficialBF16LayoutScale = Catlass::layout::VectorLayout;
 using SVDQOfficialBF16L1TileShape = Catlass::GemmShape<
@@ -79,7 +87,7 @@ using SVDQOfficialBF16DispatchPolicy = Catlass::Gemm::MmadAtlasA2PreloadAsyncFix
     true>;
 using SVDQOfficialBF16AType = Catlass::Gemm::GemmType<bfloat16_t, SVDQOfficialBF16LayoutA>;
 using SVDQOfficialBF16BType = Catlass::Gemm::GemmType<bfloat16_t, SVDQOfficialBF16LayoutB>;
-using SVDQOfficialBF16CType = Catlass::Gemm::GemmType<float, SVDQOfficialBF16LayoutC>;
+using SVDQOfficialBF16CType = Catlass::Gemm::GemmType<bfloat16_t, SVDQOfficialBF16LayoutC>;
 using SVDQOfficialBF16Resource = Catlass::Arch::Resource<SVDQOfficialBF16ArchTag>;
 using SVDQOfficialBF16BlockMmad = Catlass::Gemm::Block::BlockMmad<
     SVDQOfficialBF16DispatchPolicy,
@@ -621,11 +629,6 @@ public:
     {
 #ifdef __DAV_C220_CUBE__
         icache_preload(8);
-        const SVDQLowRankStagePlan stage = StagePlan(stageIndex);
-        if (stage.stageKind == SVDQ_LOWRANK_STAGE_DOWN_PROJECT) {
-            SVDQLowRankBF16RankBlockMmad blockMmad(resource);
-            return ExecuteStageScheduled(stageIndex, coreIdx, coreCount, blockMmad);
-        }
         SVDQOfficialBF16BlockMmad blockMmad(resource);
         return ExecuteStageScheduled(stageIndex, coreIdx, coreCount, blockMmad);
 #else
@@ -672,14 +675,7 @@ public:
                     blockCoord.n() * BlockMmadType::L1TileShape::N,
                     actualBlockShape.n(),
                 };
-                if (!RunOfficialBlockMmadBF16(
-                        outputTilePlan,
-                        blockMmad,
-                        AccumulatorAddress(
-                            expert,
-                            0,
-                            0),
-                        stage.outputStrideColumns)) {
+                if (!RunOfficialOutputTileBF16(outputTilePlan, blockMmad)) {
                     return false;
                 }
             }
@@ -688,43 +684,6 @@ public:
 
         if constexpr (BlockMmadType::DispatchPolicy::ASYNC) {
             blockMmad.SynchronizeBlock();
-        }
-
-        startCoreIdx = 0;
-        for (uint32_t expertId = 0; expertId < ExpertCount(); ++expertId) {
-            const SVDQLowRankExpertPlan expert = ExpertStagePlan(stageIndex, expertId);
-            if (expert.tokenCount == 0) {
-                continue;
-            }
-            const Catlass::GemmCoord problemShape{expert.tokenCount, stage.outputColumns, stage.inputColumns};
-            blockScheduler.Update(
-                problemShape,
-                Catlass::MakeCoord(BlockMmadType::L1TileShape::M, BlockMmadType::L1TileShape::N));
-            const uint32_t coreLoops = blockScheduler.GetCoreLoops();
-            const uint32_t startLoopIdx =
-                ((coreIdx < startCoreIdx) ? (coreIdx + coreCount) : coreIdx) - startCoreIdx;
-
-            for (uint32_t loopIdx = startLoopIdx; loopIdx < coreLoops; loopIdx += coreCount) {
-                const Catlass::GemmCoord blockCoord = blockScheduler.GetBlockCoord(loopIdx);
-                const Catlass::GemmCoord actualBlockShape = blockScheduler.GetActualBlockShape(blockCoord);
-                const SVDQLowRankOutputTilePlan outputTilePlan{
-                    expert,
-                    loopIdx,
-                    expert.tokenStart + blockCoord.m() * BlockMmadType::L1TileShape::M,
-                    actualBlockShape.m(),
-                    blockCoord.n() * BlockMmadType::L1TileShape::N,
-                    actualBlockShape.n(),
-                };
-                const GM_ADDR accumulator = AccumulatorAddress(
-                    expert,
-                    outputTilePlan.rowStart - expert.tokenStart,
-                    outputTilePlan.outputColumnOffset);
-                if (!CastOfficialAccumulatorFP32ToOutputBF16(
-                        outputTilePlan, accumulator, stage.outputStrideColumns)) {
-                    return false;
-                }
-            }
-            startCoreIdx = coreCount == 0 ? 0 : (startCoreIdx + coreLoops) % coreCount;
         }
         return true;
     }
@@ -746,6 +705,18 @@ public:
         return true;
     }
 
+    template <typename T>
+    __aicore__ inline __gm__ T* MutableGmPtr(GM_ADDR addr) const
+    {
+        return const_cast<__gm__ T*>(reinterpret_cast<const __gm__ T*>(addr));
+    }
+
+    template <typename T>
+    __aicore__ inline __gm__ T* MutableGmPtr(const __gm__ uint8_t* addr) const
+    {
+        return const_cast<__gm__ T*>(reinterpret_cast<const __gm__ T*>(addr));
+    }
+
     template <typename BlockMmadType>
     __aicore__ inline bool RunOfficialBlockMmadBF16(
         const SVDQLowRankOutputTilePlan& outputTilePlan, BlockMmadType& blockMmad, GM_ADDR output,
@@ -765,7 +736,8 @@ public:
         const uint32_t rowOffset = outputTilePlan.rowStart - expert.tokenStart;
         const uint32_t inputColumns = stage.inputColumns;
         const SVDQOfficialBF16LayoutA layoutA(expert.tokenCount, inputColumns, stage.inputStrideColumns);
-        const SVDQOfficialBF16LayoutB layoutB(inputColumns, stage.outputColumns);
+        const SVDQOfficialBF16LayoutB layoutB =
+            SVDQOfficialBF16LayoutB::template MakeLayout<bfloat16_t>(inputColumns, stage.outputColumns);
         const SVDQOfficialBF16LayoutC layoutC(expert.tokenCount, stage.outputColumns, outputStrideColumns);
         const Catlass::MatrixCoord offsetA{rowOffset, 0};
         const Catlass::MatrixCoord offsetB{0, outputTilePlan.outputColumnOffset};
@@ -780,9 +752,9 @@ public:
         AscendC::GlobalTensor<bfloat16_t> factorGm;
         AscendC::GlobalTensor<ElementC> outputGm;
         AscendC::GlobalTensor<uint64_t> scaleGm;
-        inputGm.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(input));
-        factorGm.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(factor));
-        scaleGm.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(nullptr));
+        inputGm.SetGlobalBuffer(MutableGmPtr<bfloat16_t>(input));
+        factorGm.SetGlobalBuffer(MutableGmPtr<bfloat16_t>(factor));
+        scaleGm.SetGlobalBuffer(static_cast<__gm__ uint64_t*>(nullptr));
 
         SVDQOfficialBF16LayoutScale layoutScale(outputTilePlan.outputColumnCount);
         Catlass::GemmCoord actualShape{
@@ -790,7 +762,7 @@ public:
             outputTilePlan.outputColumnCount,
             inputColumns};
 
-        outputGm.SetGlobalBuffer(reinterpret_cast<__gm__ ElementC*>(outputBase));
+        outputGm.SetGlobalBuffer(MutableGmPtr<ElementC>(outputBase));
         blockMmad(
             inputGm,
             layoutA,
@@ -817,10 +789,7 @@ public:
         return RunOfficialBlockMmadBF16(
             outputTilePlan,
             blockMmad,
-            AccumulatorAddress(
-                outputTilePlan.expert,
-                outputTilePlan.rowStart - outputTilePlan.expert.tokenStart,
-                outputTilePlan.outputColumnOffset),
+            outputTilePlan.expert.output,
             outputTilePlan.expert.stage.outputStrideColumns);
     }
 
@@ -837,8 +806,8 @@ public:
             MatrixAddress(expert.output, rowOffset, expert.stage.outputStrideColumns, outputTilePlan.outputColumnOffset);
         AscendC::GlobalTensor<float> accumulatorGm;
         AscendC::GlobalTensor<bfloat16_t> outputGm;
-        accumulatorGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(accumulator));
-        outputGm.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(output));
+        accumulatorGm.SetGlobalBuffer(MutableGmPtr<float>(accumulator));
+        outputGm.SetGlobalBuffer(MutableGmPtr<bfloat16_t>(output));
 
         for (uint32_t row = 0; row < outputTilePlan.rowCount; ++row) {
             const uint64_t rowElementOffset = static_cast<uint64_t>(row) * outputStrideColumns;
@@ -858,6 +827,7 @@ public:
         return StageKTileCount(outputTilePlan.expert.stage);
     }
 
+#ifdef SVDQ_LOWRANK_ENABLE_LEGACY_MMAD_DEBUG
     __aicore__ inline SVDQLowRankTilePlan KTilePlan(
         const SVDQLowRankOutputTilePlan& outputTilePlan, uint32_t kTileIndex) const
     {
@@ -1130,6 +1100,7 @@ public:
         return RunScalarTileBF16(pipelinePlan.buffer.tile.tile);
 #endif
     }
+#endif
 
     __aicore__ inline bool IsImplemented() const
     {

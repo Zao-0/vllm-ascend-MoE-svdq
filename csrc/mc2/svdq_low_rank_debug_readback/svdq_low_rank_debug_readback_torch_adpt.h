@@ -75,6 +75,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_low_rank_debug_r
     const auto routed_rows = routed_x.size(0);
     const auto hidden_size = routed_x.size(1);
     const auto intermediate_size = hidden.size(1);
+    const auto padded_down_rank = ((down_rank + 255) / 256) * 256;
     TORCH_CHECK(gate_up_svdq_l1.size(1) == gate_rank + up_rank,
                 "gate_up_svdq_l1 rank dim must equal gate_rank + up_rank.");
     TORCH_CHECK(gate_up_svdq_l1.size(2) == hidden_size, "gate_up_svdq_l1 hidden dim must match routed_x.");
@@ -84,12 +85,12 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_low_rank_debug_r
     TORCH_CHECK(up_svdq_l2.size(0) == num_experts && up_svdq_l2.size(1) == intermediate_size &&
                     up_svdq_l2.size(2) == up_rank,
                 "up_svdq_l2 shape is inconsistent with hidden and up_rank.");
-    TORCH_CHECK(down_svdq_l1.size(0) == num_experts && down_svdq_l1.size(1) == down_rank &&
+    TORCH_CHECK(down_svdq_l1.size(0) == num_experts && down_svdq_l1.size(1) == padded_down_rank &&
                     down_svdq_l1.size(2) == intermediate_size,
-                "down_svdq_l1 shape is inconsistent with hidden and down_rank.");
+                "down_svdq_l1 shape is inconsistent with hidden and padded down_rank.");
     TORCH_CHECK(down_svdq_l2.size(0) == num_experts && down_svdq_l2.size(1) == hidden_size &&
-                    down_svdq_l2.size(2) == down_rank,
-                "down_svdq_l2 shape is inconsistent with routed_x and down_rank.");
+                    down_svdq_l2.size(2) == padded_down_rank,
+                "down_svdq_l2 shape is inconsistent with routed_x and padded down_rank.");
     TORCH_CHECK(expert_token_nums.size(0) == num_experts, "expert_token_nums expert count must match factors.");
 
     auto gate_up_output = at::empty({routed_rows, intermediate_size * 2}, routed_x.options());

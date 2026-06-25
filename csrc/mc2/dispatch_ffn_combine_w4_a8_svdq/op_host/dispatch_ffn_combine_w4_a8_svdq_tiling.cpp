@@ -925,6 +925,7 @@ static ge::graphStatus SVDQLowRankDebugReadbackCheckShapeAndSetTiling(
     const uint32_t gateRank = tilingData->gateUpInvocation.rankColumns;
     const uint32_t upRank = tilingData->gateUpInvocation.secondRankColumns;
     const uint32_t downRank = tilingData->downInvocation.rankColumns;
+    const uint32_t paddedDownRank = ((downRank + 255U) / 256U) * 256U;
 
     OP_TILING_CHECK(hiddenRowsDim != static_cast<int64_t>(routedRows),
         OP_LOGE(K_INNER_DEBUG, "debug hidden row dim mismatch."), return ge::GRAPH_FAILED);
@@ -952,11 +953,11 @@ static ge::graphStatus SVDQLowRankDebugReadbackCheckShapeAndSetTiling(
     OP_TILING_CHECK(upL2Shape->GetStorageShape().GetDim(1) != static_cast<int64_t>(intermediateSize) ||
         upL2Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(upRank),
         OP_LOGE(K_INNER_DEBUG, "debug upSvdqL2 shape mismatch."), return ge::GRAPH_FAILED);
-    OP_TILING_CHECK(downL1Shape->GetStorageShape().GetDim(1) != static_cast<int64_t>(downRank) ||
+    OP_TILING_CHECK(downL1Shape->GetStorageShape().GetDim(1) != static_cast<int64_t>(paddedDownRank) ||
         downL1Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(intermediateSize),
         OP_LOGE(K_INNER_DEBUG, "debug downSvdqL1 shape mismatch."), return ge::GRAPH_FAILED);
     OP_TILING_CHECK(downL2Shape->GetStorageShape().GetDim(1) != static_cast<int64_t>(hiddenSize) ||
-        downL2Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(downRank),
+        downL2Shape->GetStorageShape().GetDim(2) != static_cast<int64_t>(paddedDownRank),
         OP_LOGE(K_INNER_DEBUG, "debug downSvdqL2 shape mismatch."), return ge::GRAPH_FAILED);
 
     const gert::StorageShape* expertTokenNumsShape = context->GetInputShape(DEBUG_EXPERT_TOKEN_NUMS_INDEX);
@@ -990,7 +991,7 @@ static ge::graphStatus SVDQLowRankDebugReadbackCheckShapeAndSetTiling(
         tilingData->gateUpInvocation.secondInputColumnOffset, intermediateSize, blockDim,
         SVDQ_REGION_LOWRANK_ACCUMULATOR_1);
     SetDebugLowRankInvocation(tilingData->downInvocation, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_DOWN,
-        SVDQ_FACTOR_DOWN_L1, SVDQ_FACTOR_DOWN_L2, SVDQ_INVALID_ID, routedRows, intermediateSize, downRank, 0,
+        SVDQ_FACTOR_DOWN_L1, SVDQ_FACTOR_DOWN_L2, SVDQ_INVALID_ID, routedRows, intermediateSize, paddedDownRank, 0,
         hiddenSize, 0, 0, 0, 0, blockDim, SVDQ_REGION_LOWRANK_ACCUMULATOR_2);
     return ge::GRAPH_SUCCESS;
 }
