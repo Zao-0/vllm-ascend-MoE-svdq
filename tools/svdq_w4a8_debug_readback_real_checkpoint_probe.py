@@ -13,10 +13,11 @@ the official W4A8 post-load implementation, launches only
 ``torch.ops._C_ascend.svdq_w4a8_debug_readback``, and verifies debug readback
 health on real post-loaded weights with zero or deterministic nonzero inputs.
 
-The health gate proves the real-checkpoint launch/readback path, finite debug
-buffers, and routed token counts. It is not the final nonzero real-checkpoint
-GMM numerical gate because it does not yet compare against an unfused numerical
-reference.
+The default health gate proves the real-checkpoint launch/readback path, finite
+debug buffers, and routed token counts. With ``--compare-gmm1-reference`` and
+``--compare-gmm2-reference``, the probe also compares the official debug taps
+against the unfused reference formulas derived from the official AIC/AIV
+contract and records the nonzero real-checkpoint GMM numerical gate.
 """
 
 from __future__ import annotations
@@ -686,7 +687,11 @@ def main() -> int:
         "environment": env,
         "official_debug_symbol_status": _official_debug_symbol_status(),
         "production_svdq_host_tiling_fail_closed": True,
-        "next_required_stage": "nonzero real-checkpoint GMM1/GMM2 comparison against an unfused reference",
+        "next_required_stage": (
+            "mixed SVDQ epilogue integration with official W4A8 debug taps"
+            if args.compare_gmm1_reference and args.compare_gmm2_reference
+            else "nonzero real-checkpoint GMM1/GMM2 comparison against an unfused reference"
+        ),
     }
     if not (env["torch_npu_imported"] and env["npu_available"] and int(env["npu_device_count"]) > args.device_id):
         summary["skipped"] = not args.require_npu
