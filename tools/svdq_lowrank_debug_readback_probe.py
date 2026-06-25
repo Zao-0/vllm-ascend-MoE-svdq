@@ -209,6 +209,29 @@ def _stage_passed(error: dict[str, float | bool | int], *, max_abs_tol: float, m
     )
 
 
+def _tensor_device_metadata(tensor: torch.Tensor, *, name: str) -> dict[str, Any]:
+    element_size = int(tensor.element_size())
+    metadata: dict[str, Any] = {
+        "name": name,
+        "dtype": str(tensor.dtype),
+        "device": str(tensor.device),
+        "logical_shape": list(tensor.shape),
+        "physical_shape": list(tensor.shape),
+        "stride_elements": list(tensor.stride()),
+        "stride_bytes": [int(stride) * element_size for stride in tensor.stride()],
+        "element_size_bytes": element_size,
+        "storage_offset_elements": int(tensor.storage_offset()),
+        "contiguous": bool(tensor.is_contiguous()),
+        "numel": int(tensor.numel()),
+        "storage_nbytes": int(tensor.untyped_storage().nbytes()),
+    }
+    try:
+        metadata["producer_gm_base"] = hex(tensor.data_ptr())
+    except Exception as exc:
+        metadata["producer_gm_base_error"] = f"{type(exc).__name__}: {exc}"
+    return metadata
+
+
 def _make_expert_contiguous_inputs(
     *,
     layer: torch.nn.Module,
@@ -286,10 +309,135 @@ def _launch_debug_readback(
     torch.npu.synchronize()
     gate_up_output, down_output, gate_up_accumulator, down_accumulator = outputs
     return {
+        "device_metadata": {
+            "gate_up_output": _tensor_device_metadata(gate_up_output, name="gate_up_output"),
+            "down_output": _tensor_device_metadata(down_output, name="down_output"),
+            "gate_up_accumulator": _tensor_device_metadata(gate_up_accumulator, name="gate_up_accumulator"),
+            "down_accumulator": _tensor_device_metadata(down_accumulator, name="down_accumulator"),
+        },
+        "gate_up_output_bf16": gate_up_output.detach().cpu(),
+        "down_output_bf16": down_output.detach().cpu(),
         "gate_up_output": gate_up_output.detach().float().cpu(),
         "down_output": down_output.detach().float().cpu(),
         "gate_up_accumulator": gate_up_accumulator.detach().float().cpu(),
         "down_accumulator": down_accumulator.detach().float().cpu(),
+    }
+
+
+def _first_boundary_mismatch(
+    *,
+    stage: str,
+    actual_bf16: torch.Tensor,
+    expected_bf16: torch.Tensor,
+    accumulator_fp32: torch.Tensor,
+    expert: int,
+    row_start: int,
+    row_stride_elements: int,
+    element_size_bytes: int,
+) -> dict[str, Any] | None:
+    actual_fp32 = actual_bf16.float()
+    expected_fp32 = expected_bf16.float()
+    mismatch = actual_fp32 != expected_fp32
+    nonfinite = ~torch.isfinite(actual_fp32) | ~torch.isfinite(expected_fp32) | ~torch.isfinite(accumulator_fp32)
+    bad = mismatch | nonfinite
+    bad_indices = bad.nonzero(as_tuple=False)
+    if bad_indices.numel() == 0:
+        return None
+    row, column = (int(value.item()) for value in bad_indices[0])
+    physical_element_offset = (row_start + row) * row_stride_elements + column
+    return {
+        "stage": stage,
+        "logical_index": [row, column],
+        "physical_element_offset": int(physical_element_offset),
+        "physical_byte_offset": int(physical_element_offset * element_size_bytes),
+        "expert_id": int(expert),
+        "routed_row": int(row_start + row),
+        "column": int(column),
+        "fp32_accumulator_value": float(accumulator_fp32[row, column].item()),
+        "expected_bf16_value": float(expected_fp32[row, column].item()),
+        "stored_bf16_value": float(actual_fp32[row, column].item()),
+        "aiv_loaded_value": None,
+        "aiv_loaded_value_status": "not_evaluated_copy_only_debug_gate_missing",
+        "actual_finite": bool(torch.isfinite(actual_fp32[row, column]).item()),
+        "expected_finite": bool(torch.isfinite(expected_fp32[row, column]).item()),
+        "accumulator_finite": bool(torch.isfinite(accumulator_fp32[row, column]).item()),
+    }
+
+
+def _bf16_output_boundary_check(
+    *,
+    stage: str,
+    actual_bf16: torch.Tensor,
+    accumulator_fp32: torch.Tensor,
+    expert: int,
+    span: tuple[int, int],
+    row_stride_elements: int,
+) -> dict[str, Any]:
+    start, end = span
+    actual = actual_bf16[start:end]
+    accumulator = accumulator_fp32[start:end]
+    expected = accumulator.to(torch.bfloat16)
+    error = _stage_error(actual.float(), expected.float())
+    active_rows = end - start
+    active_actual = actual.float()
+    active_expected = expected.float()
+    active_accumulator = accumulator.float()
+    active_nonzero = bool((active_actual.abs().sum(dim=1) > 0).all().item()) if active_rows > 0 else True
+    actual_abs = active_actual.abs()
+    expected_abs = active_expected.abs()
+    accumulator_abs = active_accumulator.abs()
+    metadata = {
+        "stage": stage,
+        "producer_gm_base": "recorded_in_device_metadata",
+        "workspace_region_offset_bytes": 0,
+        "expert_offset": int(expert),
+        "routed_row_offset": int(start),
+        "output_column_offset": 0,
+        "logical_shape": list(actual.shape),
+        "physical_padded_shape": list(actual.shape),
+        "row_stride_elements": int(row_stride_elements),
+        "row_stride_bytes": int(row_stride_elements * actual.element_size()),
+        "store_byte_count": int(actual.numel() * actual.element_size()),
+        "alignment_bytes": int(actual.element_size()),
+        "active_tile_dimensions": list(actual.shape),
+    }
+    first_mismatch = _first_boundary_mismatch(
+        stage=stage,
+        actual_bf16=actual,
+        expected_bf16=expected,
+        accumulator_fp32=accumulator,
+        expert=expert,
+        row_start=start,
+        row_stride_elements=row_stride_elements,
+        element_size_bytes=int(actual.element_size()),
+    )
+    return {
+        "stage": stage,
+        "producer_bf16_to_accumulator_cast_error": error,
+        "actual_bf16_finite": bool(torch.isfinite(active_actual).all().item()),
+        "actual_bf16_nonzero_active_rows": active_nonzero,
+        "actual_bf16_max_abs": float(actual_abs.max().item()) if actual_abs.numel() else 0.0,
+        "actual_bf16_mean_abs": float(actual_abs.mean().item()) if actual_abs.numel() else 0.0,
+        "expected_bf16_from_accumulator_max_abs": float(expected_abs.max().item()) if expected_abs.numel() else 0.0,
+        "expected_bf16_from_accumulator_mean_abs": float(expected_abs.mean().item()) if expected_abs.numel() else 0.0,
+        "fp32_accumulator_max_abs": float(accumulator_abs.max().item()) if accumulator_abs.numel() else 0.0,
+        "fp32_accumulator_mean_abs": float(accumulator_abs.mean().item()) if accumulator_abs.numel() else 0.0,
+        "expected_bf16_from_accumulator_dtype": str(expected.dtype),
+        "actual_bf16_dtype": str(actual.dtype),
+        "metadata": metadata,
+        "copy_only_debug_gate": {
+            "evaluated": False,
+            "passed": False,
+            "reason": "copy-only AIV consumer readback operator is not implemented yet",
+        },
+        "first_mismatch_or_nonfinite": first_mismatch,
+        "passed": (
+            bool(error["actual_finite"])
+            and bool(error["expected_finite"])
+            and bool(error["diff_finite"])
+            and float(error["max_abs"]) == 0.0
+            and active_nonzero
+        ),
     }
 
 
@@ -326,6 +474,24 @@ def _compare_expert(
         ),
         "down_l2_output": _stage_error(actual["down_output"][start:end], expected_down),
     }
+    boundary_checks = {
+        "gate_up_output_bf16_vs_accumulator_cast": _bf16_output_boundary_check(
+            stage="gate_up_output",
+            actual_bf16=actual["gate_up_output_bf16"],
+            accumulator_fp32=actual["gate_up_accumulator"],
+            expert=expert,
+            span=span,
+            row_stride_elements=int(actual["gate_up_output_bf16"].stride(0)),
+        ),
+        "down_output_bf16_vs_accumulator_cast": _bf16_output_boundary_check(
+            stage="down_output",
+            actual_bf16=actual["down_output_bf16"],
+            accumulator_fp32=actual["down_accumulator"],
+            expert=expert,
+            span=span,
+            row_stride_elements=int(actual["down_output_bf16"].stride(0)),
+        ),
+    }
     if require_accumulator_readback:
         comparisons["gate_up_accumulator"] = _stage_error(
             actual["gate_up_accumulator"][start:end],
@@ -360,8 +526,13 @@ def _compare_expert(
         "expert": expert,
         "span": list(span),
         "stage_errors": comparisons,
+        "bf16_output_boundary_checks": boundary_checks,
         "stage_passed": passed_by_stage,
-        "passed": all(passed_by_stage.values()),
+        "bf16_output_boundary_passed": all(check["passed"] for check in boundary_checks.values()),
+        "copy_only_debug_gate_passed": all(
+            check["copy_only_debug_gate"]["passed"] for check in boundary_checks.values()
+        ),
+        "passed": all(passed_by_stage.values()) and all(check["passed"] for check in boundary_checks.values()),
     }
 
 
@@ -434,7 +605,18 @@ def _probe_layer(
             "gate_rank_offset": int(layer.svdq_gate_rank_offset),
             "up_rank_offset": int(layer.svdq_up_rank_offset),
         },
-        "output_shapes": {name: list(tensor.shape) for name, tensor in actual.items()},
+        "output_shapes": {
+            name: list(tensor.shape) for name, tensor in actual.items() if isinstance(tensor, torch.Tensor)
+        },
+        "device_metadata": actual["device_metadata"],
+        "workspace_boundary": {
+            "rank_workspace_non_overlap_verified": False,
+            "final_projection_workspace_non_overlap_verified": True,
+            "reason": (
+                "debug ACLNN workspace base for rank workspace is not exposed to Python; "
+                "projection output and accumulator output tensors are separate torch allocations"
+            ),
+        },
         "experts": expert_results,
         "passed": all(result["passed"] for result in expert_results),
     }

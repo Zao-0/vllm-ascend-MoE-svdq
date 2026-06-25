@@ -620,6 +620,38 @@ def test_svdq_lowrank_debug_probe_preflights_runtime_soc_package_support(tmp_pat
     )
 
 
+def test_svdq_lowrank_debug_probe_records_appendix4_bf16_boundary():
+    probe = (REPO_ROOT / "tools/svdq_lowrank_debug_readback_probe.py").read_text()
+
+    for token in (
+        "gate_up_output_bf16",
+        "down_output_bf16",
+        "_bf16_output_boundary_check",
+        "producer_bf16_to_accumulator_cast_error",
+        "expected = accumulator.to(torch.bfloat16)",
+        "actual_bf16_nonzero_active_rows",
+        "actual_bf16_max_abs",
+        "expected_bf16_from_accumulator_max_abs",
+        "fp32_accumulator_max_abs",
+        "producer_gm_base",
+        "workspace_region_offset_bytes",
+        "routed_row_offset",
+        "row_stride_elements",
+        "row_stride_bytes",
+        "store_byte_count",
+        "physical_byte_offset",
+        "fp32_accumulator_value",
+        "expected_bf16_value",
+        "stored_bf16_value",
+        "aiv_loaded_value",
+        "copy-only AIV consumer readback operator is not implemented yet",
+        "rank_workspace_non_overlap_verified",
+        "bf16_output_boundary_passed",
+    ):
+        assert token in probe
+    assert "finite_fp32_accumulator_readback_cast_to_bf16" not in probe
+
+
 def test_svdq_lowrank_debug_install_validator_checks_static_package_surfaces():
     validator = (REPO_ROOT / "tools/svdq_lowrank_debug_install_validate.py").read_text()
 
