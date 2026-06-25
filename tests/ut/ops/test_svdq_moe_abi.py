@@ -811,9 +811,12 @@ def test_svdq_w4a8_tap_mixed_epilogue_probe_uses_official_taps_and_records_limit
         "_run_npu_mixed_epilogue",
         "build_svdq_mixed_epilogue_reference",
         "source_for_mixed_epilogue",
-        "finite_fp32_accumulator_readback_cast_to_bf16",
+        "bf16_lowrank_output_readback",
         "bf16_output_used_for_mixed_epilogue",
-        "False",
+        "True",
+        "lowrank_output_health_passed",
+        "_nonzero_finite(lowrank_stats[\"gate_up_output\"])",
+        "_nonzero_finite(lowrank_stats[\"down_output\"])",
         "production_svdq_host_tiling_fail_closed",
         "public_grouped_matmul_used",
         "GMM2 residual tap comes from the official W4A8 debug path",
@@ -824,6 +827,8 @@ def test_svdq_w4a8_tap_mixed_epilogue_probe_uses_official_taps_and_records_limit
         "--require-npu",
     ):
         assert token in probe
+    assert "finite_fp32_accumulator_readback_cast_to_bf16" not in probe
+    assert "lowrank_accumulator_health_passed" not in probe
     assert "npu_grouped_matmul" not in probe
 
 
@@ -862,6 +867,14 @@ def test_svdq_mixed_epilogue_device_probe_matches_reference_oracle():
         "hidden_scale,",
         "down_total,",
         "out_bf16,",
+        "_appendix3_case_inputs",
+        "appendix3_gate_order",
+        "residual_only",
+        "svdq_only",
+        "two_branch_nonzero",
+        "appendix3_zero_branch_tests_are_isolation_only",
+        "w4a8_fp32_gate_up_add_zero_exact",
+        "svdq_bf16_gate_up_cast_to_fp32_exact",
         "\"stage\": \"mixed_epilogue_debug_readback\"",
         "\"debug_op\": \"torch.ops._C_ascend.svdq_mixed_epilogue_debug_readback\"",
         "hidden_q_exact_match",
@@ -1960,12 +1973,19 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "class SVDQLowRankDebugReadbackKernel" in lowrank_debug_header
     assert "BuildGateUpArgs() const" in lowrank_debug_header
     assert "BuildDownArgs() const" in lowrank_debug_header
+    assert "GM_ADDR rankWorkspace" in lowrank_debug_header
+    assert "runtime_.rankWorkspace = workspaceGM" in lowrank_debug_header
+    assert "args.rank = runtime_.rankWorkspace" in lowrank_debug_header
     assert "runtime_.gateSvdqL2" in lowrank_debug_header
     assert "runtime_.upSvdqL2" in lowrank_debug_header
     assert "svdq_low_rank_debug_readback(" in lowrank_debug_kernel
+    assert "(void)workspaceGM" not in lowrank_debug_kernel
+    assert "downAccumulator, workspaceGM, tilingGM" in lowrank_debug_kernel
     assert "add_op_to_compiled_list()" in lowrank_debug_alias_cmake
     assert "svdq_low_rank_debug_readback(" in lowrank_debug_alias_kernel
     assert "svdq_lowrank_debug_readback.h" in lowrank_debug_alias_kernel
+    assert "(void)workspaceGM" not in lowrank_debug_alias_kernel
+    assert "downAccumulator, workspaceGM, tilingGM" in lowrank_debug_alias_kernel
     assert "GM_ADDR gateUpOutput" in lowrank_debug_kernel
     assert "GM_ADDR downOutput" in lowrank_debug_kernel
     assert "GM_ADDR gateUpAccumulator" in lowrank_debug_kernel

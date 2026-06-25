@@ -31,6 +31,7 @@ struct SVDQLowRankDebugRuntimeGM {
     GM_ADDR downOutput;
     GM_ADDR gateUpAccumulator;
     GM_ADDR downAccumulator;
+    GM_ADDR rankWorkspace;
 };
 
 class SVDQLowRankDebugReadbackKernel {
@@ -40,6 +41,7 @@ public:
     __aicore__ inline void Init(GM_ADDR routedX, GM_ADDR hidden, GM_ADDR gateUpSvdqL1, GM_ADDR gateSvdqL2,
         GM_ADDR upSvdqL2, GM_ADDR downSvdqL1, GM_ADDR downSvdqL2, GM_ADDR expertTokenNums,
         GM_ADDR gateUpOutput, GM_ADDR downOutput, GM_ADDR gateUpAccumulator, GM_ADDR downAccumulator,
+        GM_ADDR workspaceGM,
         GM_ADDR tilingGM)
     {
         REGISTER_TILING_DEFAULT(SVDQLowRankDebugTilingData);
@@ -57,6 +59,7 @@ public:
         runtime_.downOutput = downOutput;
         runtime_.gateUpAccumulator = gateUpAccumulator;
         runtime_.downAccumulator = downAccumulator;
+        runtime_.rankWorkspace = workspaceGM;
         tilingData_ = tilingData;
     }
 
@@ -76,6 +79,7 @@ public:
         args.downFactor = runtime_.gateUpSvdqL1;
         args.upFactor = runtime_.gateSvdqL2;
         args.secondUpFactor = runtime_.upSvdqL2;
+        args.rank = runtime_.rankWorkspace;
         args.output = runtime_.gateUpOutput;
         args.accumulator = runtime_.gateUpAccumulator;
         args.expertTokenNums = runtime_.expertTokenNums;
@@ -91,6 +95,7 @@ public:
         args.downFactor = runtime_.downSvdqL1;
         args.upFactor = runtime_.downSvdqL2;
         args.secondUpFactor = nullptr;
+        args.rank = runtime_.rankWorkspace;
         args.output = runtime_.downOutput;
         args.accumulator = runtime_.downAccumulator;
         args.expertTokenNums = runtime_.expertTokenNums;

@@ -144,6 +144,20 @@ def _make_inputs(*, num_tokens: int, hidden_size: int, intermediate_size: int, s
     }
 
 
+def _appendix3_case_inputs(base: dict[str, torch.Tensor], case: str) -> dict[str, torch.Tensor]:
+    inputs = {name: tensor.clone() for name, tensor in base.items()}
+    if case == "residual_only":
+        inputs["gate_lowrank"].zero_()
+        inputs["up_lowrank"].zero_()
+        inputs["down_lowrank"].zero_()
+    elif case == "svdq_only":
+        inputs["residual_gate_up"].zero_()
+        inputs["residual_down"].zero_()
+    elif case != "two_branch_nonzero":
+        raise ValueError(f"unsupported Appendix 3 mixed-epilogue case: {case}")
+    return inputs
+
+
 def _tensor_error(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, float | bool | int | list[int] | str]:
     actual_cpu = actual.detach().cpu()
     expected_cpu = expected.detach().cpu()
@@ -234,23 +248,47 @@ def _stage_passed(stage_error: dict[str, Any], *, max_abs_tol: float, mean_abs_t
     )
 
 
-def _run_probe(
+def _exact_passed(stage_error: dict[str, Any]) -> bool:
+    return (
+        bool(stage_error["actual_finite"])
+        and bool(stage_error["expected_finite"])
+        and bool(stage_error["diff_finite"])
+        and float(stage_error["max_abs"]) == 0.0
+        and float(stage_error["mean_abs"]) == 0.0
+    )
+
+
+def _appendix3_boundary_checks(
     *,
-    dimensions: dict[str, int | str],
-    num_tokens: int,
-    seed: int,
+    case: str,
+    inputs: dict[str, torch.Tensor],
+    actual: dict[str, torch.Tensor],
+) -> dict[str, dict[str, Any]]:
+    checks: dict[str, dict[str, Any]] = {}
+    if case == "residual_only":
+        checks["w4a8_fp32_gate_up_add_zero_exact"] = _tensor_error(
+            actual["gate_up_total"], inputs["residual_gate_up"]
+        )
+        checks["w4a8_fp32_down_add_zero_exact"] = _tensor_error(actual["down_mixed"], inputs["residual_down"])
+    elif case == "svdq_only":
+        gate_up_low_rank = torch.cat((inputs["gate_lowrank"], inputs["up_lowrank"]), dim=1).float()
+        checks["svdq_bf16_gate_up_cast_to_fp32_exact"] = _tensor_error(actual["gate_up_total"], gate_up_low_rank)
+        checks["svdq_bf16_down_cast_to_fp32_exact"] = _tensor_error(
+            actual["down_mixed"], inputs["down_lowrank"].float()
+        )
+    return checks
+
+
+def _run_probe_case(
+    *,
+    case: str,
+    inputs: dict[str, torch.Tensor],
     device: torch.device,
     swiglu_limit: float,
     max_abs_tol: float,
     mean_abs_tol: float,
     scale_tol: float,
 ) -> dict[str, Any]:
-    inputs = _make_inputs(
-        num_tokens=num_tokens,
-        hidden_size=int(dimensions["hidden_size"]),
-        intermediate_size=int(dimensions["intermediate_size"]),
-        seed=seed,
-    )
     reference = build_svdq_mixed_epilogue_reference(**inputs, swiglu_limit=swiglu_limit)
     actual = _run_npu_mixed_epilogue(inputs=inputs, device=device, swiglu_limit=swiglu_limit)
     stage_errors = {
@@ -276,13 +314,19 @@ def _run_probe(
         "down_mixed": _stage_passed(stage_errors["down_mixed"], max_abs_tol=max_abs_tol, mean_abs_tol=mean_abs_tol),
         "out_bf16": _stage_passed(stage_errors["out_bf16"], max_abs_tol=max_abs_tol, mean_abs_tol=mean_abs_tol),
     }
+    boundary_checks = _appendix3_boundary_checks(case=case, inputs=inputs, actual=actual)
+    boundary_passed = {name: _exact_passed(error) for name, error in boundary_checks.items()}
     return {
         "stage": "mixed_epilogue_debug_readback",
+        "appendix3_case": case,
+        "zero_branch_isolation_only": case in ("residual_only", "svdq_only"),
         "debug_op": "torch.ops._C_ascend.svdq_mixed_epilogue_debug_readback",
         "debug_op_name": DEBUG_OP_NAME,
         "input_shapes": {name: list(tensor.shape) for name, tensor in inputs.items()},
         "oracle_stage_shapes": reference["stage_shapes"],
         "actual_stage_shapes": {name: list(tensor.shape) for name, tensor in actual.items()},
+        "boundary_checks": boundary_checks,
+        "boundary_passed": boundary_passed,
         "stage_errors": stage_errors,
         "hidden_q_exact_match": stage_passed["hidden_q"],
         "hidden_q_mismatch_count": int((q_diff != 0).sum().item()),
@@ -292,7 +336,62 @@ def _run_probe(
         "scale_tolerance": scale_tol,
         "swiglu_limit": float(swiglu_limit),
         "stage_passed": stage_passed,
-        "passed": all(stage_passed.values()),
+        "passed": all(stage_passed.values()) and all(boundary_passed.values()),
+    }
+
+
+def _run_probe(
+    *,
+    dimensions: dict[str, int | str],
+    num_tokens: int,
+    seed: int,
+    device: torch.device,
+    swiglu_limit: float,
+    max_abs_tol: float,
+    mean_abs_tol: float,
+    scale_tol: float,
+) -> dict[str, Any]:
+    base_inputs = _make_inputs(
+        num_tokens=num_tokens,
+        hidden_size=int(dimensions["hidden_size"]),
+        intermediate_size=int(dimensions["intermediate_size"]),
+        seed=seed,
+    )
+    appendix3_gate_order = ("residual_only", "svdq_only", "two_branch_nonzero")
+    cases = {
+        case: _run_probe_case(
+            case=case,
+            inputs=_appendix3_case_inputs(base_inputs, case),
+            device=device,
+            swiglu_limit=swiglu_limit,
+            max_abs_tol=max_abs_tol,
+            mean_abs_tol=mean_abs_tol,
+            scale_tol=scale_tol,
+        )
+        for case in appendix3_gate_order
+    }
+    two_branch = cases["two_branch_nonzero"]
+    return {
+        "stage": "mixed_epilogue_debug_readback_appendix3_sequence",
+        "debug_op": "torch.ops._C_ascend.svdq_mixed_epilogue_debug_readback",
+        "debug_op_name": DEBUG_OP_NAME,
+        "appendix3_gate_order": list(appendix3_gate_order),
+        "appendix3_gates": cases,
+        "appendix3_zero_branch_tests_are_isolation_only": True,
+        "ordered_gate_passed": {case: bool(cases[case]["passed"]) for case in appendix3_gate_order},
+        "input_shapes": two_branch["input_shapes"],
+        "oracle_stage_shapes": two_branch["oracle_stage_shapes"],
+        "actual_stage_shapes": two_branch["actual_stage_shapes"],
+        "stage_errors": two_branch["stage_errors"],
+        "hidden_q_exact_match": two_branch["hidden_q_exact_match"],
+        "hidden_q_mismatch_count": two_branch["hidden_q_mismatch_count"],
+        "hidden_q_max_abs_diff": two_branch["hidden_q_max_abs_diff"],
+        "max_abs_tolerance": max_abs_tol,
+        "mean_abs_tolerance": mean_abs_tol,
+        "scale_tolerance": scale_tol,
+        "swiglu_limit": float(swiglu_limit),
+        "stage_passed": two_branch["stage_passed"],
+        "passed": all(bool(cases[case]["passed"]) for case in appendix3_gate_order),
     }
 
 

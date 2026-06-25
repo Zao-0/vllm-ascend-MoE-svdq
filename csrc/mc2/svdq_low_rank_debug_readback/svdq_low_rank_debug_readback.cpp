@@ -18,9 +18,8 @@ extern "C" __global__ __aicore__ void svdq_low_rank_debug_readback(
     GM_ADDR downSvdqL1, GM_ADDR downSvdqL2, GM_ADDR expertTokenNums, GM_ADDR gateUpOutput, GM_ADDR downOutput,
     GM_ADDR gateUpAccumulator, GM_ADDR downAccumulator, GM_ADDR workspaceGM, GM_ADDR tilingGM)
 {
-    (void)workspaceGM;
     SVDQLowRankDebugReadbackKernel op;
     op.Init(routedX, hidden, gateUpSvdqL1, gateSvdqL2, upSvdqL2, downSvdqL1, downSvdqL2, expertTokenNums,
-        gateUpOutput, downOutput, gateUpAccumulator, downAccumulator, tilingGM);
+        gateUpOutput, downOutput, gateUpAccumulator, downAccumulator, workspaceGM, tilingGM);
     op.Process();
 }
