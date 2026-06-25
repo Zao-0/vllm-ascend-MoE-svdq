@@ -698,6 +698,37 @@ def test_svdq_lowrank_debug_readback_excludes_scalar_bf16_fallback():
     assert "return false;" in run_planned_block
 
 
+def test_svdq_lowrank_debug_mmad_synchronizes_l0_reuse():
+    fused = (
+        REPO_ROOT
+        / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/lowrank/svdq_fused_down_up.hpp"
+    ).read_text()
+    mmad_start = fused.index("__aicore__ inline bool RunMmadTileBF16")
+    mmad_end = fused.index("__aicore__ inline bool RunPlannedTileBF16", mmad_start)
+    mmad_block = fused[mmad_start:mmad_end]
+
+    assert "SVDQ_LOWRANK_MMAD_L0_STAGES = 2" in fused
+    assert "SVDQ_LOWRANK_MMAD_L0A_EVENT_BASE" in fused
+    assert "SVDQ_LOWRANK_MMAD_L0B_EVENT_BASE" in fused
+    assert "SVDQ_LOWRANK_MMAD_M_EVENT" in fused
+    assert "% SVDQ_LOWRANK_MMAD_L0_STAGES" in mmad_block
+    assert "const int32_t l0AEvent = SVDQ_LOWRANK_MMAD_L0A_EVENT_BASE" in mmad_block
+    assert "const int32_t l0BEvent = SVDQ_LOWRANK_MMAD_L0B_EVENT_BASE" in mmad_block
+    assert "pipelinePlan.buffer.l0ABytes * l0Stage" in mmad_block
+    assert "pipelinePlan.buffer.l0BBytes * l0Stage" in mmad_block
+    assert "AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(" in mmad_block
+    assert "AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0AEvent);" in mmad_block
+    assert "AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0BEvent);" in mmad_block
+    assert "AscendC::SetFlag<AscendC::HardEvent::MTE1_M>(SVDQ_LOWRANK_MMAD_M_EVENT);" in mmad_block
+    assert "AscendC::WaitFlag<AscendC::HardEvent::MTE1_M>(SVDQ_LOWRANK_MMAD_M_EVENT);" in mmad_block
+    assert mmad_block.index("WaitFlag<AscendC::HardEvent::M_MTE1>") < mmad_block.index(
+        "l1_to_l0_a<ArchType::ASCEND_V220"
+    )
+    assert mmad_block.index("WaitFlag<AscendC::HardEvent::MTE1_M>") < mmad_block.index(
+        "mmad<ArchType::ASCEND_V220"
+    )
+
+
 def test_svdq_lowrank_debug_install_validator_checks_static_package_surfaces():
     validator = (REPO_ROOT / "tools/svdq_lowrank_debug_install_validate.py").read_text()
 
@@ -2295,8 +2326,10 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "accumulatorGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(tensorPlan.accumulator))" in lowrank_header
     assert "buffers.GetBuffer<BufferType::ASCEND_CB, bfloat16_t>(pipelinePlan.l1InputOffset)" in lowrank_header
     assert "buffers.GetBuffer<BufferType::ASCEND_CB, bfloat16_t>(pipelinePlan.l1FactorOffset)" in lowrank_header
-    assert "buffers.GetBuffer<BufferType::ASCEND_L0A, bfloat16_t>(pipelinePlan.l0AOffset)" in lowrank_header
-    assert "buffers.GetBuffer<BufferType::ASCEND_L0B, bfloat16_t>(pipelinePlan.l0BOffset)" in lowrank_header
+    assert "const uint32_t l0AOffset = pipelinePlan.l0AOffset + pipelinePlan.buffer.l0ABytes * l0Stage" in lowrank_header
+    assert "const uint32_t l0BOffset = pipelinePlan.l0BOffset + pipelinePlan.buffer.l0BBytes * l0Stage" in lowrank_header
+    assert "buffers.GetBuffer<BufferType::ASCEND_L0A, bfloat16_t>(l0AOffset)" in lowrank_header
+    assert "buffers.GetBuffer<BufferType::ASCEND_L0B, bfloat16_t>(l0BOffset)" in lowrank_header
     assert "buffers.GetBuffer<BufferType::ASCEND_L0C, float>(pipelinePlan.l0COffset)" in lowrank_header
     assert "gm_to_l1<ArchType::ASCEND_V220, bfloat16_t, DataFormatT::ND, DataFormatT::NZ>" in lowrank_header
     assert "gm_to_l1<ArchType::ASCEND_V220, bfloat16_t, DataFormatT::ND, DataFormatT::ZN>" in lowrank_header
@@ -2867,7 +2900,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["debug_readback_contract"] == {
         "compile_macro": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK",
         "cmake_option": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK",
-        "default_enabled": False,
+        "default_enabled": True,
         "production_abi_changed": False,
         "readback_region": "lowRankAccumulator region selected by invocation.accumulatorRegionId",
         "readback_dtype": "FP32",
@@ -2876,8 +2909,8 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "partial_tile_semantics": "non-final K-tile partial sums are mirrored for host-readable debug validation",
         "source_proof": [
             "op_cmake_has_local_debug_readback_option",
-            "op_cmake_debug_readback_defaults_off",
-            "op_cmake_scopes_debug_readback_to_svdq_op",
+            "op_cmake_debug_readback_defaults_on",
+            "op_cmake_scopes_debug_readback_to_lowrank_debug_op",
             "lowrank_mmad_debug_readback_macro",
             "lowrank_mmad_debug_readback_uses_fp32_l0c_to_gm",
             "lowrank_mmad_debug_readback_targets_accumulator_gm",

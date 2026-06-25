@@ -781,6 +781,16 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         else ""
     )
     host_tiling_source = _production_host_tiling_source(sources)
+    dispatch_compile_options = _build_aclnn_branch(
+        sources["op_cmake"],
+        "add_ops_compile_options(\n    OP_NAME DispatchFFNCombineW4A8SVDQ",
+        "add_ops_compile_options(\n    OP_NAME SVDQLowRankDebugReadback",
+    )
+    lowrank_debug_compile_options = _build_aclnn_branch(
+        sources["op_cmake"],
+        "add_ops_compile_options(\n    OP_NAME SVDQLowRankDebugReadback",
+        "add_ops_compile_options(\n    OP_NAME SVDQMixedEpilogueDebugReadback",
+    )
     return {
         "host_tiling_builds_workspace_map": "BuildWorkspaceMap(tilingData)" in sources["host_tiling"],
         "host_tiling_builds_sync_flags": "BuildSyncFlagTable(tilingData)" in sources["host_tiling"],
@@ -803,13 +813,13 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         "op_cmake_has_local_debug_readback_option": (
             "option(SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK" in sources["op_cmake"]
         ),
-        "op_cmake_debug_readback_defaults_off": (
+        "op_cmake_debug_readback_defaults_on": (
             "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK)" in sources["op_cmake"]
-            and "OFF)" in sources["op_cmake"]
+            and "ON)" in sources["op_cmake"]
         ),
-        "op_cmake_scopes_debug_readback_to_svdq_op": (
-            "${_DISPATCH_FFN_SVDQ_DEBUG_OPTS}" in sources["op_cmake"]
-            and "OP_NAME DispatchFFNCombineW4A8SVDQ" in sources["op_cmake"]
+        "op_cmake_scopes_debug_readback_to_lowrank_debug_op": (
+            "${_DISPATCH_FFN_SVDQ_LOWRANK_DEBUG_OPTS}" in lowrank_debug_compile_options
+            and "${_DISPATCH_FFN_SVDQ_LOWRANK_DEBUG_OPTS}" not in dispatch_compile_options
         ),
         "kernel_resolves_workspace_addresses": "WorkspaceAddress(uint32_t regionId)" in sources["kernel_contract"],
         "kernel_resolves_rank_workspace_regions": (
@@ -1421,7 +1431,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         ),
         "lowrank_debug_op_has_compile_options": (
             "OP_NAME SVDQLowRankDebugReadback" in sources["op_cmake"]
-            and "${_DISPATCH_FFN_SVDQ_DEBUG_OPTS}" in sources["op_cmake"]
+            and "${_DISPATCH_FFN_SVDQ_LOWRANK_DEBUG_OPTS}" in lowrank_debug_compile_options
         ),
         "lowrank_debug_op_inner_aclnn_linked": (
             "OPTYPE dispatch_ffn_combine_w4_a8_svdq svdq_low_rank_debug_readback"
@@ -1704,7 +1714,7 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
         "debug_readback_contract": {
             "compile_macro": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK",
             "cmake_option": "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK",
-            "default_enabled": False,
+            "default_enabled": True,
             "production_abi_changed": False,
             "readback_region": "lowRankAccumulator region selected by invocation.accumulatorRegionId",
             "readback_dtype": "FP32",
@@ -1713,8 +1723,8 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "partial_tile_semantics": "non-final K-tile partial sums are mirrored for host-readable debug validation",
             "source_proof": [
                 "op_cmake_has_local_debug_readback_option",
-                "op_cmake_debug_readback_defaults_off",
-                "op_cmake_scopes_debug_readback_to_svdq_op",
+                "op_cmake_debug_readback_defaults_on",
+                "op_cmake_scopes_debug_readback_to_lowrank_debug_op",
                 "lowrank_mmad_debug_readback_macro",
                 "lowrank_mmad_debug_readback_uses_fp32_l0c_to_gm",
                 "lowrank_mmad_debug_readback_targets_accumulator_gm",

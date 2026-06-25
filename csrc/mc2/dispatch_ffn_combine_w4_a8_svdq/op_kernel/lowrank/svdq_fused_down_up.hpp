@@ -33,6 +33,12 @@ constexpr uint32_t SVDQ_LOWRANK_MMAD_K_ALIGNMENT = 16;
 constexpr uint32_t SVDQ_LOWRANK_MMAD_FORMAT_ND = 0;
 constexpr uint32_t SVDQ_LOWRANK_MMAD_FORMAT_NZ = 1;
 constexpr uint32_t SVDQ_LOWRANK_MMAD_FORMAT_ZN = 2;
+constexpr uint32_t SVDQ_LOWRANK_MMAD_L0_STAGES = 2;
+constexpr int32_t SVDQ_LOWRANK_MMAD_L0A_EVENT_BASE = 0;
+constexpr int32_t SVDQ_LOWRANK_MMAD_L0B_EVENT_BASE =
+    SVDQ_LOWRANK_MMAD_L0A_EVENT_BASE + SVDQ_LOWRANK_MMAD_L0_STAGES;
+constexpr int32_t SVDQ_LOWRANK_MMAD_M_EVENT =
+    SVDQ_LOWRANK_MMAD_L0B_EVENT_BASE + SVDQ_LOWRANK_MMAD_L0_STAGES;
 
 enum SVDQLowRankStageKind : uint32_t {
     SVDQ_LOWRANK_STAGE_DOWN_PROJECT = 0,
@@ -793,8 +799,14 @@ public:
 
         auto l1Input = buffers.GetBuffer<BufferType::ASCEND_CB, bfloat16_t>(pipelinePlan.l1InputOffset);
         auto l1Factor = buffers.GetBuffer<BufferType::ASCEND_CB, bfloat16_t>(pipelinePlan.l1FactorOffset);
-        auto l0A = buffers.GetBuffer<BufferType::ASCEND_L0A, bfloat16_t>(pipelinePlan.l0AOffset);
-        auto l0B = buffers.GetBuffer<BufferType::ASCEND_L0B, bfloat16_t>(pipelinePlan.l0BOffset);
+        const uint32_t l0Stage =
+            (tensorPlan.tile.kColumnOffset / args_.tiling.kTile) % SVDQ_LOWRANK_MMAD_L0_STAGES;
+        const int32_t l0AEvent = SVDQ_LOWRANK_MMAD_L0A_EVENT_BASE + static_cast<int32_t>(l0Stage);
+        const int32_t l0BEvent = SVDQ_LOWRANK_MMAD_L0B_EVENT_BASE + static_cast<int32_t>(l0Stage);
+        const uint32_t l0AOffset = pipelinePlan.l0AOffset + pipelinePlan.buffer.l0ABytes * l0Stage;
+        const uint32_t l0BOffset = pipelinePlan.l0BOffset + pipelinePlan.buffer.l0BBytes * l0Stage;
+        auto l0A = buffers.GetBuffer<BufferType::ASCEND_L0A, bfloat16_t>(l0AOffset);
+        auto l0B = buffers.GetBuffer<BufferType::ASCEND_L0B, bfloat16_t>(l0BOffset);
         auto l0C = buffers.GetBuffer<BufferType::ASCEND_L0C, float>(pipelinePlan.l0COffset);
 
         gm_to_l1<ArchType::ASCEND_V220, bfloat16_t, DataFormatT::ND, DataFormatT::NZ>(
@@ -805,15 +817,33 @@ public:
             tile.kActual, tile.kRound, tensorPlan.factorStrideColumns);
         AscendC::PipeBarrier<PIPE_MTE2>();
 
+        if (pipelinePlan.initAccumulator) {
+            for (uint32_t stage = 0; stage < SVDQ_LOWRANK_MMAD_L0_STAGES; ++stage) {
+                AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(
+                    SVDQ_LOWRANK_MMAD_L0A_EVENT_BASE + static_cast<int32_t>(stage));
+                AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(
+                    SVDQ_LOWRANK_MMAD_L0B_EVENT_BASE + static_cast<int32_t>(stage));
+            }
+        }
+        AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0AEvent);
+        AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0BEvent);
         l1_to_l0_a<ArchType::ASCEND_V220, bfloat16_t, false, DataFormatT::NZ, DataFormatT::ZZ>(
             l0A, l1Input, tile.mRound, tile.kRound, tile.mRound, tile.kRound, tile.mRound, tile.kRound);
         l1_to_l0_b<ArchType::ASCEND_V220, bfloat16_t, true, DataFormatT::ZN, DataFormatT::NZ>(
             l0B, l1Factor, tile.nRound, tile.kRound, tile.nRound, tile.kRound, tile.nRound, tile.kRound);
         AscendC::PipeBarrier<PIPE_MTE1>();
+        AscendC::SetFlag<AscendC::HardEvent::MTE1_M>(SVDQ_LOWRANK_MMAD_M_EVENT);
 
         const bool initC = pipelinePlan.initAccumulator;
+        AscendC::WaitFlag<AscendC::HardEvent::MTE1_M>(SVDQ_LOWRANK_MMAD_M_EVENT);
         (void)mmad<ArchType::ASCEND_V220, bfloat16_t, bfloat16_t, float, false>(
             l0C, l0A, l0B, tile.mActual, tile.nActual, tile.kActual, initC);
+        AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(l0AEvent);
+        AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(l0BEvent);
+        if (pipelinePlan.storesOutput) {
+            AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0AEvent);
+            AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0BEvent);
+        }
         AscendC::PipeBarrier<PIPE_M>();
 
 #ifdef SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK
