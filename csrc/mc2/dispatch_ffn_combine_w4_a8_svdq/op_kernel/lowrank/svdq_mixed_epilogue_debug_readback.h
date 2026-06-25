@@ -99,6 +99,13 @@ private:
         WaitFlag<HardEvent::V_MTE3>(eventId);
     }
 
+    __aicore__ inline void SyncVToMte2() const
+    {
+        event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_MTE2));
+        SetFlag<HardEvent::V_MTE2>(eventId);
+        WaitFlag<HardEvent::V_MTE2>(eventId);
+    }
+
     __aicore__ inline void SyncMte3ToV() const
     {
         event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_V));
@@ -162,8 +169,10 @@ private:
         LocalTensor<float> up = ub[tilingData_.vectorTile];
         LocalTensor<float> tmp = ub[tilingData_.vectorTile * 2];
         LocalTensor<float> hiddenFp32 = ub[tilingData_.vectorTile * 3];
-        LocalTensor<bfloat16_t> lowRankBf16 = ub[tilingData_.vectorTile * 4].template ReinterpretCast<bfloat16_t>();
-        LocalTensor<bfloat16_t> hiddenOut = lowRankBf16[tilingData_.vectorTile];
+        LocalTensor<bfloat16_t> bf16Ub = ub[tilingData_.vectorTile * 4].template ReinterpretCast<bfloat16_t>();
+        LocalTensor<bfloat16_t> gateLowRankBf16 = bf16Ub;
+        LocalTensor<bfloat16_t> upLowRankBf16 = bf16Ub[tilingData_.vectorTile];
+        LocalTensor<bfloat16_t> hiddenOut = bf16Ub[tilingData_.vectorTile * 2];
 
         const uint32_t intermediate = tilingData_.intermediateSize;
         const uint32_t gateUpColumns = intermediate * 2;
@@ -172,20 +181,24 @@ private:
             const uint32_t upOffset = row * gateUpColumns + intermediate + column;
 
             CopyInFloat(gate, residualGateUpGm_, gateOffset, tilingData_.vectorTile);
-            CopyInBf16(lowRankBf16, gateUpLowRankGm_, gateOffset, tilingData_.vectorTile);
             SyncMte2ToV();
-            Cast(tmp, lowRankBf16, RoundMode::CAST_NONE, tilingData_.vectorTile);
+            CopyInBf16(gateLowRankBf16, gateUpLowRankGm_, gateOffset, tilingData_.vectorTile);
+            SyncMte2ToV();
+            Cast(tmp, gateLowRankBf16, RoundMode::CAST_NONE, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
             Add(gate, gate, tmp, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
+            SyncVToMte2();
 
             CopyInFloat(up, residualGateUpGm_, upOffset, tilingData_.vectorTile);
-            CopyInBf16(lowRankBf16, gateUpLowRankGm_, upOffset, tilingData_.vectorTile);
             SyncMte2ToV();
-            Cast(tmp, lowRankBf16, RoundMode::CAST_NONE, tilingData_.vectorTile);
+            CopyInBf16(upLowRankBf16, gateUpLowRankGm_, upOffset, tilingData_.vectorTile);
+            SyncMte2ToV();
+            Cast(tmp, upLowRankBf16, RoundMode::CAST_NONE, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
             Add(up, up, tmp, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
+            SyncVToMte2();
 
             if (tilingData_.swigluLimit > 0.0f) {
                 Maxs(gate, gate, -tilingData_.swigluLimit, tilingData_.vectorTile);
@@ -200,6 +213,9 @@ private:
 
             SyncVToMte3();
             CopyOutFloat(gateUpTotalGm_, gateOffset, gate, tilingData_.vectorTile);
+            SyncMte3ToV();
+            SyncMte3ToMte2();
+            SyncVToMte3();
             CopyOutFloat(gateUpTotalGm_, upOffset, up, tilingData_.vectorTile);
             SyncMte3ToV();
             SyncMte3ToMte2();
@@ -241,6 +257,7 @@ private:
             SyncMte2ToV();
             Cast(hiddenFp32, hiddenBf16, RoundMode::CAST_NONE, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
+            SyncVToMte2();
             Abs(absHidden, hiddenFp32, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
             ReduceMax(reduceTmp, absHidden, scaleLocal, tilingData_.vectorTile);
@@ -284,6 +301,7 @@ private:
             SyncMte2ToV();
             Cast(hiddenFp32, hiddenBf16, RoundMode::CAST_NONE, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
+            SyncVToMte2();
             Muls(hiddenFp32, hiddenFp32, 1.0f / scale, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
             Maxs(hiddenFp32, hiddenFp32, -127.0f, tilingData_.vectorTile);
@@ -319,6 +337,7 @@ private:
             PipeBarrier<PIPE_V>();
             Add(down, down, lowRankFp32, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
+            SyncVToMte2();
             SyncVToMte3();
             CopyOutFloat(downTotalGm_, offset, down, tilingData_.vectorTile);
             SyncMte3ToV();
