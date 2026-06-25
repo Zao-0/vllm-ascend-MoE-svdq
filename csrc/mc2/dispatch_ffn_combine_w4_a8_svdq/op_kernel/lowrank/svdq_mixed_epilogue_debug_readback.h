@@ -248,7 +248,8 @@ private:
         LocalTensor<float> scaleLocal = ub[tilingData_.vectorTile * 3];
         LocalTensor<bfloat16_t> hiddenBf16 = ub[tilingData_.vectorTile * 4].template ReinterpretCast<bfloat16_t>();
         LocalTensor<int8_t> hiddenI8 = ub[tilingData_.vectorTile * 5].template ReinterpretCast<int8_t>();
-        LocalTensor<half> quantHalf = ub[tilingData_.vectorTile * 6].template ReinterpretCast<half>();
+        LocalTensor<int32_t> quantS32 = ub[tilingData_.vectorTile * 6].template ReinterpretCast<int32_t>();
+        LocalTensor<half> quantHalf = ub[tilingData_.vectorTile * 7].template ReinterpretCast<half>();
 
         float maxAbs = 0.0f;
         for (uint32_t column = 0; column < tilingData_.intermediateSize; column += tilingData_.vectorTile) {
@@ -282,7 +283,10 @@ private:
             for (uint32_t column = 0; column < tilingData_.intermediateSize; column += tilingData_.vectorTile) {
                 Duplicate<float>(hiddenFp32, 0.0f, tilingData_.vectorTile);
                 PipeBarrier<PIPE_V>();
-                Cast(quantHalf, hiddenFp32, RoundMode::CAST_NONE, tilingData_.vectorTile);
+                Cast(quantS32, hiddenFp32, RoundMode::CAST_RINT, tilingData_.vectorTile);
+                PipeBarrier<PIPE_V>();
+                SetDeqScale(static_cast<half>(1.0f));
+                Cast(quantHalf, quantS32, RoundMode::CAST_RINT, tilingData_.vectorTile);
                 PipeBarrier<PIPE_V>();
                 Cast(hiddenI8, quantHalf, RoundMode::CAST_RINT, tilingData_.vectorTile);
                 PipeBarrier<PIPE_V>();
@@ -308,7 +312,10 @@ private:
             PipeBarrier<PIPE_V>();
             Mins(hiddenFp32, hiddenFp32, 127.0f, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
-            Cast(quantHalf, hiddenFp32, RoundMode::CAST_NONE, tilingData_.vectorTile);
+            Cast(quantS32, hiddenFp32, RoundMode::CAST_RINT, tilingData_.vectorTile);
+            PipeBarrier<PIPE_V>();
+            SetDeqScale(static_cast<half>(1.0f));
+            Cast(quantHalf, quantS32, RoundMode::CAST_RINT, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
             Cast(hiddenI8, quantHalf, RoundMode::CAST_RINT, tilingData_.vectorTile);
             PipeBarrier<PIPE_V>();
