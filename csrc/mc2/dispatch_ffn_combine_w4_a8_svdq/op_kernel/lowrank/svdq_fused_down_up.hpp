@@ -88,7 +88,49 @@ using SVDQOfficialBF16DispatchPolicy = Catlass::Gemm::MmadAtlasA2PreloadAsyncFix
 using SVDQOfficialBF16AType = Catlass::Gemm::GemmType<bfloat16_t, SVDQOfficialBF16LayoutA>;
 using SVDQOfficialBF16BType = Catlass::Gemm::GemmType<bfloat16_t, SVDQOfficialBF16LayoutB>;
 using SVDQOfficialBF16CType = Catlass::Gemm::GemmType<bfloat16_t, SVDQOfficialBF16LayoutC>;
+using SVDQOfficialBF16AccumulatorCType = Catlass::Gemm::GemmType<float, SVDQOfficialBF16LayoutC>;
 using SVDQOfficialBF16Resource = Catlass::Arch::Resource<SVDQOfficialBF16ArchTag>;
+
+struct SVDQDebugCopyL0CToGmFP32RowMajor {
+    using ElementDst = float;
+    using ElementSrc = float;
+    using LayoutSrc = Catlass::layout::zN;
+    using LayoutDst = Catlass::layout::RowMajor;
+
+    struct Params {};
+
+    CATLASS_DEVICE
+    SVDQDebugCopyL0CToGmFP32RowMajor() = default;
+
+    CATLASS_DEVICE
+    SVDQDebugCopyL0CToGmFP32RowMajor(Params const &) {}
+
+    CATLASS_DEVICE
+    void operator()(AscendC::GlobalTensor<ElementDst> const &dst, AscendC::LocalTensor<ElementSrc> const &src,
+        LayoutDst const &dstLayout, LayoutSrc const &srcLayout, uint8_t unitFlag = 0)
+    {
+        AscendC::FixpipeParamsV220 intriParams;
+        intriParams.nSize = dstLayout.shape(1);
+        intriParams.mSize = dstLayout.shape(0);
+        intriParams.srcStride = srcLayout.stride(3) / srcLayout.stride(0);
+        intriParams.dstStride = dstLayout.stride(0);
+        intriParams.quantPre = QuantMode_t::NoQuant;
+        intriParams.reluEn = false;
+        intriParams.unitFlag = unitFlag;
+        intriParams.isChannelSplit = true;
+
+        AscendC::Fixpipe<ElementDst, ElementSrc, AscendC::CFG_ROW_MAJOR>(dst, src, intriParams);
+    }
+};
+
+struct SVDQOfficialBF16AccumulatorTileCopy : public Catlass::Gemm::Tile::TileCopy<
+    SVDQOfficialBF16ArchTag,
+    SVDQOfficialBF16AType,
+    SVDQOfficialBF16BType,
+    SVDQOfficialBF16AccumulatorCType> {
+    using CopyL0CToGm = SVDQDebugCopyL0CToGmFP32RowMajor;
+};
+
 using SVDQOfficialBF16BlockMmad = Catlass::Gemm::Block::BlockMmad<
     SVDQOfficialBF16DispatchPolicy,
     SVDQOfficialBF16L1TileShape,
@@ -96,6 +138,15 @@ using SVDQOfficialBF16BlockMmad = Catlass::Gemm::Block::BlockMmad<
     SVDQOfficialBF16AType,
     SVDQOfficialBF16BType,
     SVDQOfficialBF16CType>;
+using SVDQOfficialBF16AccumulatorBlockMmad = Catlass::Gemm::Block::BlockMmad<
+    SVDQOfficialBF16DispatchPolicy,
+    SVDQOfficialBF16L1TileShape,
+    SVDQOfficialBF16L0TileShape,
+    SVDQOfficialBF16AType,
+    SVDQOfficialBF16BType,
+    SVDQOfficialBF16AccumulatorCType,
+    void,
+    SVDQOfficialBF16AccumulatorTileCopy>;
 using SVDQLowRankBF16RankL1TileShape = Catlass::GemmShape<
     SVDQ_OFFICIAL_BF16_L1_M_TILE,
     SVDQ_LOWRANK_BF16_RANK_N_TILE,
@@ -629,8 +680,16 @@ public:
     {
 #ifdef __DAV_C220_CUBE__
         icache_preload(8);
+#ifdef SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK
+        if (StagePlan(stageIndex).writesGlobalOutput) {
+            SVDQOfficialBF16AccumulatorBlockMmad accumulatorBlockMmad(resource);
+            if (!ExecuteStageScheduled(stageIndex, coreIdx, coreCount, accumulatorBlockMmad, true)) {
+                return false;
+            }
+        }
+#endif
         SVDQOfficialBF16BlockMmad blockMmad(resource);
-        return ExecuteStageScheduled(stageIndex, coreIdx, coreCount, blockMmad);
+        return ExecuteStageScheduled(stageIndex, coreIdx, coreCount, blockMmad, false);
 #else
         (void)stageIndex;
         (void)coreIdx;
@@ -642,7 +701,8 @@ public:
 
     template <typename BlockMmadType>
     __aicore__ inline bool ExecuteStageScheduled(
-        uint32_t stageIndex, uint32_t coreIdx, uint32_t coreCount, BlockMmadType& blockMmad) const
+        uint32_t stageIndex, uint32_t coreIdx, uint32_t coreCount, BlockMmadType& blockMmad,
+        bool writeAccumulator) const
     {
         const SVDQLowRankStagePlan stage = StagePlan(stageIndex);
         SVDQOfficialBF16BlockScheduler blockScheduler;
@@ -675,7 +735,10 @@ public:
                     blockCoord.n() * BlockMmadType::L1TileShape::N,
                     actualBlockShape.n(),
                 };
-                if (!RunOfficialOutputTileBF16(outputTilePlan, blockMmad)) {
+                const bool tileOk = writeAccumulator ?
+                    RunOfficialAccumulatorTileBF16(outputTilePlan, blockMmad) :
+                    RunOfficialOutputTileBF16(outputTilePlan, blockMmad);
+                if (!tileOk) {
                     return false;
                 }
             }
@@ -790,6 +853,20 @@ public:
             outputTilePlan,
             blockMmad,
             outputTilePlan.expert.output,
+            outputTilePlan.expert.stage.outputStrideColumns);
+    }
+
+    template <typename BlockMmadType>
+    __aicore__ inline bool RunOfficialAccumulatorTileBF16(
+        const SVDQLowRankOutputTilePlan& outputTilePlan, BlockMmadType& blockMmad) const
+    {
+        if (!outputTilePlan.HasWork()) {
+            return false;
+        }
+        return RunOfficialBlockMmadBF16(
+            outputTilePlan,
+            blockMmad,
+            args_.accumulator,
             outputTilePlan.expert.stage.outputStrideColumns);
     }
 
