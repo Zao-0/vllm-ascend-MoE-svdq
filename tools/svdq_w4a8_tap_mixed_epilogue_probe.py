@@ -133,6 +133,18 @@ def _stage_passed(error: dict[str, Any], *, max_abs_tol: float, mean_abs_tol: fl
     )
 
 
+def _not_evaluated_stage_passed() -> dict[str, bool]:
+    return {
+        "gate_mixed": False,
+        "up_mixed": False,
+        "hidden_bf16": False,
+        "hidden_scale": False,
+        "hidden_q": False,
+        "down_mixed": False,
+        "out_bf16": False,
+    }
+
+
 def _write_summary(path: Path, summary: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
@@ -311,6 +323,46 @@ def _run_combined_probe(args: argparse.Namespace, group: str) -> dict[str, Any]:
     active_experts, counts = _active_expert_counts(taps["expert_token_nums"])
     routed_x_grouped = _group_routed_x_by_expert(taps["x"], counts, active_experts)
     expert_token_nums_svdq = _expand_counts_for_svdq(counts, int(svdq_spec.num_experts))
+    w4a8_reference = _w4a8_reference_checks(
+        args=args,
+        residual_layer=residual_layer,
+        spec=residual_spec,
+        taps=taps,
+        active_rows=active_rows,
+    )
+    base_result: dict[str, Any] = {
+        "stage": "official_w4a8_tap_svdq_mixed_epilogue",
+        "official_w4a8_debug_op": "torch.ops._C_ascend.svdq_w4a8_debug_readback",
+        "svdq_lowrank_debug_op": "torch.ops._C_ascend.svdq_low_rank_debug_readback",
+        "svdq_mixed_epilogue_debug_op": "torch.ops._C_ascend.svdq_mixed_epilogue_debug_readback",
+        "public_grouped_matmul_used": False,
+        "production_svdq_host_tiling_fail_closed": True,
+        "limitation": (
+            "GMM2 residual tap comes from the official W4A8 debug path for its internally quantized hidden. "
+            "This probe validates mixed residual-plus-SVDQ epilogues with official W4A8 taps; it does not yet "
+            "relaunch official GMM2 from the SVDQ-modified hidden activation."
+        ),
+        "layer_index": args.layer,
+        "routed_experts": routed_experts,
+        "active_experts_from_w4a8": active_experts,
+        "residual_checkpoint_key_count": residual_key_count,
+        "factor_load_count": factor_load_count,
+        "shape": {
+            "num_tokens": args.num_tokens,
+            "top_k": args.top_k,
+            "active_rows": active_rows,
+            "hidden_size": int(svdq_spec.hidden_size),
+            "intermediate_size": int(svdq_spec.intermediate_size),
+        },
+        "rank_metadata": {
+            "gate_rank": int(svdq_layer.svdq_gate_rank),
+            "up_rank": int(svdq_layer.svdq_up_rank),
+            "down_rank": int(svdq_layer.svdq_down_rank),
+            "gate_rank_offset": int(svdq_layer.svdq_gate_rank_offset),
+            "up_rank_offset": int(svdq_layer.svdq_up_rank_offset),
+        },
+        "w4a8_reference": w4a8_reference,
+    }
     hidden_placeholder = torch.zeros((active_rows, svdq_spec.intermediate_size), dtype=torch.bfloat16)
     lowrank_gate = _launch_lowrank_debug(
         layer=svdq_layer,
@@ -323,6 +375,32 @@ def _run_combined_probe(args: argparse.Namespace, group: str) -> dict[str, Any]:
     gate_up_accumulator = lowrank_gate["gate_up_accumulator"][:active_rows]
     gate_lowrank = gate_up_output[:, : svdq_spec.intermediate_size]
     up_lowrank = gate_up_output[:, svdq_spec.intermediate_size :]
+    lowrank_stats = {
+        "source_for_mixed_epilogue": "bf16_lowrank_output_readback",
+        "bf16_output_used_for_mixed_epilogue": True,
+        "gate_up_output": _tensor_stats(gate_up_output),
+        "gate_up_accumulator": _tensor_stats(gate_up_accumulator),
+        "down_output": None,
+        "down_accumulator": None,
+    }
+    if not _nonzero_finite(lowrank_stats["gate_up_output"]):
+        return {
+            **base_result,
+            "lowrank_readback": lowrank_stats,
+            "lowrank_output_health_passed": False,
+            "mixed_epilogue_evaluated": False,
+            "mixed_epilogue_skip_reason": (
+                "BF16 gate/up low-rank readback is not finite and nonzero; mixed AIV epilogue not evaluated."
+            ),
+            "stage_errors": {},
+            "stage_passed": _not_evaluated_stage_passed(),
+            "hidden_q_exact_match": False,
+            "hidden_q_mismatch_count": None,
+            "hidden_q_max_abs_diff": None,
+            "hidden_q_mismatch_count_tolerance": args.hidden_q_mismatch_count_tol,
+            "hidden_q_max_abs_diff_tolerance": args.hidden_q_max_abs_diff_tol,
+            "passed": False,
+        }
     first_reference = build_svdq_mixed_epilogue_reference(
         residual_gate_up=taps["gmm1_post_dequant"][:active_rows].float(),
         gate_lowrank=gate_lowrank.to(torch.bfloat16),
@@ -342,6 +420,29 @@ def _run_combined_probe(args: argparse.Namespace, group: str) -> dict[str, Any]:
     down_output = lowrank_down["down_output"][:active_rows]
     down_accumulator = lowrank_down["down_accumulator"][:active_rows]
     down_lowrank = down_output
+    lowrank_stats["down_output"] = _tensor_stats(down_output)
+    lowrank_stats["down_accumulator"] = _tensor_stats(down_accumulator)
+    lowrank_output_health_passed = bool(
+        _nonzero_finite(lowrank_stats["gate_up_output"]) and _nonzero_finite(lowrank_stats["down_output"])
+    )
+    if not lowrank_output_health_passed:
+        return {
+            **base_result,
+            "lowrank_readback": lowrank_stats,
+            "lowrank_output_health_passed": lowrank_output_health_passed,
+            "mixed_epilogue_evaluated": False,
+            "mixed_epilogue_skip_reason": (
+                "BF16 down low-rank readback is not finite and nonzero; mixed AIV epilogue not evaluated."
+            ),
+            "stage_errors": {},
+            "stage_passed": _not_evaluated_stage_passed(),
+            "hidden_q_exact_match": False,
+            "hidden_q_mismatch_count": None,
+            "hidden_q_max_abs_diff": None,
+            "hidden_q_mismatch_count_tolerance": args.hidden_q_mismatch_count_tol,
+            "hidden_q_max_abs_diff_tolerance": args.hidden_q_max_abs_diff_tol,
+            "passed": False,
+        }
     mixed_actual = _run_npu_mixed_epilogue(
         inputs={
             "residual_gate_up": taps["gmm1_post_dequant"][:active_rows].float(),
@@ -410,58 +511,12 @@ def _run_combined_probe(args: argparse.Namespace, group: str) -> dict[str, Any]:
             mean_abs_tol=args.mixed_mean_abs_tol,
         ),
     }
-    w4a8_reference = _w4a8_reference_checks(
-        args=args,
-        residual_layer=residual_layer,
-        spec=residual_spec,
-        taps=taps,
-        active_rows=active_rows,
-    )
-    lowrank_stats = {
-        "source_for_mixed_epilogue": "bf16_lowrank_output_readback",
-        "bf16_output_used_for_mixed_epilogue": True,
-        "gate_up_output": _tensor_stats(gate_up_output),
-        "gate_up_accumulator": _tensor_stats(gate_up_accumulator),
-        "down_output": _tensor_stats(down_output),
-        "down_accumulator": _tensor_stats(down_accumulator),
-    }
-    lowrank_output_health_passed = bool(
-        _nonzero_finite(lowrank_stats["gate_up_output"]) and _nonzero_finite(lowrank_stats["down_output"])
-    )
     return {
-        "stage": "official_w4a8_tap_svdq_mixed_epilogue",
-        "official_w4a8_debug_op": "torch.ops._C_ascend.svdq_w4a8_debug_readback",
-        "svdq_lowrank_debug_op": "torch.ops._C_ascend.svdq_low_rank_debug_readback",
-        "svdq_mixed_epilogue_debug_op": "torch.ops._C_ascend.svdq_mixed_epilogue_debug_readback",
-        "public_grouped_matmul_used": False,
-        "production_svdq_host_tiling_fail_closed": True,
-        "limitation": (
-            "GMM2 residual tap comes from the official W4A8 debug path for its internally quantized hidden. "
-            "This probe validates mixed residual-plus-SVDQ epilogues with official W4A8 taps; it does not yet "
-            "relaunch official GMM2 from the SVDQ-modified hidden activation."
-        ),
-        "layer_index": args.layer,
-        "routed_experts": routed_experts,
-        "active_experts_from_w4a8": active_experts,
-        "residual_checkpoint_key_count": residual_key_count,
-        "factor_load_count": factor_load_count,
-        "shape": {
-            "num_tokens": args.num_tokens,
-            "top_k": args.top_k,
-            "active_rows": active_rows,
-            "hidden_size": int(svdq_spec.hidden_size),
-            "intermediate_size": int(svdq_spec.intermediate_size),
-        },
-        "rank_metadata": {
-            "gate_rank": int(svdq_layer.svdq_gate_rank),
-            "up_rank": int(svdq_layer.svdq_up_rank),
-            "down_rank": int(svdq_layer.svdq_down_rank),
-            "gate_rank_offset": int(svdq_layer.svdq_gate_rank_offset),
-            "up_rank_offset": int(svdq_layer.svdq_up_rank_offset),
-        },
-        "w4a8_reference": w4a8_reference,
+        **base_result,
         "lowrank_readback": lowrank_stats,
         "lowrank_output_health_passed": lowrank_output_health_passed,
+        "mixed_epilogue_evaluated": True,
+        "mixed_epilogue_skip_reason": None,
         "stage_errors": stage_errors,
         "stage_passed": stage_passed,
         "hidden_q_exact_match": bool(torch.equal(mixed_actual["hidden_q"], mixed_reference["stages"]["hidden_q"])),
