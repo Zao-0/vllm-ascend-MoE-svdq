@@ -838,11 +838,16 @@ public:
         AscendC::WaitFlag<AscendC::HardEvent::MTE1_M>(SVDQ_LOWRANK_MMAD_M_EVENT);
         (void)mmad<ArchType::ASCEND_V220, bfloat16_t, bfloat16_t, float, false>(
             l0C, l0A, l0B, tile.mActual, tile.nActual, tile.kActual, initC);
+        AscendC::PipeBarrier<PIPE_M>();
         AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(l0AEvent);
         AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(l0BEvent);
         if (pipelinePlan.storesOutput) {
-            AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0AEvent);
-            AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0BEvent);
+            for (uint32_t stage = 0; stage < SVDQ_LOWRANK_MMAD_L0_STAGES; ++stage) {
+                AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(
+                    SVDQ_LOWRANK_MMAD_L0A_EVENT_BASE + static_cast<int32_t>(stage));
+                AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(
+                    SVDQ_LOWRANK_MMAD_L0B_EVENT_BASE + static_cast<int32_t>(stage));
+            }
         }
         AscendC::PipeBarrier<PIPE_M>();
 
