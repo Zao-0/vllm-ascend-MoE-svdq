@@ -260,9 +260,22 @@ def test_svdq_cann_op_host_surface_uses_canonical_five_factor_abi():
     assert "DispatchFFNCombineW4A8SVDQ" in cmake
     assert "dispatch_ffn_combine_w4_a8_svdq" in cmake
     assert "option(SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK" in cmake
-    assert "OFF)" in cmake
-    assert "list(APPEND _DISPATCH_FFN_SVDQ_DEBUG_OPTS -DSVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK)" in cmake
-    assert "${_DISPATCH_FFN_SVDQ_DEBUG_OPTS}" in cmake
+    assert "ON)" in cmake
+    assert "set(_DISPATCH_FFN_SVDQ_LOWRANK_DEBUG_OPTS)" in cmake
+    assert (
+        "list(APPEND _DISPATCH_FFN_SVDQ_LOWRANK_DEBUG_OPTS "
+        "-DSVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK)"
+    ) in cmake
+    dispatch_options = cmake[
+        cmake.index("add_ops_compile_options(\n    OP_NAME DispatchFFNCombineW4A8SVDQ"):
+        cmake.index("add_ops_compile_options(\n    OP_NAME SVDQLowRankDebugReadback")
+    ]
+    lowrank_debug_options = cmake[
+        cmake.index("add_ops_compile_options(\n    OP_NAME SVDQLowRankDebugReadback"):
+        cmake.index("add_ops_compile_options(\n    OP_NAME SVDQMixedEpilogueDebugReadback")
+    ]
+    assert "${_DISPATCH_FFN_SVDQ_LOWRANK_DEBUG_OPTS}" not in dispatch_options
+    assert "${_DISPATCH_FFN_SVDQ_LOWRANK_DEBUG_OPTS}" in lowrank_debug_options
     assert (
         "OPTYPE dispatch_ffn_combine_w4_a8_svdq svdq_low_rank_debug_readback "
         "svdq_mixed_epilogue_debug_readback"
@@ -650,6 +663,39 @@ def test_svdq_lowrank_debug_probe_records_appendix4_bf16_boundary():
     ):
         assert token in probe
     assert "finite_fp32_accumulator_readback_cast_to_bf16" not in probe
+
+
+def test_svdq_lowrank_debug_tiling_launches_aic_only():
+    tiling = (
+        REPO_ROOT
+        / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp"
+    ).read_text()
+    debug_start = tiling.index("static ge::graphStatus SVDQLowRankDebugReadbackCheckShapeAndSetTiling")
+    debug_end = tiling.index("static ge::graphStatus SVDQLowRankDebugReadbackTilingFunc", debug_start)
+    debug_tiling = tiling[debug_start:debug_end]
+
+    assert "const uint32_t aicNum = ascendcPlatform.GetCoreNumAic();" in debug_tiling
+    assert "const uint32_t blockDim = aicNum;" in debug_tiling
+    assert "context->SetBlockDim(blockDim);" in debug_tiling
+    assert "CalcTschBlockDim" not in debug_tiling
+
+
+def test_svdq_lowrank_debug_readback_excludes_scalar_bf16_fallback():
+    fused = (
+        REPO_ROOT
+        / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/lowrank/svdq_fused_down_up.hpp"
+    ).read_text()
+    scalar_start = fused.index("__aicore__ inline bfloat16_t LoadInputBF16")
+    scalar_end = fused.index("__aicore__ inline bool RunMmadTileBF16", scalar_start)
+    scalar_block = fused[scalar_start:scalar_end]
+    run_planned_start = fused.index("__aicore__ inline bool RunPlannedTileBF16")
+    run_planned_end = fused.index("__aicore__ inline bool IsImplemented", run_planned_start)
+    run_planned_block = fused[run_planned_start:run_planned_end]
+
+    assert "#ifndef SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK" in fused[:scalar_start]
+    assert "static_cast<bfloat16_t>(accumulator)" in scalar_block
+    assert "#elif defined(SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK)" in run_planned_block
+    assert "return false;" in run_planned_block
 
 
 def test_svdq_lowrank_debug_install_validator_checks_static_package_surfaces():

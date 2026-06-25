@@ -980,8 +980,7 @@ static ge::graphStatus SVDQLowRankDebugReadbackCheckShapeAndSetTiling(
 
     auto ascendcPlatform = platform_ascendc::PlatformAscendC(context->GetPlatformInfo());
     const uint32_t aicNum = ascendcPlatform.GetCoreNumAic();
-    const uint32_t aivNum = ascendcPlatform.GetCoreNumAiv();
-    const uint32_t blockDim = ascendcPlatform.CalcTschBlockDim(aivNum, aicNum, aivNum);
+    const uint32_t blockDim = aicNum;
     context->SetBlockDim(blockDim);
     context->SetTilingKey(0);
 

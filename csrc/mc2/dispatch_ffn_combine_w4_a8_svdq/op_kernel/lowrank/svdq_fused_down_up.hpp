@@ -691,6 +691,7 @@ public:
         return static_cast<uint64_t>(rowOffset) * tilePlan.accumulatorStrideColumns + outputOffset;
     }
 
+#ifndef SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK
     __aicore__ inline bfloat16_t LoadInputBF16(
         const SVDQLowRankTileTensorPlan& tilePlan, uint32_t rowOffset, uint32_t kOffset) const
     {
@@ -769,6 +770,7 @@ public:
         }
         return true;
     }
+#endif
 
     __aicore__ inline bool RunMmadTileBF16(const SVDQLowRankMmadPipelinePlan& pipelinePlan) const
     {
@@ -841,6 +843,8 @@ public:
         }
 #ifdef __DAV_C220_CUBE__
         return RunMmadTileBF16(pipelinePlan);
+#elif defined(SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK)
+        return false;
 #else
         return RunScalarTileBF16(pipelinePlan.buffer.tile.tile);
 #endif
