@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import sys
@@ -41,7 +42,7 @@ from svdq_loader_pre_kernel_validate import (  # noqa: E402
 from vllm_ascend.quantization.methods.svdq_post_load import (  # noqa: E402
     build_svdq_bf16_stage_reference,
 )
-from vllm_ascend.utils import enable_custom_op  # noqa: E402
+from vllm_ascend.utils import bootstrap_custom_op_env, enable_custom_op  # noqa: E402
 
 DEBUG_OP_NAME = "SVDQLowRankDebugReadback"
 PRODUCTION_OP_NAME = "DispatchFFNCombineW4A8SVDQ"
@@ -58,6 +59,8 @@ CUSTOM_OP_CONFIG_ROOT = (
     / "kernel"
     / "config"
 )
+CUSTOM_OPAPI_LIB = REPO_ROOT / "vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib/libcust_opapi.so"
+_PRELOADED_CUSTOM_OPAPI_GLOBAL = False
 
 
 def _parse_args() -> argparse.Namespace:
@@ -81,6 +84,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Require FP32 accumulator buffers to match references. Use with a package built with "
         "SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK=ON.",
+    )
+    parser.add_argument(
+        "--skip-copy-only-consumer-gate",
+        action="store_true",
+        help="Skip the deterministic mixed-AIV BF16 low-rank GM load/cast gate.",
     )
     return parser.parse_args()
 
@@ -125,6 +133,128 @@ def _runtime_soc(device_id: int) -> dict[str, Any]:
         info["soc_version_error"] = f"{type(exc).__name__}: {exc}"
     info["normalized_soc"] = _normalize_soc_name(info["device_name"])
     return info
+
+
+def _target_dimensions(model_path: str) -> dict[str, int | str]:
+    config_path = Path(model_path) / "config.json"
+    hidden_size = 2048
+    intermediate_size = 512
+    source = "qwen35_svdq_default"
+    if config_path.exists():
+        config = _read_json(str(config_path))
+        text_config = config.get("text_config", config)
+        hidden_size = int(text_config.get("hidden_size", hidden_size))
+        intermediate_size = int(
+            text_config.get("moe_intermediate_size", text_config.get("intermediate_size", intermediate_size))
+        )
+        source = str(config_path)
+    return {
+        "source": source,
+        "hidden_size": hidden_size,
+        "intermediate_size": intermediate_size,
+    }
+
+
+def _deterministic_bf16_pattern(shape: tuple[int, ...], *, seed: int, scale: float) -> torch.Tensor:
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    values = torch.randint(-113, 114, shape, dtype=torch.int16, generator=generator).float()
+    return (values * scale).to(torch.bfloat16).contiguous()
+
+
+def _exception_payload(exc: BaseException) -> dict[str, str]:
+    return {
+        "type": type(exc).__name__,
+        "message": str(exc),
+    }
+
+
+def _preload_custom_opapi() -> bool:
+    global _PRELOADED_CUSTOM_OPAPI_GLOBAL
+    if not CUSTOM_OPAPI_LIB.exists():
+        return False
+    ctypes.CDLL(str(CUSTOM_OPAPI_LIB), mode=ctypes.RTLD_GLOBAL)
+    _PRELOADED_CUSTOM_OPAPI_GLOBAL = True
+    return True
+
+
+def _run_copy_only_consumer_gate(
+    *,
+    model_path: str,
+    rows: int,
+    seed: int,
+    device: torch.device,
+) -> dict[str, Any]:
+    dims = _target_dimensions(model_path)
+    hidden_size = int(dims["hidden_size"])
+    intermediate_size = int(dims["intermediate_size"])
+    gate_up_columns = intermediate_size * 2
+
+    bootstrap_custom_op_env(include_vendor_lib=True)
+    _preload_custom_opapi()
+    enable_custom_op()
+    op = getattr(torch.ops._C_ascend, "svdq_mixed_epilogue_debug_readback", None)
+    if op is None:
+        raise RuntimeError(
+            "torch.ops._C_ascend.svdq_mixed_epilogue_debug_readback is not registered. "
+            "Rebuild/install vllm-ascend after adding the mixed AIV debug binding."
+        )
+
+    gate_up_lowrank = _deterministic_bf16_pattern((rows, gate_up_columns), seed=seed + 17, scale=1.0 / 64.0)
+    down_lowrank = _deterministic_bf16_pattern((rows, hidden_size), seed=seed + 23, scale=1.0 / 64.0)
+    residual_gate_up = torch.zeros((rows, gate_up_columns), dtype=torch.float32)
+    residual_down = torch.zeros((rows, hidden_size), dtype=torch.float32)
+
+    gate_up_total, _hidden_bf16, _hidden_int8, _hidden_scale, down_total, _out_bf16 = op(
+        residual_gate_up.to(device=device).contiguous(),
+        gate_up_lowrank.to(device=device).contiguous(),
+        residual_down.to(device=device).contiguous(),
+        down_lowrank.to(device=device).contiguous(),
+        0.0,
+    )
+    torch.npu.synchronize()
+
+    gate_up_error = _stage_error(gate_up_total.detach().float().cpu(), gate_up_lowrank.float())
+    down_error = _stage_error(down_total.detach().float().cpu(), down_lowrank.float())
+    gate_up_passed = (
+        bool(gate_up_error["actual_finite"])
+        and bool(gate_up_error["expected_finite"])
+        and bool(gate_up_error["diff_finite"])
+        and float(gate_up_error["max_abs"]) == 0.0
+        and float(gate_up_error["mean_abs"]) == 0.0
+    )
+    down_passed = (
+        bool(down_error["actual_finite"])
+        and bool(down_error["expected_finite"])
+        and bool(down_error["diff_finite"])
+        and float(down_error["max_abs"]) == 0.0
+        and float(down_error["mean_abs"]) == 0.0
+    )
+    return {
+        "evaluated": True,
+        "passed": gate_up_passed and down_passed,
+        "mode": "deterministic_zero_residual_mixed_aiv_lowrank_load_cast",
+        "source": (
+            "svdq_mixed_epilogue_debug_readback reads BF16 low-rank GM tensors with the same "
+            "row-major row * columns + column address formula used by the mixed AIV consumer, "
+            "casts them to FP32, and writes the residual-plus-low-rank totals."
+        ),
+        "dimensions": {
+            **dims,
+            "rows": rows,
+            "gate_up_columns": gate_up_columns,
+        },
+        "metadata": {
+            "gate_up_logical_shape": list(gate_up_lowrank.shape),
+            "down_logical_shape": list(down_lowrank.shape),
+            "gate_up_row_stride_elements": int(gate_up_lowrank.stride(0)),
+            "down_row_stride_elements": int(down_lowrank.stride(0)),
+            "gate_up_row_stride_bytes": int(gate_up_lowrank.stride(0) * gate_up_lowrank.element_size()),
+            "down_row_stride_bytes": int(down_lowrank.stride(0) * down_lowrank.element_size()),
+            "element_size_bytes": int(gate_up_lowrank.element_size()),
+        },
+        "gate_up_lowrank_bf16_load_cast": gate_up_error,
+        "down_lowrank_bf16_load_cast": down_error,
+    }
 
 
 def _custom_package_debug_op_support(config_root: Path = CUSTOM_OP_CONFIG_ROOT) -> dict[str, Any]:
@@ -706,25 +836,53 @@ def main() -> None:
     device = torch.device(f"npu:{args.device_id}")
     quant_description = _read_json(os.path.join(args.model_path, "quant_model_description.json"))
     weights = _weight_map(args.model_path)
-    results = [
-        _probe_layer(
-            model_path=args.model_path,
-            quant_description=quant_description,
-            weight_map=weights,
-            layer_index=layer_index,
-            experts=args.experts,
-            num_tokens=args.num_tokens,
-            tp_size=args.tp_size,
-            tp_rank=args.tp_rank,
-            seed=args.seed,
-            input_scale=args.input_scale,
-            device=device,
-            max_abs_tol=args.max_abs_tol,
-            mean_abs_tol=args.mean_abs_tol,
-            require_accumulator_readback=args.require_accumulator_readback,
-        )
-        for layer_index in args.layers
-    ]
+    copy_only_consumer_gate: dict[str, Any]
+    if args.skip_copy_only_consumer_gate:
+        copy_only_consumer_gate = {
+            "evaluated": False,
+            "passed": False,
+            "reason": "skipped by --skip-copy-only-consumer-gate",
+        }
+    else:
+        try:
+            copy_only_consumer_gate = _run_copy_only_consumer_gate(
+                model_path=args.model_path,
+                rows=max(1, len(args.experts) * args.num_tokens),
+                seed=args.seed,
+                device=device,
+            )
+        except Exception as exc:
+            copy_only_consumer_gate = {
+                "evaluated": True,
+                "passed": False,
+                "exception": _exception_payload(exc),
+            }
+
+    try:
+        results = [
+            _probe_layer(
+                model_path=args.model_path,
+                quant_description=quant_description,
+                weight_map=weights,
+                layer_index=layer_index,
+                experts=args.experts,
+                num_tokens=args.num_tokens,
+                tp_size=args.tp_size,
+                tp_rank=args.tp_rank,
+                seed=args.seed,
+                input_scale=args.input_scale,
+                device=device,
+                max_abs_tol=args.max_abs_tol,
+                mean_abs_tol=args.mean_abs_tol,
+                require_accumulator_readback=args.require_accumulator_readback,
+            )
+            for layer_index in args.layers
+        ]
+        producer_exception = None
+    except Exception as exc:
+        results = []
+        producer_exception = _exception_payload(exc)
+
     summary = {
         "model_path": args.model_path,
         "evidence_dir": args.evidence_dir,
@@ -739,14 +897,24 @@ def main() -> None:
         "npu_environment": npu_env,
         "runtime_soc": runtime_soc,
         "custom_package_debug_op_support": package_support,
+        "copy_only_consumer_gate": copy_only_consumer_gate,
+        "producer_exception": producer_exception,
         "aggregate_stage_errors": _aggregate_stage_errors(results),
         "results": results,
-        "passed": all(result["passed"] for result in results),
+        "passed": (
+            producer_exception is None
+            and bool(copy_only_consumer_gate["passed"])
+            and all(result["passed"] for result in results)
+        ),
     }
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
     print(json.dumps(summary, indent=2))
     if not summary["passed"]:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        if _PRELOADED_CUSTOM_OPAPI_GLOBAL and os.environ.get("SVDQ_LOWRANK_DEBUG_ALLOW_CANN_TEARDOWN") != "1":
+            os._exit(1)
         raise SystemExit(1)
 
 
