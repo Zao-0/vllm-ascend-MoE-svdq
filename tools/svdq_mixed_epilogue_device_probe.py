@@ -44,6 +44,7 @@ from vllm_ascend.utils import bootstrap_custom_op_env, enable_custom_op  # noqa:
 DEFAULT_SUMMARY_NAME = "phase_k_mixed_epilogue_device_probe_summary.json"
 DEBUG_OP_NAME = "SVDQMixedEpilogueDebugReadback"
 CUSTOM_OPAPI_LIB = REPO_ROOT / "vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib/libcust_opapi.so"
+_PRELOADED_CUSTOM_OPAPI_GLOBAL = False
 
 
 def _parse_args() -> argparse.Namespace:
@@ -180,10 +181,21 @@ def _tensor_error(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, flo
 
 
 def _preload_custom_opapi() -> bool:
+    global _PRELOADED_CUSTOM_OPAPI_GLOBAL
     if not CUSTOM_OPAPI_LIB.exists():
         return False
     ctypes.CDLL(str(CUSTOM_OPAPI_LIB), mode=ctypes.RTLD_GLOBAL)
+    _PRELOADED_CUSTOM_OPAPI_GLOBAL = True
     return True
+
+
+def _finish_probe(payload: dict[str, Any], exit_code: int) -> int:
+    print(json.dumps(payload, indent=2), flush=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    if _PRELOADED_CUSTOM_OPAPI_GLOBAL and os.environ.get("SVDQ_MIXED_EPILOGUE_ALLOW_CANN_TEARDOWN") != "1":
+        os._exit(exit_code)
+    return exit_code
 
 
 def _has_registered_mixed_debug_op() -> bool:
@@ -421,15 +433,19 @@ def main() -> int:
         summary["skipped"] = not args.require_npu
         summary["skip_reason"] = "torch_npu import and an available NPU are required."
         path = _write_summary(args.evidence_dir, args.summary_name, summary)
-        print(json.dumps({"summary_path": path, "passed": False, "skipped": summary["skipped"]}, indent=2))
-        return 2 if args.require_npu else 0
+        return _finish_probe(
+            {"summary_path": path, "passed": False, "skipped": summary["skipped"]},
+            2 if args.require_npu else 0,
+        )
 
     if int(env["npu_device_count"]) <= args.device_id:
         summary["skipped"] = not args.require_npu
         summary["skip_reason"] = f"NPU device {args.device_id} is outside available device count."
         path = _write_summary(args.evidence_dir, args.summary_name, summary)
-        print(json.dumps({"summary_path": path, "passed": False, "skipped": summary["skipped"]}, indent=2))
-        return 2 if args.require_npu else 0
+        return _finish_probe(
+            {"summary_path": path, "passed": False, "skipped": summary["skipped"]},
+            2 if args.require_npu else 0,
+        )
 
     torch.npu.set_device(args.device_id)
     try:
@@ -437,14 +453,12 @@ def main() -> int:
     except Exception as exc:
         summary["failure_reason"] = f"failed to enable custom ops: {type(exc).__name__}: {exc}"
         path = _write_summary(args.evidence_dir, args.summary_name, summary)
-        print(json.dumps({"summary_path": path, "passed": False, "skipped": False}, indent=2))
-        return 1
+        return _finish_probe({"summary_path": path, "passed": False, "skipped": False}, 1)
     summary["torch_op_registered"] = registered
     if not registered:
         summary["failure_reason"] = "torch.ops._C_ascend.svdq_mixed_epilogue_debug_readback is not registered."
         path = _write_summary(args.evidence_dir, args.summary_name, summary)
-        print(json.dumps({"summary_path": path, "passed": False, "skipped": False}, indent=2))
-        return 1
+        return _finish_probe({"summary_path": path, "passed": False, "skipped": False}, 1)
 
     device = torch.device(f"npu:{args.device_id}")
     stage = _run_probe(
@@ -460,8 +474,10 @@ def main() -> int:
     summary["stages"] = [stage]
     summary["passed"] = bool(stage["passed"])
     path = _write_summary(args.evidence_dir, args.summary_name, summary)
-    print(json.dumps({"summary_path": path, "passed": summary["passed"], "skipped": False}, indent=2))
-    return 0 if summary["passed"] else 1
+    return _finish_probe(
+        {"summary_path": path, "passed": summary["passed"], "skipped": False},
+        0 if summary["passed"] else 1,
+    )
 
 
 if __name__ == "__main__":
