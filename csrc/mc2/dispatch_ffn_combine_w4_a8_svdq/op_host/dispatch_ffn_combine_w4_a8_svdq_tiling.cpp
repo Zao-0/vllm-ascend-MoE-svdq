@@ -982,7 +982,7 @@ static ge::graphStatus SVDQLowRankDebugReadbackCheckShapeAndSetTiling(
     const uint32_t aicNum = ascendcPlatform.GetCoreNumAic();
     const uint32_t blockDim = aicNum;
     context->SetBlockDim(blockDim);
-    context->SetTilingKey(0);
+    context->SetTilingKey(1000000);
 
     SetDebugLowRankInvocation(tilingData->gateUpInvocation, DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_GATE_UP,
         SVDQ_FACTOR_GATE_UP_L1, SVDQ_FACTOR_GATE_L2, SVDQ_FACTOR_UP_L2, routedRows, hiddenSize, gateRank, upRank,

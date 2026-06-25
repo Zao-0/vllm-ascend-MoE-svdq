@@ -677,6 +677,8 @@ def test_svdq_lowrank_debug_tiling_launches_aic_only():
     assert "const uint32_t aicNum = ascendcPlatform.GetCoreNumAic();" in debug_tiling
     assert "const uint32_t blockDim = aicNum;" in debug_tiling
     assert "context->SetBlockDim(blockDim);" in debug_tiling
+    assert "context->SetTilingKey(1000000);" in debug_tiling
+    assert "GetCoreNumAiv()" not in debug_tiling
     assert "CalcTschBlockDim" not in debug_tiling
 
 
@@ -725,10 +727,16 @@ def test_svdq_lowrank_debug_mmad_synchronizes_l0_reuse():
     process_start = fused.index("__aicore__ inline void Process()")
     process_end = fused.index("/*", process_start)
     process_block = fused[process_start:process_end]
-    assert "InitializeMmadL0ReuseEvents();" in process_block
-    assert "DrainMmadL0ReuseEvents();" in process_block
-    assert process_block.index("InitializeMmadL0ReuseEvents();") < process_block.index("ExecuteStage(")
-    assert process_block.index("ExecuteStage(") < process_block.index("DrainMmadL0ReuseEvents();")
+    assert "SVDQOfficialBF16Resource resource;" in process_block
+    assert "ExecuteStage(stageIndex, coreIdx, scheduledCoreCount, resource)" in process_block
+    assert "InitializeMmadL0ReuseEvents();" not in process_block
+    assert "DrainMmadL0ReuseEvents();" not in process_block
+    assert "SVDQOfficialBF16BlockMmad blockMmad(resource);" in fused
+    assert "SVDQ_LOWRANK_BF16_RANK_N_TILE = 64" in fused
+    assert "SVDQLowRankBF16RankBlockMmad blockMmad(resource);" in fused
+    assert "stage.stageKind == SVDQ_LOWRANK_STAGE_DOWN_PROJECT" in fused
+    assert "StageOutputColumnTile(stage)" in fused
+    assert "RunOfficialOutputTileBF16(outputTilePlan, blockMmad)" in fused
     assert mmad_block.index("WaitFlag<AscendC::HardEvent::M_MTE1>") < mmad_block.index(
         "l1_to_l0_a<ArchType::ASCEND_V220"
     )
@@ -2222,8 +2230,17 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "args_.rank != nullptr" in lowrank_header
     assert "GM_ADDR inputBase = stageIndex == 0 ? args_.input : args_.rank;" in lowrank_header
     assert "GM_ADDR outputBase = stageIndex == 0 ? args_.rank : args_.output;" in lowrank_header
-    assert "ExecuteStage(stageIndex, coreIdx, scheduledCoreCount)" in lowrank_header
-    assert "StageCoreTileRange(stageIndex, coreIdx, coreCount);" in lowrank_header
+    assert "ExecuteStage(stageIndex, coreIdx, scheduledCoreCount, resource)" in lowrank_header
+    assert "SVDQOfficialBF16Resource resource;" in lowrank_header
+    assert "SVDQOfficialBF16BlockMmad blockMmad(resource);" in lowrank_header
+    assert "SVDQLowRankBF16RankBlockMmad blockMmad(resource);" in lowrank_header
+    assert "stage.stageKind == SVDQ_LOWRANK_STAGE_DOWN_PROJECT" in lowrank_header
+    assert "StageOutputColumnTile(stage)" in lowrank_header
+    assert "SVDQOfficialBF16BlockScheduler blockScheduler;" in lowrank_header
+    assert "blockScheduler.Update(" in lowrank_header
+    assert "blockScheduler.GetCoreLoops()" in lowrank_header
+    assert "blockScheduler.GetBlockCoord(loopIdx)" in lowrank_header
+    assert "blockScheduler.GetActualBlockShape(blockCoord)" in lowrank_header
     assert "StageOutputTilePlan(stageIndex, tileRange.tileStart + tileOffset)" in lowrank_header
     assert "AscendC::SyncAll()" in lowrank_header
     assert "stage-ordered so L2 stages cannot read rank workspace" in lowrank_header
@@ -2380,7 +2397,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "return RunScalarTileBF16(pipelinePlan.buffer.tile.tile)" in lowrank_header
     assert "rowTiles * StageColumnTileCount(stage)" in lowrank_header
     assert "const uint32_t tilesPerRow = columnTiles" in lowrank_header
-    assert "Min(args_.tiling.outputColumnTile, stage.outputColumns - outputColumnOffset)" in lowrank_header
+    assert "Min(outputColumnTile, stage.outputColumns - outputColumnOffset)" in lowrank_header
     assert "Min(args_.tiling.kTile, stage.inputColumns - kColumnOffset)" in lowrank_header
     assert "kColumnOffset >= stage.inputColumns" in lowrank_header
     assert "input BF16 -> down factor GEMM -> rank tile -> up factor GEMM -> projection BF16 GM" in lowrank_header

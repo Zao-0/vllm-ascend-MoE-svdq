@@ -20,6 +20,10 @@
 #include "l1_to_l0_iterator.h"
 #include "l0c_to_gm_iterator.h"
 #include "mma.h"
+#include "../../../dispatch_ffn_combine_bf16/op_kernel/utils/block_mmad_preload_async_fixpipe_quant.hpp"
+#include "../../../dispatch_ffn_combine_bf16/op_kernel/utils/copy_gm_to_l1_custom.hpp"
+#include "../../../dispatch_ffn_combine_bf16/op_kernel/utils/copy_l0c_to_gm_custom.hpp"
+#include "catlass/gemm/block/block_swizzle.hpp"
 
 namespace DispatchFFNCombineW4A8SVDQImpl {
 
@@ -39,6 +43,67 @@ constexpr int32_t SVDQ_LOWRANK_MMAD_L0B_EVENT_BASE =
     SVDQ_LOWRANK_MMAD_L0A_EVENT_BASE + SVDQ_LOWRANK_MMAD_L0_STAGES;
 constexpr int32_t SVDQ_LOWRANK_MMAD_M_EVENT =
     SVDQ_LOWRANK_MMAD_L0B_EVENT_BASE + SVDQ_LOWRANK_MMAD_L0_STAGES;
+constexpr uint32_t SVDQ_OFFICIAL_BF16_PRELOAD_STAGES = 1;
+constexpr uint32_t SVDQ_OFFICIAL_BF16_L1_STAGES = 2;
+constexpr uint32_t SVDQ_OFFICIAL_BF16_L0A_STAGES = 2;
+constexpr uint32_t SVDQ_OFFICIAL_BF16_L0B_STAGES = 2;
+constexpr uint32_t SVDQ_OFFICIAL_BF16_L0C_STAGES = 1;
+constexpr uint32_t SVDQ_OFFICIAL_BF16_L1_M_TILE = 128;
+constexpr uint32_t SVDQ_OFFICIAL_BF16_L1_N_TILE = 256;
+constexpr uint32_t SVDQ_OFFICIAL_BF16_L1_K_TILE = 256;
+constexpr uint32_t SVDQ_OFFICIAL_BF16_L0_M_TILE = 128;
+constexpr uint32_t SVDQ_OFFICIAL_BF16_L0_N_TILE = 256;
+constexpr uint32_t SVDQ_OFFICIAL_BF16_L0_K_TILE = 64;
+constexpr uint32_t SVDQ_LOWRANK_BF16_RANK_N_TILE = 64;
+
+using SVDQOfficialBF16ArchTag = Catlass::Arch::AtlasA2;
+using SVDQOfficialBF16LayoutA = Catlass::layout::RowMajor;
+using SVDQOfficialBF16LayoutB = Catlass::layout::ColumnMajor;
+using SVDQOfficialBF16LayoutC = Catlass::layout::RowMajor;
+using SVDQOfficialBF16LayoutScale = Catlass::layout::VectorLayout;
+using SVDQOfficialBF16L1TileShape = Catlass::GemmShape<
+    SVDQ_OFFICIAL_BF16_L1_M_TILE,
+    SVDQ_OFFICIAL_BF16_L1_N_TILE,
+    SVDQ_OFFICIAL_BF16_L1_K_TILE>;
+using SVDQOfficialBF16L0TileShape = Catlass::GemmShape<
+    SVDQ_OFFICIAL_BF16_L0_M_TILE,
+    SVDQ_OFFICIAL_BF16_L0_N_TILE,
+    SVDQ_OFFICIAL_BF16_L0_K_TILE>;
+using SVDQOfficialBF16DispatchPolicy = Catlass::Gemm::MmadAtlasA2PreloadAsyncFixpipe<
+    SVDQ_OFFICIAL_BF16_PRELOAD_STAGES,
+    SVDQ_OFFICIAL_BF16_L1_STAGES,
+    SVDQ_OFFICIAL_BF16_L0A_STAGES,
+    SVDQ_OFFICIAL_BF16_L0B_STAGES,
+    SVDQ_OFFICIAL_BF16_L0C_STAGES,
+    false,
+    true>;
+using SVDQOfficialBF16AType = Catlass::Gemm::GemmType<bfloat16_t, SVDQOfficialBF16LayoutA>;
+using SVDQOfficialBF16BType = Catlass::Gemm::GemmType<bfloat16_t, SVDQOfficialBF16LayoutB>;
+using SVDQOfficialBF16CType = Catlass::Gemm::GemmType<float, SVDQOfficialBF16LayoutC>;
+using SVDQOfficialBF16Resource = Catlass::Arch::Resource<SVDQOfficialBF16ArchTag>;
+using SVDQOfficialBF16BlockMmad = Catlass::Gemm::Block::BlockMmad<
+    SVDQOfficialBF16DispatchPolicy,
+    SVDQOfficialBF16L1TileShape,
+    SVDQOfficialBF16L0TileShape,
+    SVDQOfficialBF16AType,
+    SVDQOfficialBF16BType,
+    SVDQOfficialBF16CType>;
+using SVDQLowRankBF16RankL1TileShape = Catlass::GemmShape<
+    SVDQ_OFFICIAL_BF16_L1_M_TILE,
+    SVDQ_LOWRANK_BF16_RANK_N_TILE,
+    SVDQ_OFFICIAL_BF16_L1_K_TILE>;
+using SVDQLowRankBF16RankL0TileShape = Catlass::GemmShape<
+    SVDQ_OFFICIAL_BF16_L0_M_TILE,
+    SVDQ_LOWRANK_BF16_RANK_N_TILE,
+    SVDQ_OFFICIAL_BF16_L0_K_TILE>;
+using SVDQLowRankBF16RankBlockMmad = Catlass::Gemm::Block::BlockMmad<
+    SVDQOfficialBF16DispatchPolicy,
+    SVDQLowRankBF16RankL1TileShape,
+    SVDQLowRankBF16RankL0TileShape,
+    SVDQOfficialBF16AType,
+    SVDQOfficialBF16BType,
+    SVDQOfficialBF16CType>;
+using SVDQOfficialBF16BlockScheduler = Catlass::Gemm::Block::GemmIdentityBlockSwizzle<9, 1>;
 
 enum SVDQLowRankStageKind : uint32_t {
     SVDQ_LOWRANK_STAGE_DOWN_PROJECT = 0,
@@ -418,7 +483,7 @@ public:
 
     __aicore__ inline uint32_t StageColumnTileCount(const SVDQLowRankStagePlan& stage) const
     {
-        return CeilDiv(stage.outputColumns, args_.tiling.outputColumnTile);
+        return CeilDiv(stage.outputColumns, StageOutputColumnTile(stage));
     }
 
     __aicore__ inline uint32_t StageKTileCount(const SVDQLowRankStagePlan& stage) const
@@ -487,6 +552,7 @@ public:
     {
         uint32_t remainingTile = tileId;
         const SVDQLowRankStagePlan stage = StagePlan(stageIndex);
+        const uint32_t outputColumnTile = StageOutputColumnTile(stage);
         const uint32_t columnTiles = StageColumnTileCount(stage);
         const uint32_t tilesPerRow = columnTiles;
         for (uint32_t expertId = 0; expertId < ExpertCount(); ++expertId) {
@@ -502,14 +568,14 @@ public:
             const uint32_t inRowTileOffset = remainingTile - rowTileIndex * tilesPerRow;
             const uint32_t outputTileIndex = inRowTileOffset;
             const uint32_t rowOffset = rowTileIndex * args_.tiling.rowTile;
-            const uint32_t outputColumnOffset = outputTileIndex * args_.tiling.outputColumnTile;
+            const uint32_t outputColumnOffset = outputTileIndex * outputColumnTile;
             return SVDQLowRankOutputTilePlan{
                 expertPlan,
                 tileId,
                 expertPlan.tokenStart + rowOffset,
                 Min(args_.tiling.rowTile, expertPlan.tokenCount - rowOffset),
                 outputColumnOffset,
-                Min(args_.tiling.outputColumnTile, stage.outputColumns - outputColumnOffset),
+                Min(outputColumnTile, stage.outputColumns - outputColumnOffset),
             };
         }
         return {};
@@ -520,6 +586,7 @@ public:
         uint32_t remainingTile = tileId;
         for (uint32_t stageIndex = 0; stageIndex < StageCount(); ++stageIndex) {
             const SVDQLowRankStagePlan stage = StagePlan(stageIndex);
+            const uint32_t outputColumnTile = StageOutputColumnTile(stage);
             const uint32_t columnTiles = StageColumnTileCount(stage);
             const uint32_t tilesPerRow = columnTiles;
             for (uint32_t expertId = 0; expertId < ExpertCount(); ++expertId) {
@@ -535,54 +602,249 @@ public:
                 const uint32_t inRowTileOffset = remainingTile - rowTileIndex * tilesPerRow;
                 const uint32_t outputTileIndex = inRowTileOffset;
                 const uint32_t rowOffset = rowTileIndex * args_.tiling.rowTile;
-                const uint32_t outputColumnOffset = outputTileIndex * args_.tiling.outputColumnTile;
+                const uint32_t outputColumnOffset = outputTileIndex * outputColumnTile;
                 return SVDQLowRankOutputTilePlan{
                     expertPlan,
                     tileId,
                     expertPlan.tokenStart + rowOffset,
                     Min(args_.tiling.rowTile, expertPlan.tokenCount - rowOffset),
                     outputColumnOffset,
-                    Min(args_.tiling.outputColumnTile, stage.outputColumns - outputColumnOffset),
+                    Min(outputColumnTile, stage.outputColumns - outputColumnOffset),
                 };
             }
         }
         return {};
     }
 
-    __aicore__ inline bool ExecuteStage(uint32_t stageIndex, uint32_t coreIdx, uint32_t coreCount) const
+    __aicore__ inline bool ExecuteStage(
+        uint32_t stageIndex, uint32_t coreIdx, uint32_t coreCount, SVDQOfficialBF16Resource& resource) const
     {
-        const SVDQLowRankCoreTileRange tileRange = StageCoreTileRange(stageIndex, coreIdx, coreCount);
+#ifdef __DAV_C220_CUBE__
+        icache_preload(8);
+        const SVDQLowRankStagePlan stage = StagePlan(stageIndex);
+        if (stage.stageKind == SVDQ_LOWRANK_STAGE_DOWN_PROJECT) {
+            SVDQLowRankBF16RankBlockMmad blockMmad(resource);
+            return ExecuteStageScheduled(stageIndex, coreIdx, coreCount, blockMmad);
+        }
+        SVDQOfficialBF16BlockMmad blockMmad(resource);
+        return ExecuteStageScheduled(stageIndex, coreIdx, coreCount, blockMmad);
+#else
+        (void)stageIndex;
+        (void)coreIdx;
+        (void)coreCount;
+        (void)resource;
+        return false;
+#endif
+    }
+
+    template <typename BlockMmadType>
+    __aicore__ inline bool ExecuteStageScheduled(
+        uint32_t stageIndex, uint32_t coreIdx, uint32_t coreCount, BlockMmadType& blockMmad) const
+    {
+        const SVDQLowRankStagePlan stage = StagePlan(stageIndex);
+        SVDQOfficialBF16BlockScheduler blockScheduler;
+        uint32_t startCoreIdx = 0;
+
+        for (uint32_t expertId = 0; expertId < ExpertCount(); ++expertId) {
+            const SVDQLowRankExpertPlan expert = ExpertStagePlan(stageIndex, expertId);
+            if (expert.tokenCount == 0) {
+                continue;
+            }
+            if (!expert.HasWork()) {
+                return false;
+            }
+            const Catlass::GemmCoord problemShape{expert.tokenCount, stage.outputColumns, stage.inputColumns};
+            blockScheduler.Update(
+                problemShape,
+                Catlass::MakeCoord(BlockMmadType::L1TileShape::M, BlockMmadType::L1TileShape::N));
+            const uint32_t coreLoops = blockScheduler.GetCoreLoops();
+            const uint32_t startLoopIdx =
+                ((coreIdx < startCoreIdx) ? (coreIdx + coreCount) : coreIdx) - startCoreIdx;
+
+            for (uint32_t loopIdx = startLoopIdx; loopIdx < coreLoops; loopIdx += coreCount) {
+                const Catlass::GemmCoord blockCoord = blockScheduler.GetBlockCoord(loopIdx);
+                const Catlass::GemmCoord actualBlockShape = blockScheduler.GetActualBlockShape(blockCoord);
+                const SVDQLowRankOutputTilePlan outputTilePlan{
+                    expert,
+                    loopIdx,
+                    expert.tokenStart + blockCoord.m() * BlockMmadType::L1TileShape::M,
+                    actualBlockShape.m(),
+                    blockCoord.n() * BlockMmadType::L1TileShape::N,
+                    actualBlockShape.n(),
+                };
+                if (!RunOfficialBlockMmadBF16(
+                        outputTilePlan,
+                        blockMmad,
+                        AccumulatorAddress(
+                            expert,
+                            0,
+                            0),
+                        stage.outputStrideColumns)) {
+                    return false;
+                }
+            }
+            startCoreIdx = coreCount == 0 ? 0 : (startCoreIdx + coreLoops) % coreCount;
+        }
+
+        if constexpr (BlockMmadType::DispatchPolicy::ASYNC) {
+            blockMmad.SynchronizeBlock();
+        }
+
+        startCoreIdx = 0;
+        for (uint32_t expertId = 0; expertId < ExpertCount(); ++expertId) {
+            const SVDQLowRankExpertPlan expert = ExpertStagePlan(stageIndex, expertId);
+            if (expert.tokenCount == 0) {
+                continue;
+            }
+            const Catlass::GemmCoord problemShape{expert.tokenCount, stage.outputColumns, stage.inputColumns};
+            blockScheduler.Update(
+                problemShape,
+                Catlass::MakeCoord(BlockMmadType::L1TileShape::M, BlockMmadType::L1TileShape::N));
+            const uint32_t coreLoops = blockScheduler.GetCoreLoops();
+            const uint32_t startLoopIdx =
+                ((coreIdx < startCoreIdx) ? (coreIdx + coreCount) : coreIdx) - startCoreIdx;
+
+            for (uint32_t loopIdx = startLoopIdx; loopIdx < coreLoops; loopIdx += coreCount) {
+                const Catlass::GemmCoord blockCoord = blockScheduler.GetBlockCoord(loopIdx);
+                const Catlass::GemmCoord actualBlockShape = blockScheduler.GetActualBlockShape(blockCoord);
+                const SVDQLowRankOutputTilePlan outputTilePlan{
+                    expert,
+                    loopIdx,
+                    expert.tokenStart + blockCoord.m() * BlockMmadType::L1TileShape::M,
+                    actualBlockShape.m(),
+                    blockCoord.n() * BlockMmadType::L1TileShape::N,
+                    actualBlockShape.n(),
+                };
+                const GM_ADDR accumulator = AccumulatorAddress(
+                    expert,
+                    outputTilePlan.rowStart - expert.tokenStart,
+                    outputTilePlan.outputColumnOffset);
+                if (!CastOfficialAccumulatorFP32ToOutputBF16(
+                        outputTilePlan, accumulator, stage.outputStrideColumns)) {
+                    return false;
+                }
+            }
+            startCoreIdx = coreCount == 0 ? 0 : (startCoreIdx + coreLoops) % coreCount;
+        }
+        return true;
+    }
+
+    template <typename BlockMmadType>
+    __aicore__ inline bool ExecuteStageTileRange(
+        uint32_t stageIndex, const SVDQLowRankCoreTileRange& tileRange, BlockMmadType& blockMmad) const
+    {
         for (uint32_t tileOffset = 0; tileOffset < tileRange.tileCount; ++tileOffset) {
             const SVDQLowRankOutputTilePlan outputTilePlan =
                 StageOutputTilePlan(stageIndex, tileRange.tileStart + tileOffset);
             if (!outputTilePlan.HasWork()) {
                 return false;
             }
-            const uint32_t kTileCount = OutputTileKTileCount(outputTilePlan);
-            for (uint32_t kTileIndex = 0; kTileIndex < kTileCount; ++kTileIndex) {
-                const SVDQLowRankTilePlan tilePlan = KTilePlan(outputTilePlan, kTileIndex);
-                if (!tilePlan.HasWork()) {
-                    return false;
-                }
-                const SVDQLowRankTileTensorPlan tileTensorPlan = BuildTileTensorPlan(tilePlan);
-                if (!tileTensorPlan.HasWork()) {
-                    return false;
-                }
-                const SVDQLowRankMmadTilePlan mmaTilePlan = BuildMmadTilePlan(tileTensorPlan);
-                if (!mmaTilePlan.HasCompatibleShape()) {
-                    return false;
-                }
-                const SVDQLowRankMmadBufferPlan bufferPlan = BuildMmadBufferPlan(mmaTilePlan);
-                if (!bufferPlan.HasCompleteFootprint()) {
-                    return false;
-                }
-                const SVDQLowRankMmadPipelinePlan pipelinePlan = BuildMmadPipelinePlan(bufferPlan);
-                if (!pipelinePlan.HasCompletePipeline()) {
-                    return false;
-                }
-                if (!RunPlannedTileBF16(pipelinePlan)) {
-                    return false;
-                }
+            if (!RunOfficialOutputTileBF16(outputTilePlan, blockMmad)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    template <typename BlockMmadType>
+    __aicore__ inline bool RunOfficialBlockMmadBF16(
+        const SVDQLowRankOutputTilePlan& outputTilePlan, BlockMmadType& blockMmad, GM_ADDR output,
+        uint32_t outputStrideColumns) const
+    {
+        if (!outputTilePlan.HasWork() || output == nullptr || outputStrideColumns == 0) {
+            return false;
+        }
+        if (outputTilePlan.rowCount > BlockMmadType::L1TileShape::M ||
+            outputTilePlan.outputColumnCount > BlockMmadType::L1TileShape::N ||
+            outputTilePlan.expert.stage.inputColumns == 0) {
+            return false;
+        }
+#ifdef __DAV_C220_CUBE__
+        const SVDQLowRankExpertPlan& expert = outputTilePlan.expert;
+        const SVDQLowRankStagePlan& stage = expert.stage;
+        const uint32_t rowOffset = outputTilePlan.rowStart - expert.tokenStart;
+        const uint32_t inputColumns = stage.inputColumns;
+        const SVDQOfficialBF16LayoutA layoutA(expert.tokenCount, inputColumns, stage.inputStrideColumns);
+        const SVDQOfficialBF16LayoutB layoutB(inputColumns, stage.outputColumns);
+        const SVDQOfficialBF16LayoutC layoutC(expert.tokenCount, stage.outputColumns, outputStrideColumns);
+        const Catlass::MatrixCoord offsetA{rowOffset, 0};
+        const Catlass::MatrixCoord offsetB{0, outputTilePlan.outputColumnOffset};
+        const Catlass::MatrixCoord offsetC{rowOffset, outputTilePlan.outputColumnOffset};
+        using ElementC = typename BlockMmadType::ElementC;
+        const GM_ADDR input = MatrixAddress(expert.input, 0, stage.inputStrideColumns, 0) +
+                              layoutA.GetOffset(offsetA) * SVDQ_LOWRANK_BF16_BYTES;
+        const GM_ADDR factor = expert.factor + layoutB.GetOffset(offsetB) * SVDQ_LOWRANK_BF16_BYTES;
+        const GM_ADDR outputBase = output + layoutC.GetOffset(offsetC) * sizeof(ElementC);
+
+        AscendC::GlobalTensor<bfloat16_t> inputGm;
+        AscendC::GlobalTensor<bfloat16_t> factorGm;
+        AscendC::GlobalTensor<ElementC> outputGm;
+        AscendC::GlobalTensor<uint64_t> scaleGm;
+        inputGm.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(input));
+        factorGm.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(factor));
+        scaleGm.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(nullptr));
+
+        SVDQOfficialBF16LayoutScale layoutScale(outputTilePlan.outputColumnCount);
+        Catlass::GemmCoord actualShape{
+            outputTilePlan.rowCount,
+            outputTilePlan.outputColumnCount,
+            inputColumns};
+
+        outputGm.SetGlobalBuffer(reinterpret_cast<__gm__ ElementC*>(outputBase));
+        blockMmad(
+            inputGm,
+            layoutA,
+            factorGm,
+            layoutB,
+            outputGm,
+            layoutC,
+            scaleGm,
+            layoutScale,
+            actualShape);
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    template <typename BlockMmadType>
+    __aicore__ inline bool RunOfficialOutputTileBF16(
+        const SVDQLowRankOutputTilePlan& outputTilePlan, BlockMmadType& blockMmad) const
+    {
+        if (!outputTilePlan.HasWork()) {
+            return false;
+        }
+        return RunOfficialBlockMmadBF16(
+            outputTilePlan,
+            blockMmad,
+            AccumulatorAddress(
+                outputTilePlan.expert,
+                outputTilePlan.rowStart - outputTilePlan.expert.tokenStart,
+                outputTilePlan.outputColumnOffset),
+            outputTilePlan.expert.stage.outputStrideColumns);
+    }
+
+    __aicore__ inline bool CastOfficialAccumulatorFP32ToOutputBF16(
+        const SVDQLowRankOutputTilePlan& outputTilePlan, GM_ADDR accumulator,
+        uint32_t outputStrideColumns) const
+    {
+        if (!outputTilePlan.HasWork() || accumulator == nullptr || outputStrideColumns == 0) {
+            return false;
+        }
+        const SVDQLowRankExpertPlan& expert = outputTilePlan.expert;
+        const uint32_t rowOffset = outputTilePlan.rowStart - expert.tokenStart;
+        const GM_ADDR output =
+            MatrixAddress(expert.output, rowOffset, expert.stage.outputStrideColumns, outputTilePlan.outputColumnOffset);
+        AscendC::GlobalTensor<float> accumulatorGm;
+        AscendC::GlobalTensor<bfloat16_t> outputGm;
+        accumulatorGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(accumulator));
+        outputGm.SetGlobalBuffer(reinterpret_cast<__gm__ bfloat16_t*>(output));
+
+        for (uint32_t row = 0; row < outputTilePlan.rowCount; ++row) {
+            const uint64_t rowElementOffset = static_cast<uint64_t>(row) * outputStrideColumns;
+            for (uint32_t column = 0; column < outputTilePlan.outputColumnCount; ++column) {
+                const uint64_t elementOffset = rowElementOffset + column;
+                outputGm.SetValue(elementOffset, static_cast<bfloat16_t>(accumulatorGm.GetValue(elementOffset)));
             }
         }
         return true;
@@ -900,6 +1162,10 @@ public:
 
     __aicore__ inline void Process()
     {
+        if ASCEND_IS_AIV {
+            return;
+        }
+        if ASCEND_IS_AIC {
         if (!HasCompleteContract()) {
             return;
         }
@@ -918,18 +1184,25 @@ public:
         const uint32_t coreIdx = AscendC::GetBlockIdx();
         const uint32_t runtimeCoreCount = AscendC::GetBlockNum();
         const uint32_t scheduledCoreCount = args_.tiling.coreCount <= runtimeCoreCount ? args_.tiling.coreCount : runtimeCoreCount;
-        InitializeMmadL0ReuseEvents();
         bool completedAllStages = true;
+#ifdef __DAV_C220_CUBE__
+        SVDQOfficialBF16Resource resource;
+#endif
         for (uint32_t stageIndex = 0; stageIndex < StageCount(); ++stageIndex) {
-            if (!ExecuteStage(stageIndex, coreIdx, scheduledCoreCount)) {
+#ifdef __DAV_C220_CUBE__
+            if (!ExecuteStage(stageIndex, coreIdx, scheduledCoreCount, resource)) {
                 completedAllStages = false;
                 break;
             }
+#else
+            completedAllStages = false;
+            break;
+#endif
             AscendC::SyncAll();
         }
-        DrainMmadL0ReuseEvents();
         if (!completedAllStages) {
             return;
+        }
         }
         /*
          * Legacy flat scheduling is kept here only as source history until the
@@ -997,6 +1270,12 @@ private:
     __aicore__ inline uint32_t RoundUp(uint32_t value, uint32_t alignment) const
     {
         return alignment == 0 ? 0 : CeilDiv(value, alignment) * alignment;
+    }
+
+    __aicore__ inline uint32_t StageOutputColumnTile(const SVDQLowRankStagePlan& stage) const
+    {
+        return stage.stageKind == SVDQ_LOWRANK_STAGE_DOWN_PROJECT ?
+            SVDQ_LOWRANK_BF16_RANK_N_TILE : SVDQ_OFFICIAL_BF16_L1_N_TILE;
     }
 
     __aicore__ inline SVDQLowRankStagePlan BuildDownStagePlan() const

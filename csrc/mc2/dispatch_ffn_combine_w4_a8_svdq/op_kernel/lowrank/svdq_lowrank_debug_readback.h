@@ -116,9 +116,6 @@ public:
         if (!HasCompleteTilingContract()) {
             return;
         }
-        if (!RunInvocation(BuildGateUpArgs())) {
-            return;
-        }
         (void)RunInvocation(BuildDownArgs());
     }
 

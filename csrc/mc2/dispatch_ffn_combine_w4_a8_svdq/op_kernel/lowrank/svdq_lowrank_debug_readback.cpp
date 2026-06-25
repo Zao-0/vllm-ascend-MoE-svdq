@@ -18,8 +18,13 @@ extern "C" __global__ __aicore__ void svdq_low_rank_debug_readback(
     GM_ADDR downSvdqL1, GM_ADDR downSvdqL2, GM_ADDR expertTokenNums, GM_ADDR gateUpOutput, GM_ADDR downOutput,
     GM_ADDR gateUpAccumulator, GM_ADDR downAccumulator, GM_ADDR workspaceGM, GM_ADDR tilingGM)
 {
-    SVDQLowRankDebugReadbackKernel op;
-    op.Init(routedX, hidden, gateUpSvdqL1, gateSvdqL2, upSvdqL2, downSvdqL1, downSvdqL2, expertTokenNums,
-        gateUpOutput, downOutput, gateUpAccumulator, downAccumulator, workspaceGM, tilingGM);
-    op.Process();
+    REGISTER_TILING_DEFAULT(SVDQLowRankDebugTilingData);
+    if (TILING_KEY_IS(1000000)) {
+        KERNEL_TASK_TYPE(1000000, KERNEL_TYPE_MIX_AIC_1_2);
+        GET_TILING_DATA_WITH_STRUCT(SVDQLowRankDebugTilingData, tilingData, tilingGM);
+        SVDQLowRankDebugReadbackKernel op;
+        op.Init(routedX, hidden, gateUpSvdqL1, gateSvdqL2, upSvdqL2, downSvdqL1, downSvdqL2, expertTokenNums,
+            gateUpOutput, downOutput, gateUpAccumulator, downAccumulator, workspaceGM, tilingGM);
+        op.Process();
+    }
 }

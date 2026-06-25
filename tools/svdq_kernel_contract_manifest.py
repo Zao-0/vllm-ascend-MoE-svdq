@@ -1367,9 +1367,14 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "invocation.rankRegionId = rankRegionId;" in sources["host_tiling"]
         ),
         "lowrank_helper_stage_orders_rank_consumers": (
-            "ExecuteStage(stageIndex, coreIdx, scheduledCoreCount)" in sources["lowrank_header"]
-            and "StageCoreTileRange(stageIndex, coreIdx, coreCount);" in sources["lowrank_header"]
-            and "StageOutputTilePlan(stageIndex, tileRange.tileStart + tileOffset)" in sources["lowrank_header"]
+            "ExecuteStage(stageIndex, coreIdx, scheduledCoreCount, resource)" in sources["lowrank_header"]
+            and "blockScheduler.Update(" in sources["lowrank_header"]
+            and "blockScheduler.GetBlockCoord(loopIdx)" in sources["lowrank_header"]
+            and "SVDQLowRankOutputTilePlan outputTilePlan" in sources["lowrank_header"]
+            and "SVDQOfficialBF16Resource resource;" in sources["lowrank_header"]
+            and "SVDQLowRankBF16RankBlockMmad blockMmad(resource);" in sources["lowrank_header"]
+            and "SVDQOfficialBF16BlockMmad blockMmad(resource);" in sources["lowrank_header"]
+            and "StageOutputColumnTile(stage)" in sources["lowrank_header"]
             and "AscendC::SyncAll()" in sources["lowrank_header"]
             and "stage-ordered so L2 stages cannot read rank workspace" in sources["lowrank_header"]
         ),
