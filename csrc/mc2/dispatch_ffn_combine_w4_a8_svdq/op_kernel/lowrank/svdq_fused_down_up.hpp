@@ -817,14 +817,6 @@ public:
             tile.kActual, tile.kRound, tensorPlan.factorStrideColumns);
         AscendC::PipeBarrier<PIPE_MTE2>();
 
-        if (pipelinePlan.initAccumulator) {
-            for (uint32_t stage = 0; stage < SVDQ_LOWRANK_MMAD_L0_STAGES; ++stage) {
-                AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(
-                    SVDQ_LOWRANK_MMAD_L0A_EVENT_BASE + static_cast<int32_t>(stage));
-                AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(
-                    SVDQ_LOWRANK_MMAD_L0B_EVENT_BASE + static_cast<int32_t>(stage));
-            }
-        }
         AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0AEvent);
         AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0BEvent);
         l1_to_l0_a<ArchType::ASCEND_V220, bfloat16_t, false, DataFormatT::NZ, DataFormatT::ZZ>(
@@ -841,14 +833,6 @@ public:
         AscendC::PipeBarrier<PIPE_M>();
         AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(l0AEvent);
         AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(l0BEvent);
-        if (pipelinePlan.storesOutput) {
-            for (uint32_t stage = 0; stage < SVDQ_LOWRANK_MMAD_L0_STAGES; ++stage) {
-                AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(
-                    SVDQ_LOWRANK_MMAD_L0A_EVENT_BASE + static_cast<int32_t>(stage));
-                AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(
-                    SVDQ_LOWRANK_MMAD_L0B_EVENT_BASE + static_cast<int32_t>(stage));
-            }
-        }
         AscendC::PipeBarrier<PIPE_M>();
 
 #ifdef SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK
@@ -890,6 +874,30 @@ public:
         return HasCompleteContract();
     }
 
+    __aicore__ inline void InitializeMmadL0ReuseEvents() const
+    {
+#ifdef __DAV_C220_CUBE__
+        for (uint32_t stage = 0; stage < SVDQ_LOWRANK_MMAD_L0_STAGES; ++stage) {
+            AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(
+                SVDQ_LOWRANK_MMAD_L0A_EVENT_BASE + static_cast<int32_t>(stage));
+            AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(
+                SVDQ_LOWRANK_MMAD_L0B_EVENT_BASE + static_cast<int32_t>(stage));
+        }
+#endif
+    }
+
+    __aicore__ inline void DrainMmadL0ReuseEvents() const
+    {
+#ifdef __DAV_C220_CUBE__
+        for (uint32_t stage = 0; stage < SVDQ_LOWRANK_MMAD_L0_STAGES; ++stage) {
+            AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(
+                SVDQ_LOWRANK_MMAD_L0A_EVENT_BASE + static_cast<int32_t>(stage));
+            AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(
+                SVDQ_LOWRANK_MMAD_L0B_EVENT_BASE + static_cast<int32_t>(stage));
+        }
+#endif
+    }
+
     __aicore__ inline void Process()
     {
         if (!HasCompleteContract()) {
@@ -910,11 +918,18 @@ public:
         const uint32_t coreIdx = AscendC::GetBlockIdx();
         const uint32_t runtimeCoreCount = AscendC::GetBlockNum();
         const uint32_t scheduledCoreCount = args_.tiling.coreCount <= runtimeCoreCount ? args_.tiling.coreCount : runtimeCoreCount;
+        InitializeMmadL0ReuseEvents();
+        bool completedAllStages = true;
         for (uint32_t stageIndex = 0; stageIndex < StageCount(); ++stageIndex) {
             if (!ExecuteStage(stageIndex, coreIdx, scheduledCoreCount)) {
-                return;
+                completedAllStages = false;
+                break;
             }
             AscendC::SyncAll();
+        }
+        DrainMmadL0ReuseEvents();
+        if (!completedAllStages) {
+            return;
         }
         /*
          * Legacy flat scheduling is kept here only as source history until the

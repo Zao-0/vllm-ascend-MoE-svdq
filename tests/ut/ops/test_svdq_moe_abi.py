@@ -719,14 +719,16 @@ def test_svdq_lowrank_debug_mmad_synchronizes_l0_reuse():
     assert "AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(" in mmad_block
     assert "AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0AEvent);" in mmad_block
     assert "AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(l0BEvent);" in mmad_block
-    stores_output_start = mmad_block.index("if (pipelinePlan.storesOutput)")
-    stores_output_block = mmad_block[stores_output_start:]
-    assert "for (uint32_t stage = 0; stage < SVDQ_LOWRANK_MMAD_L0_STAGES; ++stage)" in stores_output_block
-    assert "SVDQ_LOWRANK_MMAD_L0A_EVENT_BASE + static_cast<int32_t>(stage)" in stores_output_block
-    assert "SVDQ_LOWRANK_MMAD_L0B_EVENT_BASE + static_cast<int32_t>(stage)" in stores_output_block
     assert "AscendC::SetFlag<AscendC::HardEvent::MTE1_M>(SVDQ_LOWRANK_MMAD_M_EVENT);" in mmad_block
     assert "AscendC::WaitFlag<AscendC::HardEvent::MTE1_M>(SVDQ_LOWRANK_MMAD_M_EVENT);" in mmad_block
     assert "AscendC::PipeBarrier<PIPE_M>();" in mmad_block
+    process_start = fused.index("__aicore__ inline void Process()")
+    process_end = fused.index("/*", process_start)
+    process_block = fused[process_start:process_end]
+    assert "InitializeMmadL0ReuseEvents();" in process_block
+    assert "DrainMmadL0ReuseEvents();" in process_block
+    assert process_block.index("InitializeMmadL0ReuseEvents();") < process_block.index("ExecuteStage(")
+    assert process_block.index("ExecuteStage(") < process_block.index("DrainMmadL0ReuseEvents();")
     assert mmad_block.index("WaitFlag<AscendC::HardEvent::M_MTE1>") < mmad_block.index(
         "l1_to_l0_a<ArchType::ASCEND_V220"
     )
