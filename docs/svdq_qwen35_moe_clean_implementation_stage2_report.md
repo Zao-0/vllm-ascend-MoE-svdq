@@ -1,8 +1,110 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## GMM2 Official-Path Appendix Adoption - 2026-06-26T20:01Z
+
+This section is the latest Stage 2.2 working constraint log. It incorporates
+`/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md`
+as binding for subsequent work.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Source packed hidden exact-match and post-override readback both report mismatch count 0. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Gate B and Gate C are finite/nonzero after the official `zN`/FP16 D2 reference correction, but strict numerical gates still fail. The new GMM2 official-path appendix now blocks speculative lifecycle patches until the official-vs-debug state table and missing routing identity evidence are complete. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 modified-hidden official W4A8 GMM2 numerical gates. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+Status reconciliation:
+
+- The appendix stop conditions and acceptance criteria are binding for future implementation.
+- The appendix statement that the remaining failure is an all-zero post-dequant tensor is stale relative to
+  commit `df3aab3d2497b789348fe987e1fbcbf552b865cd`: the latest corrected raw-C2 and post-dequant probes
+  are finite and nonzero, but their strict max-error gates still fail.
+- No kernel, synchronization, state initialization, layout, or public grouped-matmul change was made for this
+  adoption section.
+- Source inspection, manifests, scalar substitutes, public grouped-matmul experiments, compilation, kernel
+  launch, and `official_gmm2_entry_reached=true` do not count as Stage 2.2 gate progress.
+
+Binding next-step constraints:
+
+- Do not modify V2C/C2V flag order, producer/consumer ownership, `tokenPerExpert`, `cumsumMM`,
+  `preSumBeforeRank`, AIC/AIV roles, D2 source addresses, workspace offsets, or barriers unless the exact
+  successful official W4A8 counterpart is cited and the deviation is recorded first.
+- Preferred correction path is a known-successful official W4A8 lifecycle with only the GMM2 hidden packed
+  input and hidden-scale boundary overridden by validated Stage 2.1 tensors.
+- Gate A must be completed with routed-row identity, prefix sums, expert-local row starts/offsets, active-row
+  and padded-row interpretation, metadata, checksums, and representative bytes.
+- Gate B must expose and compare the official AIC GMM2 raw/D2 boundary.
+- Gate C must validate `BlockEpilogue2` / `CombineV2` post-dequant output under the predeclared strict gate.
+
+Official source locations rechecked for this adoption:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:284-314`:
+  `cumsumMM`, `gmA2I4`, `gmA2I4_I8`, `gmC2`, `gmPerTokenScale2`, `tokenPerExpert`, and
+  `preSumBeforeRank` bind to the official workspace/shared-memory regions.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:413-430`:
+  `FetchAndPreprocessInt8ToInt4` is the official hidden INT8 to packed INT4 producer helper.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:684-775`:
+  `GMM2` waits on `SYNCFLAGV2C`, derives per-expert `currentM` from `cumsumMM`, doubles M for INT4,
+  uses official `layoutA2`, `layoutB2`, `layoutScale2`, and writes FP16 `gmC2`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:930-991`:
+  the isolated debug path seeds token state, packed hidden, and hidden scale, signals readiness, and invokes
+  official `CombineV2`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1318-1388`:
+  the full official lifecycle waits C2V, runs `BlockEpilogue1`, optionally overrides the hidden GMM2 input
+  boundary, signals V2C, debug-copies hidden readbacks, then runs `CombineV2`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1422-1499`:
+  `CombineV2` waits GMM2 completion flags, invokes `BlockEpilogue2`, and finalizes the epilogue.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h:215-228`:
+  `InitGMM2OnlyFromPacked` wires external hidden, scale, and expert-token inputs into the debug entry.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h:249-314`:
+  official W4A8 GMM2 uses `LayoutA=RowMajor`, W2 `LayoutB=layout::zN` when `Nz_` is true,
+  `CType=float16_t`, and row-major `layoutD2`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp:154-239`:
+  `BlockEpilogue2` reads adjacent high/low FP16 C2 rows, casts to FP32, computes `high * 16 + low`,
+  optionally raw-debug copies the pre-hidden-scale value, then applies hidden per-token scale.
+
+Expanded official-vs-debug state table required before the next behavioral patch:
+
+| State or region | Official producer | Official consumer | Official initialization point | Physical GM/workspace address and offset | Row/tile stride | Flag or event | Signal timing | Wait timing | Final drain | Current debug behavior |
+|---|---|---|---|---|---|---|---|---|---|---|
+| packed hidden `gmA2I4_I8` | `BlockEpilogue1` through official hidden quant/pack; full-lifecycle debug may overwrite this boundary only after the producer barrier | GMM2 AIC as `gmA2I4`; debug readback also copies `gmA2I4_I8` | Workspace binding at kernel init; official producer during `DispatchAndCombine` C2V loop | `workspaceInfo.ptrA2Int4`; debug override copies external packed hidden to the same region at `gmOffsetD` | Active routed rows, physical bytes `curRowNum * problemShape.n()/2`; GMM2 sees doubled logical M | V2C | After `BlockEpilogue1` and optional hidden override | `GMM2` waits `SYNCFLAGV2C` before consuming group tiles | Official `blockEpilogue1.Finalize`, then `CombineV2`/reset | Exact post-override readback in latest probes; row identity evidence still incomplete. |
+| hidden scale `gmPerTokenScale2` | `BlockEpilogue1`; full-lifecycle debug may overwrite with Stage 2.1 scale at same boundary | `BlockEpilogue2` post-dequant | Workspace binding at kernel init; produced per active routed row | `workspaceInfo.ptrPerTokenScale2`; debug override copies external scale at `rowStartThisCore` | One FP32 scale per routed row | V2C | Same as packed hidden | `BlockEpilogue2` reads during `CombineV2` after C2V wait | `blockEpilogue.Finalize` | Exact post-override max abs 0; prefix/row-offset proof still needs richer evidence. |
+| `tokenPerExpert` | Official routing into peer shared memory | `GetCumsumForMMAIV`, epilogue routing metadata, final reset | Kernel init binds shared-memory peer token region | `shmem() + peermemInfo.offsetPeerTokenPerExpert`; layout uses aligned expert count | One count slot per EP/expert, aligned to 128 | Official shared state, then V2C/C2V users | Routing completes before GMM stages | GMM/epilogue consume after handoff waits | `ResetTokenPerExpert` after `CombineV2` | Top-1 expert-0 probe records `[64,0,0,0,0,0,0,0]`; multi-route row identity not yet proven. |
+| `cumsumMM` | Official routing cumsum or debug `SeedGMM2OnlyTokenState` for EP=1 | GMM2 group loop and `CombineV2` group loop | Kernel init binds `workspaceInfo.ptrcumsumMM` | Workspace `ptrcumsumMM`; group index `(EP - 1) * expertPerRank + groupIdx` | One cumulative/current count per local expert for the last rank view | V2C/C2V-dependent consumers | Must be valid before GMM2 tiles launch | GMM2 waits V2C at group sync points | N/A, workspace reused after op | Loop-stats debug shows valid arrays for top-1; padded-row interpretation still incomplete. |
+| `preSumBeforeRank` | Official prefix/rank setup | `BlockEpilogue2` for output placement | Kernel init binds `workspaceInfo.ptrSumBeforeRank` | Workspace `ptrSumBeforeRank` | Per expert/rank prefix | C2V-side consumer | Must be initialized before `CombineV2` | Epilogue consumes after GMM completion wait | N/A | Debug zeroes it for EP=1; report still needs explicit proof for EP/TP variants before production. |
+| GMM2 AIC input tile state | `GMM2` constructs layouts from official params and workspace | `BlockMmad` | Inside `GMM2` per expert group | `gmA2I4[gmGroupOffsetA + layoutA.GetOffset(offsetA)]`, W2 from `GetTensorAddr(...ptrB2)`, scale from `ptrScale2` | `L1TileShape<128,256,1024>`; INT4 doubles M; W2 official `zN` | V2C before input use | AIV hidden producer signals V2C | AIC waits V2C before group tiles | `blockMmad.Finalize` later signals C2V | Latest corrected host reference matches official layout closely but strict raw-C2 gate still fails. |
+| GMM2 accumulator / D2 region | Official W4A8 AIC `BlockMmad` with FP16 `CType` | `BlockEpilogue2` | `GMM2` per tile | `workspaceInfo.ptrC2`; `gmC2[gmGroupOffsetC + layoutC.GetOffset(offsetC)]` | Row-major C tile; high/low rows adjacent for epilogue | C2V | `BlockMmad.Finalize(syncLoopIdx, SYNCFLAGC2V)` after tile production | `CombineV2` waits cross-core flag before epilogue | `blockEpilogue.Finalize` | Raw-C2 readback finite/nonzero; max error `0.0166015625`, mean `0.0007681758`, strict gate failed. |
+| C2V handoff state | GMM2 AIC finalize | AIV `CombineV2` | During GMM2 tile loop/finalize | Cross-core flag IDs derived from group sync index | Per expert group / cross-core flag batch | C2V | After relevant AIC tiles complete | `CombineV2` waits flags before `BlockEpilogue2` | Wait loop drains remaining groups | Latest raw mode reports handoff verified; no bypass flags should be added. |
+| `BlockEpilogue2` input state | GMM2 FP16 C2 plus hidden scale and MAux2 | FP32 post-dequant / final D2 output | `CombineV2` constructs `BlockEpilogue2` with official params | Reads `gmC2`, `gmPerTokenScale2`, `ptrMAux2`, writes D/output or debug `gmCGMM2` | M split by AIV subcore; high/low C2 rows combine as `high*16+low` before hidden scale | C2V and UB events | C2V must be complete before each tile | Waits C2V in `CombineV2`; UB events inside epilogue | `blockEpilogue.Finalize` | Post-dequant finite/nonzero; max error `0.00037679`, mean `0.00001846`; strict max gate failed. |
+| FP32 post-dequant debug tap | `BlockEpilogue2` W4A8 debug path | Host probe summary | Inside `BlockEpilogue2` raw or normal debug output path | Debug output tensor `gmCGMM2` / op output | Active rows x hidden size | UB MTE/V events plus C2V precondition | After high/low combine and optionally after hidden-scale multiply | Host reads after op completion | Normal op completion | Useful diagnostic only; not a production substitute and not a pass condition without strict reference match. |
+
+Required status fields for all future Stage 2.2 summaries:
+
+- `official_gmm2_entry_reached`
+- `official_gmm2_loop_count`
+- `official_gmm2_active_tile_count`
+- `official_gmm2_aic_raw_output_finite`
+- `official_gmm2_aic_raw_output_nonzero`
+- `official_gmm2_aic_reference_passed`
+- `official_gmm2_c2v_handoff_verified`
+- `official_gmm2_post_dequant_finite`
+- `official_gmm2_post_dequant_nonzero`
+- `official_gmm2_post_dequant_reference_passed`
+- `official_gmm2_numerical_gate_passed`
+
+Immediate unresolved boundary:
+
+- Complete Gate A row-identity evidence beyond the current top-1 shape/count equality.
+- Decide whether the remaining raw-C2 residual is explained by official Fixpipe/FP16 rounding, or expose a
+  stricter device-side D2/pre-D2 boundary without changing the official lifecycle.
+- Keep Stage 2.2 `FAIL / IN PROGRESS` and production fail-closed until `official_gmm2_numerical_gate_passed`
+  is true on real Ascend 910B4 with `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
+
 ## Official zN / FP16 D2 Reference Correction - 2026-06-26T19:51Z
 
-This section is the latest Stage 2.2 status. Older sections are historical evidence unless explicitly
+This section is historical evidence. The `2026-06-26T20:01Z` section above supersedes it for current
+work constraints. Older sections are historical evidence unless explicitly
 referenced here.
 
 | Item | Status | Evidence / blocker |
