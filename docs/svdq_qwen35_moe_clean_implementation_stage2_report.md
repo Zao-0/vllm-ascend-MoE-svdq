@@ -530,3 +530,157 @@ Git/worktree state for this handoff:
   - `csrc/build_out/`
   - `extra-info/`
 - Generated custom-op install mirrors under `vllm_ascend/_cann_ops_custom` were refreshed for local validation but are not intended to be committed.
+
+## Current Handoff State - 2026-06-26T10:32Z
+
+Status: IN PROGRESS. Stage 2.2 remains open.
+
+Authoritative baseline:
+
+- `svdq_qwen35_moe_clean_implementation_report_clarified_completed.md` remains the accepted baseline.
+- `svdq_qwen35_moe_clean_implementation_stage2_prompt.md` is the active working prompt.
+- The current unresolved boundary is still: SVDQ-modified canonical BF16 hidden -> official hidden quant/pack -> official W4A8 GMM2 AIC -> official AIV dequant/readback.
+- Production `DispatchFFNCombineW4A8SVDQ` host tiling remains fail-closed.
+- Public `torch_npu.npu_grouped_matmul` was not used.
+
+Visible device boundary:
+
+- Environment: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
+- Physical devices visible through `npu-smi`: 0, 1, 2, 3 only; all are `910B4`, healthy, and no NPU processes were running at boundary capture time.
+- Torch/NPU runtime: `npu_available: True`, `visible_device_count: 4`, logical devices 0-3 all report `Ascend910B4`.
+- Evidence:
+  - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_device_boundary_npu_smi.log`
+  - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_device_boundary_torch_npu.log`
+
+Files changed in this handoff:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp`
+  - Added `SeedGMM2OnlyTokenState`.
+  - Added `SeedGMM2OnlyPackedHidden`.
+  - Updated isolated `GMM2OnlyFromPacked` so AIC seeds only token/cumsum state before entering official `GMM2(params)`.
+  - Updated isolated `GMM2OnlyDequantReadback` so AIV seeds packed hidden, hidden scale, and token/cumsum state, synchronizes, signals `SYNCFLAGV2C`, then enters official `CombineV2(params, blockEpilogue2)`.
+- `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+  - Tracked copy of this handoff section.
+
+Behavior reused from official code:
+
+- Official W4A8 GMM2 AIC path remains `GMM2(params)`.
+- Official AIV post-dequant path remains `CombineV2(params, blockEpilogue2)` with `BlockEpilogue2`.
+- Official packed hidden GM buffer remains `gmA2I4_I8`.
+- Official hidden per-token scale buffer remains `gmPerTokenScale2`.
+- Official expert-token/cumsum state remains `tokenPerExpert`, `cumsumMM`, and `preSumBeforeRank`.
+
+SVDQ-specific/debug-only adaptation:
+
+- The isolated GMM2-only debug operator receives externally validated packed hidden INT4 and hidden scale from the mixed hidden boundary and copies them into the official internal buffers.
+- The AIV side now owns the packed-hidden/hidden-scale producer role before signalling V2C, matching the official producer -> AIC consumer -> C2V -> AIV dequant ownership direction more closely than the prior AIC-seeded path.
+- AIC still seeds token/cumsum state before `GMM2` because the isolated `GMM2` loop reads cumsum-derived state before the V2C wait.
+
+Build/install evidence after the AIV-producer fix:
+
+- Focused debug kernel build:
+  - Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 cmake --build csrc/build --target svdqw4_a8_gmm2_debug_readback_ascend910b -- -B -j1`
+  - Result: pass, `[100%] Built target svdqw4_a8_gmm2_debug_readback_ascend910b`.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_debug_kernel_build_aiv_producer_fix.log`
+- `ops_aclnn` rebuild:
+  - Result: pass, `[100%] Built target ops_aclnn`.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_debug_rebuild_ops_aclnn_aiv_producer_fix.log`
+- `cust_opapi` rebuild:
+  - Result: pass, `[100%] Built target cust_opapi`.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_debug_rebuild_cust_opapi_aiv_producer_fix.log`
+- Ascend custom-op metadata regeneration:
+  - Result: pass, exit 0.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_debug_ascendc_ops_config_aiv_producer_fix.log`
+- CMake custom-op package install staging:
+  - Result: pass, exit 0.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_debug_cmake_install_aiv_producer_fix.log`
+- Repo-local custom OPP install:
+  - Result: pass, `SUCCESS`.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_debug_install_repo_custom_ops_aiv_producer_fix.log`
+- System OPP install:
+  - Result: pass, `SUCCESS`.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_debug_install_system_opp_aiv_producer_fix.log`
+- In-place Python extension rebuild:
+  - Result: pass, `[100%] Built target vllm_ascend_C`.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_debug_rebuild_vllm_ascend_C_aiv_producer_fix.log`
+- In-place Python extension install:
+  - Result: pass.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_debug_install_vllm_ascend_C_aiv_producer_fix.log`
+- ABI registration test:
+  - Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 pytest -q tests/ut/ops/test_svdq_moe_abi.py::test_svdq_w4a8_gmm2_debug_torch_schema_meta_and_adapter_are_registered`
+  - Result: pass, `1 passed, 16 warnings`.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_debug_pytest_aiv_producer_fix.log`
+
+Stage 2.2 real-device probe after the AIV-producer fix:
+
+- Command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH} python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py --require-npu --summary-name phase_stage2_gmm2_from_mixed_hidden_aiv_producer_fix.json`
+- Result: fail, `passed: false`.
+- Evidence:
+  - Log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_from_mixed_hidden_probe_aiv_producer_fix.log`
+  - Summary: `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_from_mixed_hidden_aiv_producer_fix.json`
+
+Validated healthy inputs and invariants:
+
+- `torch_op_registered: true`
+- `official_gmm2_kernel_launched: true`
+- `public_grouped_matmul_used: false`
+- `production_svdq_host_tiling_fail_closed: true`
+- HCCL group: initialized by probe, backend `hccl`, rank 0, world size 1, logical device 0.
+- Real-checkpoint layer: `model.language_model.layers.0.mlp.experts`.
+- Shape: 8 local experts, hidden size 2048, intermediate size 512, 16 tokens, top-k 8, active rows 128.
+- Expert token counts: `[16, 16, 16, 16, 16, 16, 16, 16]`, total 128, expert-contiguous rows true.
+- Canonical hidden BF16: finite and nonzero, shape `[128, 512]`, `max_abs: 4.3125`, `mean_abs: 0.3363776206970215`.
+- Hidden INT8: finite and nonzero, shape `[128, 512]`, `max_abs: 127.0`, `mean_abs: 14.154754638671875`.
+- Hidden packed INT4 debug tensor: finite and nonzero, shape `[128, 512]`, `max_abs: 128.0`, `mean_abs: 42.087799072265625`.
+- Hidden scale: finite and nonzero, shape `[128]`, `max_abs: 0.03395669162273407`, `mean_abs: 0.02411513403058052`.
+- Hidden packed exact reference:
+  - `exact_match: true`
+  - `mismatch_count: 0`
+  - `max_abs_diff: 0`
+  - sample actual/expected bytes both start `[0, 15, -32, -33, -48, 0, 0, -1, -16, 15, -17, -47, 15, -35, 15, -1]`.
+
+Failing boundary:
+
+- GMM2 post-dequant active tensor remains all zeros after the AIV-producer fix:
+  - shape `[128, 2048]`
+  - dtype `torch.float32`
+  - finite: `true`
+  - nonzero: `false`
+  - `max_abs: 0.0`
+  - `mean_abs: 0.0`
+  - `nan_count: 0`
+  - `inf_count: 0`
+- Unfused real-checkpoint reference is nonzero.
+- Reference comparison over 64 rows:
+  - `max_abs: 0.4712103307247162`
+  - `mean_abs: 0.060490094125270844`
+  - failed tolerance: `max_abs <= 0.0002`, `mean_abs <= 0.00002`
+  - actual sample: eight zeros
+  - expected sample starts `[0.051994405686855316, -0.0029550495091825724, 0.02753283828496933, 0.03887496888637543, 0.08114911615848541, -0.051662545651197433, -0.01274419017136097, -0.027047518640756607]`.
+
+Current diagnosis:
+
+- The AIV-producer ownership correction is necessary but not sufficient; it did not change the observed all-zero GMM2 post-dequant failure.
+- The packed hidden boundary remains exact and should not be re-debugged as a packing or scale issue.
+- The official debug op launches and reaches the same numerical failure, so the remaining bug is likely in the isolated GMM2-only handoff/readback state rather than in checkpoint loading or mixed hidden quantization.
+- Next debugging should stay inside the official-kernel-derived GMM2-only path and inspect:
+  - C2V flag wait/signal/finalize ordering around official `GMM2` and `CombineV2`;
+  - whether AIC writes the same D2/epilogue source region that `BlockEpilogue2` reads in `CombineV2`;
+  - `cumsumMM`, `tokenPerExpert`, and `preSumBeforeRank` state as seen by AIC and AIV after the new seeding;
+  - whether the isolated debug path needs the official GMM2 pre/post loop state normally established by the preceding GMM1/SwiGLU phase.
+- Do not switch to public grouped matmul, scalar W4A8 substitutes, scale guessing, or packed-weight reinterpretation.
+
+Git/worktree state for this handoff:
+
+- Repo: `/root/workspace/lza/vllm-ascend`
+- Branch: `codex/svdq-lowrank-l0-reuse-debug`
+- Origin: `git@github.com:Zao-0/vllm-ascend-MoE-svdq.git`
+- Intended staged files:
+  - `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp`
+  - `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+- Pre-existing dirty/untracked paths still intentionally left out:
+  - `csrc/utils/inc/kernel/moe_distribute_base.h`
+  - `csrc/build_out/`
+  - `extra-info/`
+- Generated custom-op install mirrors under `vllm_ascend/_cann_ops_custom` were refreshed for validation but are not intended to be committed.

@@ -800,26 +800,34 @@ private:
     }
 
     CATLASS_DEVICE
+    void SeedGMM2OnlyTokenState(Params const &params)
+    {
+        AscendC::GlobalTensor<int32_t> externalExpertTokenNums;
+        externalExpertTokenNums.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(params.ptrExternalExpertTokenNums));
+        CopyGMToGM(tokenPerExpert[tokenPerExpertLayout(params.rank, 0, 0)], externalExpertTokenNums,
+                   params.expertPerRank, params.ubMoveNum);
+        GetCumsumForMMAIV(tokenPerExpert, cumsumMM, params.expertPerRank, params.rank, params.EP);
+        ZeroGMM2OnlyPreSumBeforeRank(params);
+    }
+
+    CATLASS_DEVICE
+    void SeedGMM2OnlyPackedHidden(Params const &params)
+    {
+        AscendC::GlobalTensor<int8_t> externalHiddenX;
+        externalHiddenX.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t *>(params.ptrExternalHiddenX));
+        CopyGMToGM(gmA2I4_I8, externalHiddenX, params.maxOutputSize * (params.problemShape.n() / 2),
+                   params.ubMoveNum);
+
+        AscendC::GlobalTensor<ElementPerTokenScale> externalHiddenScale;
+        externalHiddenScale.SetGlobalBuffer(reinterpret_cast<__gm__ ElementPerTokenScale *>(params.ptrExternalHiddenScale));
+        CopyGMToGM(gmPerTokenScale2, externalHiddenScale, params.maxOutputSize, params.ubMoveNum);
+    }
+
+    CATLASS_DEVICE
     void GMM2OnlyFromPacked(Params const &params)
     {
         if (coreIdx == 0) {
-            AscendC::GlobalTensor<int8_t> externalHiddenX;
-            externalHiddenX.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t *>(params.ptrExternalHiddenX));
-            CopyGMToGM(gmA2I4_I8, externalHiddenX, params.maxOutputSize * (params.problemShape.n() / 2),
-                       params.ubMoveNum);
-
-            AscendC::GlobalTensor<ElementPerTokenScale> externalHiddenScale;
-            externalHiddenScale.SetGlobalBuffer(
-                reinterpret_cast<__gm__ ElementPerTokenScale *>(params.ptrExternalHiddenScale));
-            CopyGMToGM(gmPerTokenScale2, externalHiddenScale, params.maxOutputSize, params.ubMoveNum);
-
-            AscendC::GlobalTensor<int32_t> externalExpertTokenNums;
-            externalExpertTokenNums.SetGlobalBuffer(
-                reinterpret_cast<__gm__ int32_t *>(params.ptrExternalExpertTokenNums));
-            CopyGMToGM(tokenPerExpert[tokenPerExpertLayout(params.rank, 0, 0)], externalExpertTokenNums,
-                       params.expertPerRank, params.ubMoveNum);
-            GetCumsumForMMAIV(tokenPerExpert, cumsumMM, params.expertPerRank, params.rank, params.EP);
-            ZeroGMM2OnlyPreSumBeforeRank(params);
+            SeedGMM2OnlyTokenState(params);
         }
         AscendC::SyncAll<true>();
         GMM2(params);
@@ -841,6 +849,11 @@ private:
             static_cast<int32_t>(peermemInfo.offsetD)};
 
         BlockEpilogue2 blockEpilogue2(resource, epilogueParams);
+        if (coreIdx == 0) {
+            SeedGMM2OnlyPackedHidden(params);
+            SeedGMM2OnlyTokenState(params);
+        }
+        AscendC::SyncAll<true>();
         SignalGMM2OnlyReady(params);
         CombineV2(params, blockEpilogue2);
     }
