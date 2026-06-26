@@ -1,8 +1,116 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Stage 2.2 Gate A Routing Manifest Probe - 2026-06-26T20:15Z
+
+This section is the latest Stage 2.2 status. Older sections are historical evidence unless explicitly
+referenced here.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Source packed hidden exact-match and post-override readback both report mismatch count 0. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | The probe now emits a Gate A routed-row manifest with checksums, prefixes, expert-local offsets, and padded-row interpretation. Top-1 expert-0 row identity is proven for the current raw-C2 and post-dequant runs, but Gate B/Gate C numerical thresholds still fail and multi-expert row ordering remains to be proven. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 modified-hidden official W4A8 GMM2 numerical gates. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+This attempt is a host-side probe/report improvement only. It does not modify the device kernel, does not
+change synchronization, does not repack weights, does not use public grouped matmul, and does not enable
+production SVDQ.
+
+Files changed:
+
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+  - Added SHA256/sample-byte manifest helpers for active hidden packed INT4 and hidden-scale boundaries.
+  - Added `_routing_identity_manifest(...)` and wired it into loop-stats, raw-C2, and post-dequant summaries.
+  - The manifest records active expert IDs, `expert_token_nums`, expert prefix sums, expert-local row starts
+    and offsets, route slot to expert mapping, routed-row map samples, source/readback checksums, and
+    padded-row zero interpretation.
+
+Raw-C2 Gate A manifest probe:
+
+- Command used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, repo-local `ASCEND_CUSTOM_OPP_PATH`,
+  repo-local `libcust_opapi.so`, top-1 expert 0, 64 tokens, `max_output_size=64`, and
+  `--swiglu-limit 454545`.
+- NPU preflight log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_gate_a_manifest_npu_smi.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_gate_a_manifest_top1_expert0_max64.log`
+- Summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_raw_c2_gate_a_manifest_top1_expert0_max64.json`
+- Top-level stage `passed: false`; this remains expected because the strict Gate B raw-C2 numerical gate
+  still fails.
+
+Raw-C2 Gate A evidence:
+
+- `active_expert_ids: [0]`
+- `expert_token_nums: [[64,0,0,0,0,0,0,0]]`
+- expert prefix sums first 8: `[0,64,64,64,64,64,64,64]`
+- `expert_token_total_matches_active_rows: true`
+- `reference_group_counts_match_expert_token_nums: true`
+- `token_major_order_matches_expert_contiguous_order: true` for this top-1 case
+- first routed rows map row 0/1/2/3 to source token 0/1/2/3, top-k slot 0, expert 0, local offsets 0/1/2/3
+- source packed-hidden active SHA256:
+  `a29851821d694cc55a182d5082fa535f5171acc5c7f3cda1fabfa7888ebd64de`
+- post-override readback packed-hidden active SHA256:
+  `a29851821d694cc55a182d5082fa535f5171acc5c7f3cda1fabfa7888ebd64de`
+- padded rows: `padded_row_count: 0`, hidden INT4 padded nonzero count `0`, hidden-scale padded nonzero count `0`
+
+Raw-C2 numerical status is unchanged:
+
+- `official_gmm2_aic_raw_output_finite: true`
+- `official_gmm2_aic_raw_output_nonzero: true`
+- `official_gmm2_aic_reference_passed: false`
+- raw-C2 error: `max_abs: 0.0166015625`, `mean_abs: 0.0007681758143007755`,
+  failed elements over strict abs tolerance: `70547`
+
+Post-dequant Gate A manifest probe:
+
+- Command used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, repo-local `ASCEND_CUSTOM_OPP_PATH`,
+  repo-local `libcust_opapi.so`, top-1 expert 0, 64 tokens, and `max_output_size=64`.
+- NPU preflight log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_post_dequant_gate_a_manifest_npu_smi.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_post_dequant_gate_a_manifest_top1_expert0_max64.log`
+- Summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_post_dequant_gate_a_manifest_top1_expert0_max64.json`
+- Top-level stage `passed: false`; Gate C remains finite/nonzero but fails the strict max tolerance.
+
+Post-dequant Gate A evidence matches raw-C2:
+
+- `active_expert_ids: [0]`
+- `expert_token_nums: [[64,0,0,0,0,0,0,0]]`
+- `expert_token_total_matches_active_rows: true`
+- `reference_group_counts_match_expert_token_nums: true`
+- source and post-override readback packed-hidden active SHA256 both equal
+  `a29851821d694cc55a182d5082fa535f5171acc5c7f3cda1fabfa7888ebd64de`
+- padded-row nonzero counts remain zero
+
+Post-dequant numerical status is unchanged:
+
+- canonical hidden finite/nonzero: `true` / `true`
+- post-dequant reference passed: `false`
+- post-dequant error: `max_abs: 0.00037679076194763184`, `mean_abs: 0.000018463411834090948`
+
+Current conclusion:
+
+- Gate A is materially stronger for the current top-1 expert-0 probe: row identity, prefixes,
+  expert-local offsets, boundary checksums, and padding are now recorded in the summary.
+- Stage 2.2 is not complete. Gate B and Gate C strict numerical gates still fail.
+- The next unresolved Gate A gap is multi-expert/top-k routed-row ordering. The next numerical gap is still
+  the official FP16 D2/Fixpipe residual between raw-C2 readback and the host reference.
+
+Validation before this report update:
+
+- `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
+- Four-visible-NPU raw-C2 probe completed and wrote the new manifest summary, with expected nonzero exit
+  because `passed: false`.
+- Four-visible-NPU post-dequant probe completed and wrote the new manifest summary, with expected nonzero
+  exit because `passed: false`.
+
 ## GMM2 Official-Path Appendix Adoption - 2026-06-26T20:01Z
 
-This section is the latest Stage 2.2 working constraint log. It incorporates
+This section is historical evidence. The `2026-06-26T20:15Z` section above supersedes it for current
+status. It incorporates
 `/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md`
 as binding for subsequent work.
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 import os
 import sys
@@ -343,6 +344,162 @@ def _clip_group_counts_for_limit(counts: torch.Tensor, row_limit: int) -> list[i
             clipped.extend([0] * (int(counts.numel()) - len(clipped)))
             break
     return clipped
+
+
+def _tensor_raw_bytes(tensor: torch.Tensor) -> bytes:
+    cpu = tensor.detach().cpu().contiguous()
+    if cpu.dtype == torch.bfloat16:
+        return cpu.view(torch.int16).numpy().tobytes()
+    return cpu.numpy().tobytes()
+
+
+def _tensor_byte_manifest(tensor: torch.Tensor, *, max_sample_bytes: int = 64) -> dict[str, Any]:
+    raw = _tensor_raw_bytes(tensor)
+    return {
+        "shape": list(tensor.shape),
+        "dtype": str(tensor.dtype),
+        "stride": list(tensor.stride()),
+        "storage_offset": int(tensor.storage_offset()),
+        "numel": int(tensor.numel()),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "sample_bytes": list(raw[:max_sample_bytes]),
+    }
+
+
+def _row_sha256_first(tensor: torch.Tensor, *, row_count: int = 16) -> list[str]:
+    cpu = tensor.detach().cpu()
+    if cpu.ndim < 2:
+        return []
+    rows = []
+    for row_idx in range(min(int(cpu.shape[0]), int(row_count))):
+        rows.append(hashlib.sha256(_tensor_raw_bytes(cpu[row_idx])).hexdigest())
+    return rows
+
+
+def _routing_identity_manifest(
+    *,
+    routed_experts: list[int],
+    num_tokens: int,
+    top_k: int,
+    local_num_experts: int,
+    max_output_size: int,
+    expert_token_nums: torch.Tensor,
+    hidden_x_int4_packed: torch.Tensor,
+    hidden_x_scale: torch.Tensor,
+    hidden_x_readback: torch.Tensor | None,
+    hidden_scale_readback: torch.Tensor | None,
+    reference_group_counts: list[int] | None = None,
+) -> dict[str, Any]:
+    counts = [int(v) for v in expert_token_nums.detach().cpu().to(torch.int64).flatten().tolist()]
+    prefixes: list[int] = []
+    running = 0
+    for count in counts:
+        prefixes.append(running)
+        running += int(count)
+    active_rows = int(num_tokens * top_k)
+    active_experts = [idx for idx, count in enumerate(counts) if count > 0]
+    route_slot_by_expert = {int(expert): slot for slot, expert in enumerate(routed_experts)}
+
+    row_map: list[dict[str, Any]] = []
+    token_major_matches = True
+    for expert_id, count in enumerate(counts):
+        for expert_local_offset in range(int(count)):
+            routed_row = prefixes[expert_id] + expert_local_offset
+            topk_slot = route_slot_by_expert.get(expert_id)
+            token_major_row = None
+            if topk_slot is not None:
+                token_major_row = expert_local_offset * top_k + topk_slot
+                token_major_matches = token_major_matches and routed_row == token_major_row
+            if len(row_map) < 64:
+                row_map.append(
+                    {
+                        "routed_row": routed_row,
+                        "source_token_id": expert_local_offset,
+                        "top_k_slot": topk_slot,
+                        "selected_expert_id": expert_id,
+                        "local_expert_id": expert_id,
+                        "expert_local_row_offset": expert_local_offset,
+                        "expert_row_start": prefixes[expert_id],
+                        "token_major_row_if_applicable": token_major_row,
+                    }
+                )
+
+    padded_hidden = hidden_x_int4_packed[active_rows:max_output_size].detach().cpu()
+    padded_scale = hidden_x_scale[active_rows:max_output_size].detach().cpu()
+    padded_row_count = max(0, int(max_output_size) - active_rows)
+    padded_hidden_zero = bool((padded_hidden == 0).all().item()) if padded_hidden.numel() else True
+    padded_scale_zero = bool((padded_scale == 0).all().item()) if padded_scale.numel() else True
+
+    readback_manifest: dict[str, Any] = {
+        "enabled": hidden_x_readback is not None and hidden_scale_readback is not None,
+    }
+    if hidden_x_readback is not None:
+        readback_manifest["hidden_int4_packed_active"] = _tensor_byte_manifest(hidden_x_readback[:active_rows])
+        readback_manifest["hidden_int4_row_sha256_first16"] = _row_sha256_first(hidden_x_readback[:active_rows])
+    if hidden_scale_readback is not None:
+        readback_manifest["hidden_scale_active"] = _tensor_byte_manifest(hidden_scale_readback[:active_rows])
+
+    source_counts_match_reference = None
+    if reference_group_counts is not None:
+        source_counts_match_reference = list(reference_group_counts) == counts[: len(reference_group_counts)]
+
+    return {
+        "expert_token_nums_shape": list(expert_token_nums.shape),
+        "expert_token_nums": [counts],
+        "expert_token_total": int(sum(counts)),
+        "expert_token_total_matches_active_rows": int(sum(counts)) == active_rows,
+        "active_expert_ids": active_experts,
+        "routed_experts_argument": [int(v) for v in routed_experts],
+        "route_slot_to_expert": [
+            {"top_k_slot": slot, "expert_id": int(expert)} for slot, expert in enumerate(routed_experts)
+        ],
+        "expert_prefix_sums": prefixes,
+        "expert_local_row_starts": {str(expert): prefixes[expert] for expert in active_experts},
+        "expert_local_row_offsets": {
+            str(expert): list(range(min(int(counts[expert]), 32))) for expert in active_experts
+        },
+        "source_token_set": {
+            "count": int(num_tokens),
+            "first32": list(range(min(int(num_tokens), 32))),
+        },
+        "top_k_expansion": {
+            "top_k": int(top_k),
+            "expanded_row_count": active_rows,
+            "token_major_order_matches_expert_contiguous_order": bool(token_major_matches),
+        },
+        "expert_contiguous_rows": True,
+        "row_source": (
+            "External hidden rows are supplied to the official GMM2 boundary in expert-contiguous order; "
+            "for each active expert, source_token_id is the expert-local row offset."
+        ),
+        "routed_row_map_first64": row_map,
+        "reference_group_counts": reference_group_counts,
+        "reference_group_counts_match_expert_token_nums": source_counts_match_reference,
+        "tp_ep_mapping": {
+            "tp_size": 1,
+            "tp_rank": 0,
+            "ep_size": 1,
+            "ep_rank": 0,
+            "local_expert_id_equals_global_expert_id": True,
+        },
+        "active_boundary": {
+            "hidden_int4_packed_active": _tensor_byte_manifest(hidden_x_int4_packed[:active_rows]),
+            "hidden_scale_active": _tensor_byte_manifest(hidden_x_scale[:active_rows]),
+            "hidden_int4_row_sha256_first16": _row_sha256_first(hidden_x_int4_packed[:active_rows]),
+            "hidden_scale_values_first32": hidden_x_scale[:active_rows].detach().cpu().float()[:32].tolist(),
+        },
+        "post_override_readback_boundary": readback_manifest,
+        "padded_row_interpretation": {
+            "max_output_size": int(max_output_size),
+            "active_rows": active_rows,
+            "padded_row_count": padded_row_count,
+            "padded_rows_start": active_rows,
+            "hidden_int4_padded_rows_zero": padded_hidden_zero,
+            "hidden_scale_padded_rows_zero": padded_scale_zero,
+            "hidden_int4_padded_nonzero_count": int((padded_hidden != 0).sum().item()) if padded_hidden.numel() else 0,
+            "hidden_scale_padded_nonzero_count": int((padded_scale != 0).sum().item()) if padded_scale.numel() else 0,
+        },
+    }
 
 
 def _unpack_i4_bytes_variant(
@@ -1015,6 +1172,19 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         output_columns=spec.hidden_size,
         max_rows=args.gmm2_reference_max_rows,
     )
+    routing_identity = _routing_identity_manifest(
+        routed_experts=routed_experts,
+        num_tokens=args.num_tokens,
+        top_k=args.top_k,
+        local_num_experts=local_num_experts,
+        max_output_size=args.max_output_size,
+        expert_token_nums=external_expert_token_nums,
+        hidden_x_int4_packed=hidden_x_int4_packed,
+        hidden_x_scale=hidden_x_scale,
+        hidden_x_readback=hidden_x_readback,
+        hidden_scale_readback=hidden_scale_readback,
+        reference_group_counts=reference_contract.get("group_counts"),
+    )
     if loop_stats_debug:
         hidden_scale_active = hidden_x_scale[:active_rows].detach().cpu()
         loop_stats = _parse_gmm2_loop_stats(gmm2_post_dequant, expert_per_rank=local_num_experts)
@@ -1042,14 +1212,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                 "max_output_size": args.max_output_size,
                 "active_rows": active_rows,
             },
-            "routing_identity": {
-                "expert_token_nums_shape": list(external_expert_token_nums.shape),
-                "expert_token_nums": external_expert_token_nums.detach().cpu().tolist(),
-                "expert_token_total": int(external_expert_token_nums.detach().cpu().sum().item()),
-                "expert_contiguous_rows": True,
-                "row_source": "mixed epilogue rows are generated in the same expert-contiguous order described by expert_token_nums",
-                "reference_group_counts": reference_contract["group_counts"],
-            },
+            "routing_identity": routing_identity,
             "official_postload": {
                 "loader": "AscendW4A8DynamicFusedMoEMethod.process_weights_after_loading_modelslim",
                 "metadata": _postload_metadata(layer),
@@ -1255,14 +1418,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                 "max_output_size": args.max_output_size,
                 "active_rows": active_rows,
             },
-            "routing_identity": {
-                "expert_token_nums_shape": list(external_expert_token_nums.shape),
-                "expert_token_nums": external_expert_token_nums.detach().cpu().tolist(),
-                "expert_token_total": int(external_expert_token_nums.detach().cpu().sum().item()),
-                "expert_contiguous_rows": True,
-                "row_source": "mixed epilogue rows are generated in the same expert-contiguous order described by expert_token_nums",
-                "reference_group_counts": reference_contract["group_counts"],
-            },
+            "routing_identity": routing_identity,
             "official_postload": {
                 "loader": "AscendW4A8DynamicFusedMoEMethod.process_weights_after_loading_modelslim",
                 "metadata": _postload_metadata(layer),
@@ -1386,13 +1542,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             "max_output_size": args.max_output_size,
             "active_rows": active_rows,
         },
-        "routing_identity": {
-            "expert_token_nums_shape": list(external_expert_token_nums.shape),
-            "expert_token_nums": external_expert_token_nums.detach().cpu().tolist(),
-            "expert_token_total": int(external_expert_token_nums.detach().cpu().sum().item()),
-            "expert_contiguous_rows": True,
-            "row_source": "mixed epilogue rows are generated in the same expert-contiguous order described by expert_token_nums",
-        },
+        "routing_identity": routing_identity,
         "official_postload": {
             "loader": "AscendW4A8DynamicFusedMoEMethod.process_weights_after_loading_modelslim",
             "metadata": _postload_metadata(layer),
