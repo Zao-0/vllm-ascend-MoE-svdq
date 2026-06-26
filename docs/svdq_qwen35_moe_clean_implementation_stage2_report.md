@@ -1,9 +1,153 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
-## Full-Lifecycle Loop-State Diagnostic Hook - 2026-06-26T19:31Z
+## Official zN / FP16 D2 Reference Correction - 2026-06-26T19:51Z
 
 This section is the latest Stage 2.2 status. Older sections are historical evidence unless explicitly
 referenced here.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Source packed hidden exact-match and post-override readback both report mismatch count 0. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Correcting the host reference to official W2 `layout::zN` and FP16 D2 storage removes the previous large raw-C2/post-dequant mismatch, but the strict Gate B/Gate C thresholds still do not pass. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 modified-hidden official W4A8 GMM2 numerical gates. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+Binding constraints remain unchanged:
+
+- Use only `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
+- Do not use or debug public `torch_npu.npu_grouped_matmul`.
+- Official `dispatch_ffn_combine_w4_a8` remains the only W4A8 source of truth.
+- Do not advance to SVDQ down, final combine, or production enablement while Stage 2.2 fails.
+
+This attempt is a host-reference correction and diagnostic extension only. It does not modify the device
+kernel, does not repack checkpoint weights, does not change synchronization, does not use public grouped
+matmul, and does not enable production SVDQ.
+
+Files changed for this attempt:
+
+- `tools/svdq_w4a8_debug_readback_real_checkpoint_probe.py`
+  - Added an official W4A8 C2 helper that models the actual D2 boundary:
+    `fp16(high_acc * weight_scale) * 16 + fp16(low_acc * weight_scale)`.
+  - Added a shared postloaded W4 `layout::zN::MakeLayout<int4b_t>` host unpack helper.
+  - Updated GMM1/GMM2 unfused and raw-C2 references to use official postloaded W4 `zN` layout and FP16
+    D2 storage before AIV post-processing.
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+  - Added a diagnostic-only `catlass_weight_zN_official_b_layout` W2 variant.
+  - Updated local raw-C2 layout variants to use the same FP16 D2 reference boundary.
+
+Official source locations used for this correction:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h:250-257`:
+  `weightNz=true` selects `LayoutB=layout::zN`; `layoutB2` is created through
+  `LayoutBInitializer<layout::zN, int4b_t>::create(k2, n2)`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/select_helper.hpp:17-23`:
+  `LayoutBInitializer<layout::zN, int4b_t>` calls `layout::zN::MakeLayout<int4b_t>(k, n)`.
+- `csrc/third_party/catlass/include/catlass/layout/matrix.hpp:519-536`:
+  official `zN::MakeLayout` for int4 has `C0_NUM_PER_FRACTAL=16`, `ELE_NUM_PER_C0=64`, and the offset
+  formula used by the corrected host reference.
+- `csrc/third_party/catlass/include/catlass/gemm/tile/atlasa2/copy_l1_to_l0b.hpp:430-456`:
+  B operand copy keeps `layout::zN` in L1 and uses `LoadDataWithTranspose` for L0B.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h:278`:
+  W4A8 GMM `CType` is `float16_t`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp:169-203`:
+  `BlockEpilogue2` reads high/low FP16 rows from `gmC2`, casts them to FP32, computes `high * 16 + low`,
+  and the raw-debug tap copies that FP32 value.
+- `csrc/third_party/catlass/include/catlass/gemm/helper.hpp:138-139`:
+  int4 x int4 accumulator type is `int32_t`.
+- `csrc/third_party/catlass/include/catlass/gemm/tile/atlasa2/copy_l0c_to_gm.hpp:220-248`:
+  per-channel Fixpipe writes the scaled accumulator to GM as the configured `ElementDst`.
+
+Corrected raw-C2 probe:
+
+- Command used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, repo-local `ASCEND_CUSTOM_OPP_PATH`,
+  repo-local `libcust_opapi.so`, top-1 expert 0, 64 tokens, `max_output_size=64`, and
+  `--swiglu-limit 454545`.
+- NPU preflight log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_primary_zN_fp16_boundary_npu_smi.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_primary_zN_fp16_boundary_top1_expert0_max64.log`
+- Summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_raw_c2_primary_zN_fp16_boundary_top1_expert0_max64.json`
+- Top-level stage `passed: false`; Gate B still does not satisfy the old strict raw-C2 thresholds.
+
+Raw-C2 corrected primary evidence:
+
+- `official_gmm2_entry_reached: true`
+- `official_gmm2_aic_raw_output_finite: true`
+- `official_gmm2_aic_raw_output_nonzero: true`
+- `official_gmm2_c2v_handoff_verified: true`
+- hidden packed post-override exact-match: `true`, mismatch count `0`
+- hidden scale post-override exact mismatch count `0`, max abs `0.0`
+- corrected primary contract:
+  `postloaded W4 weight interpreted with Catlass layout::zN::MakeLayout<int4b_t>`;
+  `fp16(high_acc * postloaded_weight_scale) * 16 + fp16(low_acc * postloaded_weight_scale)`
+- corrected primary raw-C2 error:
+  - `max_abs: 0.0166015625`
+  - `mean_abs: 0.0007681758143007755`
+  - `failed_element_count_abs_gt_tolerance: 70547` / `131072`
+  - NaN/Inf counts: zero for actual, expected, and diff
+- previous row-major primary error, before the correction, was about `max_abs: 23.6257`,
+  `mean_abs: 3.0853`; the large mismatch is now explained by the wrong host W2 layout and missing FP16 D2
+  boundary in the reference.
+
+W2 layout variants after the correction:
+
+| Variant | Mean abs | Max abs | Failed elements over old abs tolerance |
+|---|---:|---:|---:|
+| current row-major host reference | `3.0852599143981934` | `23.625732421875` | `131060` |
+| CATLASS `nZ` historical diagnostic | `3.1503801345825195` | `28.720703125` | `131057` |
+| official CATLASS `zN` B layout | `0.0007681758143007755` | `0.0166015625` | `70547` |
+
+Corrected post-dequant probe:
+
+- Command used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, repo-local `ASCEND_CUSTOM_OPP_PATH`,
+  repo-local `libcust_opapi.so`, top-1 expert 0, 64 tokens, and `max_output_size=64`.
+- NPU preflight log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_post_dequant_primary_zN_fp16_reference_npu_smi.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_post_dequant_primary_zN_fp16_reference_top1_expert0_max64.log`
+- Summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_post_dequant_primary_zN_fp16_reference_top1_expert0_max64.json`
+- Top-level stage `passed: false`; Gate C is finite/nonzero and close, but the max error still exceeds the
+  pre-existing strict tolerance.
+
+Post-dequant corrected evidence:
+
+- output finite: `true`
+- output nonzero: `true`
+- output active stats: `max_abs: 0.46528252959251404`, `mean_abs: 0.05298978090286255`
+- corrected post-dequant reference error:
+  - `max_abs: 0.00037679076194763184`
+  - `mean_abs: 0.000018463411834090948`
+  - configured max tolerance: `0.0002`
+  - configured mean tolerance: `0.00002`
+- Interpretation: the earlier all-zero or large-mismatch characterization is stale for the corrected
+  official reference. The official path produces finite nonzero post-dequant output with row identity intact,
+  but Stage 2.2 remains failed because the declared numerical gates still do not both pass.
+
+Current conclusion:
+
+- The main Stage 2.2 evidence gap moved from "why is raw C2 broadly wrong?" to "what exact numeric tolerance
+  or device rounding model should be used for the official FP16 D2 boundary?"
+- The corrected reference proves the official modified-hidden GMM2 path consumes the same routed rows and
+  the official `zN` W2 layout, and produces finite nonzero raw and post-dequant outputs.
+- Do not mark Stage 2.2 complete yet. The next work should either prove the residual is exactly explained by
+  official Fixpipe/FP16 rounding semantics with a documented non-relaxed gate, or add a device-side readback
+  that exposes the pre-FP16 accumulator / per-half D2 values to remove the remaining ambiguity.
+
+Validation before this report update:
+
+- `python -m py_compile tools/svdq_w4a8_debug_readback_real_checkpoint_probe.py tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
+- `git diff --check`: passed.
+- Four-visible-NPU raw-C2 probe: completed on `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, wrote summary, and
+  correctly reported Stage 2.2 `passed: false`.
+- Four-visible-NPU post-dequant probe: completed on `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, wrote summary, and
+  correctly reported Stage 2.2 `passed: false`.
+
+## Full-Lifecycle Loop-State Diagnostic Hook - 2026-06-26T19:31Z
+
+This section is historical evidence. The `2026-06-26T19:51Z` section above supersedes it for current status.
 
 | Item | Status | Evidence / blocker |
 |---|---|---|

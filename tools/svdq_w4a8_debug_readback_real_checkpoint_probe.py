@@ -216,11 +216,54 @@ def _int64_float_bits_to_fp32(scale: torch.Tensor) -> torch.Tensor:
     return scale_fp32
 
 
+def _official_w4a8_scaled_half_c2(
+    high_acc: torch.Tensor,
+    low_acc: torch.Tensor,
+    weight_scale: torch.Tensor,
+) -> torch.Tensor:
+    high_c = (high_acc.float() * weight_scale.reshape(1, -1)).to(torch.float16).float()
+    low_c = (low_acc.float() * weight_scale.reshape(1, -1)).to(torch.float16).float()
+    return high_c * 16.0 + low_c
+
+
 def _unpack_postloaded_w4_columns(weight: torch.Tensor, output_columns: int) -> torch.Tensor:
     words = weight.detach().cpu().contiguous().to(torch.int32)
     shifts = (torch.arange(8, dtype=torch.int32) * 4).reshape(1, 1, 1, 8)
     unpacked = ((words.unsqueeze(-1) >> shifts) & 0xF).reshape(words.shape[0], words.shape[1], output_columns)
     return torch.where(unpacked >= 8, unpacked - 16, unpacked).to(torch.int32)
+
+
+def _round_up(value: int, align: int) -> int:
+    return ((int(value) + int(align) - 1) // int(align)) * int(align)
+
+
+def _unpack_postloaded_w4_columns_zN(weight: torch.Tensor, output_columns: int) -> torch.Tensor:
+    words = weight.detach().cpu().contiguous().to(torch.int32)
+    if words.ndim != 3:
+        raise ValueError("postloaded W4 weight expects [experts, k, packed_n] int32 words.")
+    experts, k_rows, packed_columns = (int(v) for v in words.shape)
+    if packed_columns * 8 != int(output_columns):
+        raise ValueError(f"packed W4 columns {packed_columns} do not match output columns {output_columns}.")
+
+    flat_words = words.reshape(experts, -1)
+    shifts = (torch.arange(8, dtype=torch.int32) * 4).reshape(1, 1, 8)
+    flat_i4 = ((flat_words.unsqueeze(-1) >> shifts) & 0xF).reshape(experts, -1)
+    flat_i4 = torch.where(flat_i4 >= 8, flat_i4 - 16, flat_i4).to(torch.int32)
+
+    ele_num_per_c0 = 64
+    c0_num_per_fractal = 16
+    ele_num_per_fractal = 1024
+    rows_round = _round_up(k_rows, c0_num_per_fractal)
+
+    row_ids = torch.arange(k_rows, dtype=torch.int64).reshape(k_rows, 1)
+    col_ids = torch.arange(output_columns, dtype=torch.int64).reshape(1, output_columns)
+    offsets = (
+        (row_ids // c0_num_per_fractal) * ele_num_per_fractal
+        + (col_ids // ele_num_per_c0) * (rows_round * ele_num_per_c0)
+        + (row_ids % c0_num_per_fractal) * ele_num_per_c0
+        + (col_ids % ele_num_per_c0)
+    )
+    return flat_i4[:, offsets.reshape(-1)].reshape(experts, k_rows, output_columns)
 
 
 def _official_int8_to_int4_parts(x_int8: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -281,7 +324,7 @@ def _official_gmm1_unfused_reference(
     per_token_scale = routed_x_scale[:row_count].detach().cpu().float()
     weight_scale_fp32 = _int64_float_bits_to_fp32(weight_scale)
     bias = scale_bias.detach().cpu().float().contiguous()
-    unpacked_weight = _unpack_postloaded_w4_columns(weight, output_columns)
+    unpacked_weight = _unpack_postloaded_w4_columns_zN(weight, output_columns)
 
     outputs: list[torch.Tensor] = []
     row_start = 0
@@ -293,8 +336,8 @@ def _official_gmm1_unfused_reference(
         weight_e = unpacked_weight[expert_id]
         high_acc = x_high[row_start:row_end].matmul(weight_e)
         low_acc = x_low[row_start:row_end].matmul(weight_e)
-        combined = (high_acc * 16 + low_acc).float()
-        dequant = combined * weight_scale_fp32[expert_id].reshape(1, -1) + bias[expert_id].reshape(1, -1)
+        combined = _official_w4a8_scaled_half_c2(high_acc, low_acc, weight_scale_fp32[expert_id])
+        dequant = combined + bias[expert_id].reshape(1, -1)
         outputs.append(dequant * per_token_scale[row_start:row_end].reshape(-1, 1))
         row_start = row_end
     if outputs:
@@ -304,7 +347,11 @@ def _official_gmm1_unfused_reference(
     return reference, {
         "source": "official dispatch_ffn_combine_w4_a8 AIC/AIV contract",
         "activation_split": "FetchAndPreprocessInt8ToInt4 high=floor(x/16), low=(x&0x0f)-8",
-        "epilogue_formula": "(high_acc * 16 + low_acc) * postloaded_weight_scale + scale_bias, then * routed_x_scale",
+        "weight_layout": "postloaded W4 weight interpreted with Catlass layout::zN::MakeLayout<int4b_t>",
+        "epilogue_formula": (
+            "fp16(high_acc * postloaded_weight_scale) * 16 + "
+            "fp16(low_acc * postloaded_weight_scale) + scale_bias, then * routed_x_scale"
+        ),
         "compared_rows": int(reference.shape[0]),
         "group_counts": counts.tolist(),
     }
@@ -327,7 +374,7 @@ def _official_gmm2_unfused_reference(
     per_token_scale = hidden_x_scale[:row_count].detach().cpu().float()
     weight_scale_fp32 = _int64_float_bits_to_fp32(weight_scale)
     bias = scale_bias.detach().cpu().float().contiguous()
-    unpacked_weight = _unpack_postloaded_w4_columns(weight, output_columns)
+    unpacked_weight = _unpack_postloaded_w4_columns_zN(weight, output_columns)
 
     outputs: list[torch.Tensor] = []
     row_start = 0
@@ -339,8 +386,8 @@ def _official_gmm2_unfused_reference(
         weight_e = unpacked_weight[expert_id]
         high_acc = x_high[row_start:row_end].matmul(weight_e)
         low_acc = x_low[row_start:row_end].matmul(weight_e)
-        combined = (high_acc * 16 + low_acc).float()
-        dequant = combined * weight_scale_fp32[expert_id].reshape(1, -1) + bias[expert_id].reshape(1, -1)
+        combined = _official_w4a8_scaled_half_c2(high_acc, low_acc, weight_scale_fp32[expert_id])
+        dequant = combined + bias[expert_id].reshape(1, -1)
         outputs.append(dequant * per_token_scale[row_start:row_end].reshape(-1, 1))
         row_start = row_end
     if outputs:
@@ -353,7 +400,11 @@ def _official_gmm2_unfused_reference(
         "activation_split": (
             "official GMM2 reads prepacked hidden INT4 high-half bytes and low-half bytes from gmA2I4_I8"
         ),
-        "epilogue_formula": "(high_acc * 16 + low_acc) * postloaded_weight_scale + scale_bias, then * hidden_x_scale",
+        "weight_layout": "postloaded W4 weight interpreted with Catlass layout::zN::MakeLayout<int4b_t>",
+        "epilogue_formula": (
+            "fp16(high_acc * postloaded_weight_scale) * 16 + "
+            "fp16(low_acc * postloaded_weight_scale) + scale_bias, then * hidden_x_scale"
+        ),
         "compared_rows": int(reference.shape[0]),
         "group_counts": counts.tolist(),
     }
@@ -373,7 +424,7 @@ def _official_gmm2_raw_c2_reference(
     counts = _clip_group_counts(expert_token_nums, row_count)
     x_high, x_low = _official_packed_i4_hidden_to_parts(hidden_x_int4_packed[:row_count])
     weight_scale_fp32 = _int64_float_bits_to_fp32(weight_scale)
-    unpacked_weight = _unpack_postloaded_w4_columns(weight, output_columns)
+    unpacked_weight = _unpack_postloaded_w4_columns_zN(weight, output_columns)
 
     outputs: list[torch.Tensor] = []
     row_start = 0
@@ -385,8 +436,7 @@ def _official_gmm2_raw_c2_reference(
         weight_e = unpacked_weight[expert_id]
         high_acc = x_high[row_start:row_end].matmul(weight_e)
         low_acc = x_low[row_start:row_end].matmul(weight_e)
-        combined = (high_acc * 16 + low_acc).float()
-        outputs.append(combined * weight_scale_fp32[expert_id].reshape(1, -1))
+        outputs.append(_official_w4a8_scaled_half_c2(high_acc, low_acc, weight_scale_fp32[expert_id]))
         row_start = row_end
     if outputs:
         reference = torch.cat(outputs, dim=0)
@@ -398,9 +448,11 @@ def _official_gmm2_raw_c2_reference(
         "activation_split": (
             "official GMM2 reads prepacked hidden INT4 high-half bytes and low-half bytes from gmA2I4_I8"
         ),
+        "weight_layout": "postloaded W4 weight interpreted with Catlass layout::zN::MakeLayout<int4b_t>",
         "raw_c2_formula": (
-            "(high_acc * 16 + low_acc) * postloaded_weight_scale before scale_bias, hidden_x_scale, "
-            "BF16 cast, or peer-output routing"
+            "fp16(high_acc * postloaded_weight_scale) * 16 + "
+            "fp16(low_acc * postloaded_weight_scale), matching GMM2 Fixpipe float16 D2 storage "
+            "before scale_bias, hidden_x_scale, BF16 cast, or peer-output routing"
         ),
         "compared_rows": int(reference.shape[0]),
         "group_counts": counts.tolist(),

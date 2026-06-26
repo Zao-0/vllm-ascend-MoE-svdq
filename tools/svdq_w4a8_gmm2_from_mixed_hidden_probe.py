@@ -49,6 +49,7 @@ from svdq_w4a8_debug_readback_real_checkpoint_probe import (  # noqa: E402
     _float_stats,
     _int64_float_bits_to_fp32,
     _load_real_residual_layer,
+    _official_w4a8_scaled_half_c2,
     _unpack_postloaded_w4_columns,
     _official_gmm2_raw_c2_reference,
     _official_gmm2_unfused_reference,
@@ -416,8 +417,7 @@ def _raw_c2_reference_from_parts(
         weight_e = unpacked_weight[expert_id]
         high_acc = x_high[row_start:row_end].matmul(weight_e)
         low_acc = x_low[row_start:row_end].matmul(weight_e)
-        combined = (high_acc * 16 + low_acc).float()
-        outputs.append(combined * weight_scale_fp32[expert_id].reshape(1, -1))
+        outputs.append(_official_w4a8_scaled_half_c2(high_acc, low_acc, weight_scale_fp32[expert_id]))
         row_start = row_end
     if outputs:
         return torch.cat(outputs, dim=0)
@@ -432,6 +432,7 @@ def _unpack_postloaded_w4_columns_zn_diagnostic(
     weight: torch.Tensor,
     output_columns: int,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
+    """Diagnostic-only CATLASS nZ interpretation kept for historical comparison."""
     words = weight.detach().cpu().contiguous().to(torch.int32)
     if words.ndim != 3:
         raise ValueError("postloaded W4 weight diagnostic expects [experts, k, packed_n] int32 words.")
@@ -515,6 +516,96 @@ def _unpack_postloaded_w4_columns_zn_diagnostic(
     return unpacked, contract
 
 
+def _unpack_postloaded_w4_columns_zN_diagnostic(
+    weight: torch.Tensor,
+    output_columns: int,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    """Diagnostic-only CATLASS zN interpretation used by official W4A8 GMM2 B."""
+    words = weight.detach().cpu().contiguous().to(torch.int32)
+    if words.ndim != 3:
+        raise ValueError("postloaded W4 weight diagnostic expects [experts, k, packed_n] int32 words.")
+    experts, k_rows, packed_columns = (int(v) for v in words.shape)
+    if packed_columns * 8 != int(output_columns):
+        raise ValueError(
+            f"packed W4 columns {packed_columns} do not match output columns {output_columns}."
+        )
+
+    flat_words = words.reshape(experts, -1)
+    shifts = (torch.arange(8, dtype=torch.int32) * 4).reshape(1, 1, 8)
+    flat_i4 = ((flat_words.unsqueeze(-1) >> shifts) & 0xF).reshape(experts, -1)
+    flat_i4 = torch.where(flat_i4 >= 8, flat_i4 - 16, flat_i4).to(torch.int32)
+
+    byte_per_c0 = 32
+    c0_num_per_fractal = 16
+    byte_per_fractal = byte_per_c0 * c0_num_per_fractal
+    int4_bits = 4
+    ele_num_per_c0 = (byte_per_c0 * 8) // int4_bits
+    ele_num_per_fractal = (byte_per_fractal * 8) // int4_bits
+    rows_round = _round_up(k_rows, c0_num_per_fractal)
+    cols_round = _round_up(output_columns, ele_num_per_c0)
+
+    row_ids = torch.arange(k_rows, dtype=torch.int64).reshape(k_rows, 1)
+    col_ids = torch.arange(output_columns, dtype=torch.int64).reshape(1, output_columns)
+    offsets = (
+        (row_ids // c0_num_per_fractal) * ele_num_per_fractal
+        + (col_ids // ele_num_per_c0) * (rows_round * ele_num_per_c0)
+        + (row_ids % c0_num_per_fractal) * ele_num_per_c0
+        + (col_ids % ele_num_per_c0)
+    )
+    if int(offsets.max().item()) >= int(flat_i4.shape[1]):
+        raise ValueError(
+            "computed zN int4 offset exceeds flattened W4 storage; "
+            f"max_offset={int(offsets.max().item())}, flat_i4={int(flat_i4.shape[1])}"
+        )
+    unpacked = flat_i4[:, offsets.reshape(-1)].reshape(experts, k_rows, output_columns)
+    contract = {
+        "diagnostic_only": True,
+        "layout": "Catlass::layout::zN::MakeLayout<Element=int4b_t>",
+        "source_locations": {
+            "kernel_weight_layout": (
+                "dispatch_ffn_combine_w4_a8.h uses LayoutB = layout::zN when weightNz=true "
+                "and creates layoutB2 = LayoutBInitializer<LayoutB, int4b_t>::create(k2, n2)"
+            ),
+            "layout_initializer": (
+                "utils/select_helper.hpp specializes LayoutBInitializer<layout::zN, int4b_t> "
+                "to call layout::zN::MakeLayout<int4b_t>(k, n)"
+            ),
+            "catlass_layout": "third_party/catlass/include/catlass/layout/matrix.hpp zN::MakeLayout and GetOffset",
+            "copy_path": (
+                "CopyGmToL1<layout::zN> keeps zN in L1; CopyL1ToL0B<layout::zN> uses "
+                "LoadDataWithTranspose for B"
+            ),
+            "postload": (
+                "vllm_ascend/quantization/methods/w4a8.py process_weights_after_loading_modelslim "
+                "applies maybe_trans_nz before the debug op consumes W2"
+            ),
+        },
+        "constants": {
+            "BYTE_PER_C0": byte_per_c0,
+            "C0_NUM_PER_FRACTAL": c0_num_per_fractal,
+            "BYTE_PER_FRACTAL": byte_per_fractal,
+            "int4_bits": int4_bits,
+            "ELE_NUM_PER_C0": ele_num_per_c0,
+            "ELE_NUM_PER_FRACTAL": ele_num_per_fractal,
+        },
+        "shape": {
+            "experts": experts,
+            "k_rows": k_rows,
+            "packed_int32_columns": packed_columns,
+            "output_columns": int(output_columns),
+            "flattened_int4_per_expert": int(flat_i4.shape[1]),
+            "rows_round": rows_round,
+            "cols_round": cols_round,
+            "max_offset": int(offsets.max().item()),
+        },
+        "formula": (
+            "offset = row/16*1024 + col/64*(rowsRound*64) + row%16*64 + col%64 "
+            "for int4b_t with C0_NUM_PER_FRACTAL=16 and ELE_NUM_PER_C0=64"
+        ),
+    }
+    return unpacked, contract
+
+
 def _raw_c2_reference_with_unpacked_weight(
     *,
     x_high: torch.Tensor,
@@ -538,8 +629,7 @@ def _raw_c2_reference_with_unpacked_weight(
         weight_e = unpacked_weight[expert_id]
         high_acc = x_high[row_start:row_end].matmul(weight_e)
         low_acc = x_low[row_start:row_end].matmul(weight_e)
-        combined = (high_acc * 16 + low_acc).float()
-        outputs.append(combined * weight_scale_fp32[expert_id].reshape(1, -1))
+        outputs.append(_official_w4a8_scaled_half_c2(high_acc, low_acc, weight_scale_fp32[expert_id]))
         row_start = row_end
     if outputs:
         return torch.cat(outputs, dim=0)
@@ -635,6 +725,7 @@ def _raw_c2_weight_layout_variant_diagnostics(
     )
     row_major_weight = _unpack_postloaded_w4_columns(weight, output_columns)
     zn_weight, zn_contract = _unpack_postloaded_w4_columns_zn_diagnostic(weight, output_columns)
+    zN_weight, zN_contract = _unpack_postloaded_w4_columns_zN_diagnostic(weight, output_columns)
     variants = {
         "current_row_major_host_reference": {
             "unpacked_weight": row_major_weight,
@@ -646,6 +737,10 @@ def _raw_c2_weight_layout_variant_diagnostics(
         "catlass_weight_nz_host_interpretation": {
             "unpacked_weight": zn_weight,
             "contract": zn_contract,
+        },
+        "catlass_weight_zN_official_b_layout": {
+            "unpacked_weight": zN_weight,
+            "contract": zN_contract,
         },
     }
     reports: dict[str, Any] = {}
