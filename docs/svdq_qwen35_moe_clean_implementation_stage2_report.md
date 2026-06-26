@@ -74,10 +74,44 @@ Next valid work after rebuild:
 4. Do not enable production `DispatchFFNCombineW4A8SVDQ` host tiling until the isolated real-device
    Stage 2.2 numerical gates pass.
 
+Post-handoff real-device rerun:
+
+- Command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH} python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py --require-npu --swiglu-limit 451111 --summary-name phase_stage2_gmm2_fixpipe_contract_high_half_top1_expert0_max64.json`
+- NPU preflight log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_fixpipe_contract_high_half_npu_smi.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_fixpipe_contract_high_half_top1_expert0_max64.log`
+- Summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_fixpipe_contract_high_half_top1_expert0_max64.json`
+- Probe exit: `1`, expected because strict Gate B still fails.
+- `torch_op_registered: true`.
+- `stage.gmm2.official_fixpipe_contract` is present.
+- Recorded contract fields:
+  - `copy_l0c_to_gm_quant_pre: QuantMode_t::VDEQF16`
+  - `is_channel_split_explicitly_set: false`
+- Gate B high-half comparator remains failed:
+  - `max_abs: 0.0009765625`
+  - `mean_abs: 0.00005377935303840786`
+  - failed elements over strict abs tolerance: `12621`
+  - NaN/Inf counts: `0`
+- Carry-forward checks from the summary:
+  - `official_gmm2_entry_reached: true`
+  - `official_gmm2_aic_raw_output_finite: true`
+  - `official_gmm2_aic_raw_output_nonzero: true`
+  - `official_gmm2_c2v_handoff_verified: true`
+  - `hidden_packed_exact: true`
+  - `hidden_post_override_readback_exact: true`
+  - `hidden_scale_post_override_readback_exact: true`
+
 Validation before this report update:
 
 - `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
 - `git diff --check -- tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`: passed.
+- Post-handoff high-half real-device rerun completed and wrote the summary listed above; exit `1` is expected
+  because the strict comparator remains failed.
+- `git diff --check -- docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`: passed after adding the
+  post-handoff rerun evidence.
 
 ## Stage 2.2 D2 Half Rounding/Scale Variant Diagnostic - 2026-06-26T21:35Z
 
