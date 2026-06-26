@@ -1,9 +1,144 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
-## W2 NZ Layout Comparator Diagnostic - 2026-06-26T19:00Z
+## Full-Lifecycle Loop-State Diagnostic Hook - 2026-06-26T19:31Z
 
 This section is the latest Stage 2.2 status. Older sections are historical evidence unless explicitly
 referenced here.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Source packed hidden exact-match and post-override readback both report mismatch count 0. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Gate A is exact and the official GMM2 full-lifecycle loop-state probe now shows real token/cumsum state and active tiles, but strict GMM2 numerical parity remains failed. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 modified-hidden official W4A8 GMM2 numerical parity. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+Binding constraints remain unchanged:
+
+- Use only `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
+- Do not use or debug public `torch_npu.npu_grouped_matmul`.
+- Official `dispatch_ffn_combine_w4_a8` remains the only W4A8 source of truth.
+- Do not advance to SVDQ down, final combine, or production enablement while Stage 2.2 fails.
+
+Appendix `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` remains binding.
+This change is diagnostic-only. It does not modify the ordinary official W4A8 path, does not use public
+grouped matmul, does not introduce a substitute GMM2 implementation, and does not enable production SVDQ
+host tiling.
+
+Problem found before this hook:
+
+- The previous full-lifecycle loop-state probe ran with `--swiglu-limit 434343` but reported
+  `official_gmm2_entry_reached: false`, `official_gmm2_loop_count: 0`, `active_tile_count: 0`,
+  `loop_stats.valid_magic: false`, and zeroed token/cumsum state.
+- Hidden packed override and hidden scale override were already exact, so the missing loop-state magic was
+  an instrumentation/synchronization visibility gap rather than proof that Stage 2.2 numerical parity had
+  advanced.
+
+Files changed for this attempt:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp`
+  - In `GMM2`, the existing loop-stats sentinel now waits on the official `SYNCFLAGV2C`, writes
+    `WriteGMM2OnlyLoopStats(params)`, and returns before issuing GMM2 tiles.
+  - In `DispatchAndCombine`, the same loop-stats sentinel returns before `CombineV2` so AIV does not wait
+    for C2V flags that this diagnostic mode intentionally does not produce.
+  - The hook is gated by the existing loop-stats debug predicate only; normal W4A8, raw-C2 debug mode, and
+    production SVDQ are unchanged.
+
+Official source locations for this diagnostic:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/svdqw4_a8_gmm2_debug_readback.cpp`:
+  debug wrapper calls `InitGMM2OnlyFromPacked(...)` and then `Process()`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h`:
+  `InitGMM2OnlyFromPacked` currently runs the full official lifecycle with external hidden override by
+  setting `gmm2OnlyFromPacked_ = false`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:704-708`:
+  AIC loop-stats hook waits for the official V2C handoff and writes loop stats.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1382-1384`:
+  AIV loop-stats hook returns before `CombineV2`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp`:
+  ordinary GMM2 still consumes `gmA2I4` and `gmB2` through the official layouts and writes `gmC2`;
+  ordinary `BlockEpilogue2` still owns dequantization and output scatter outside this diagnostic sentinel.
+
+Official-vs-debug state table:
+
+| State or region | Official producer | Official consumer | Official initialization point | Physical GM/workspace address and offset | Row/tile stride | Flag or event | Signal timing | Wait timing | Final drain | Current debug behavior |
+|---|---|---|---|---|---|---|---|---|---|---|
+| packed hidden `gmA2I4_I8` | Official `BlockEpilogue1` after GMM1 SwiGLU quant; debug override may replace after the official producer barrier | Official GMM2 AIC `gmA2I4` | `DispatchAndCombine` full lifecycle | Official D1/A2 GM region; debug override copies external packed hidden into this same region | D1 physical bytes equal A2 doubled-M INT4 bytes for active rows | V2C notify before GMM2 | After all AIV cores finish, then core 0 external copy, then post-copy barrier | GMM2 waits on official `SYNCFLAGV2C` | Official lifecycle outside loop-stats sentinel | Exact in latest run: mismatch count 0 |
+| hidden scale `gmPerTokenScale2` | Official `BlockEpilogue1`; debug override may replace after the official producer barrier | Official `BlockEpilogue2` / post-dequant | `DispatchAndCombine` full lifecycle | Official per-token scale GM region; debug override copies external scale into same region | One FP32 scale per active row | Same V2C lifecycle | Same as packed hidden | Consumed after GMM2 raw C2 | Official lifecycle outside loop-stats sentinel | Exact in latest run: exact mismatch count 0, max abs 0 |
+| routing state `tokenPerExpert` / `cumsumMM` | Official AIV routing and `GetCumsumForMMAIV` | Official GMM1/GMM2 AIC group loops | Before GMM1 hidden producer and before V2C signal | Official workspace routing arrays | One count per expert/rank | V2C dependency for GMM2 loop-stats hook | AIV prepares state before V2C | New diagnostic AIC hook waits V2C | No C2V drain in loop-stats mode | Valid magic now true; external/token/cumsum arrays match `[64,0,0,0,0,0,0,0]` |
+| W2 packed weight `gmB2` | ModelSlim post-load `maybe_trans_nz` W2 | Official GMM2 AIC `gmB2` | `process_weights_after_loading_modelslim` | `GetTensorAddr<int4b_t>(arrayGroupIdx, params.ptrB2)` | `LayoutB=layout::zN`, `int4b_t`, `weightNz=true` | none | Static input | GMM2 tile loop | Official lifecycle | Previous W2 NZ diagnostic rejected a simple host W2 layout mismatch as the primary root cause |
+| GMM2 accumulator / D2 region | Official GMM2 AIC | Official C2V / `BlockEpilogue2` | GMM2 loop | `gmC2[gmGroupOffsetC + layoutC.GetOffset(offsetC)]` | Row-major C tile layout | C2V handoff | Ordinary GMM2 notifies after tile production | AIV waits before epilogue | Official drain | Loop-stats sentinel intentionally does not produce C2V; raw-C2 numerical gate remains unresolved |
+| FP32 post-dequant debug tap | Official `BlockEpilogue2` raw-debug path or W4A8 debug tap | Host readback | `W4A8_DEBUG` path | Existing debug output GM | Active rows x hidden size | C2V handoff | After ordinary GMM2 raw C2 | AIV reads C2 | Official lifecycle | Gate C remains blocked while Gate B raw-C2 parity fails |
+
+Build/install evidence:
+
+- Focused debug kernel rebuild:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_full_lifecycle_loop_stats_build_kernel.log`
+  completed with `Built target svdqw4_a8_gmm2_debug_readback_ascend910b`.
+- Repo-local installer attempt:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_full_lifecycle_loop_stats_install_repo_opp.log`
+  reported an uninstall-script copy error and did not refresh the kernel artifacts.
+- Manual repo-local debug-kernel artifact refresh:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_full_lifecycle_loop_stats_manual_kernel_refresh_sha256.log`
+  shows all eight installed `SVDQW4A8GMM2DebugReadback_*.o` hashes match the freshly generated build outputs.
+
+Loop-state diagnostic probe:
+
+- Command used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, repo-local `ASCEND_CUSTOM_OPP_PATH`,
+  repo-local `libcust_opapi.so`, top-1 expert 0, 64 tokens, `max_output_size=64`, and
+  `--swiglu-limit 434343`.
+- NPU preflight log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_full_lifecycle_loop_stats_after_hook_npu_smi.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_loop_stats_full_lifecycle_after_hook_top1_expert0_max64.log`
+- Summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_loop_stats_full_lifecycle_after_hook_top1_expert0_max64.json`
+- Top-level stage `passed: false`; this is expected because the loop-state diagnostic does not satisfy the
+  numerical Gate B/Gate C requirements.
+
+Latest extracted evidence:
+
+- `official_gmm2_entry_reached: true`
+- `official_gmm2_loop_count: 8`
+- `official_gmm2_active_tile_count: 8`
+- `official_gmm2_active_tile_count_nonzero: true`
+- hidden packed post-override readback exact-match: `true`, mismatch count `0`
+- hidden scale post-override readback exact mismatch count `0`, max abs `0.0`
+- routing identity: expert-token counts `[[64,0,0,0,0,0,0,0]]`, reference group counts
+  `[64,0,0,0,0,0,0,0]`
+- loop stats: `valid_magic: true`, `magic: 434343.0`, `expert_per_rank: 8`, `max_output_size: 64`,
+  `total_active_rows: 64`, `total_doubled_rows: 128`, `total_core_loops: 8`, `groups_with_work: 1`,
+  `final_pre_current_m_sum: 64`, `n2: 2048`, `k2: 512`, `core_num: 20`
+- group 0: `raw_current_m: 64`, `clipped_current_m: 64`, `doubled_current_m: 128`, `core_loops: 8`,
+  `pre_current_m_sum: 0`
+- groups 1-7: zero rows and zero core loops, with `pre_current_m_sum: 64`
+- state probe: `valid_magic: true`, `ep: 1`, `rank: 0`, `layout_base_equals_cumsum_base: true`
+- state probe arrays:
+  - `external_expert_token_nums_first32`: `[64,0,0,0,0,0,0,0]`
+  - `token_per_expert_cumsum_base_first32`: `[64,0,0,0,0,0,0,0]`
+  - `token_per_expert_layout_base_first32`: `[64,0,0,0,0,0,0,0]`
+  - `cumsum_mm_last_rank_first32`: `[64,0,0,0,0,0,0,0]`
+
+Current conclusion:
+
+- The diagnostic hook fixed the missing official-loop-state readback for the full-lifecycle modified-hidden
+  debug op.
+- This is Gate A/state evidence only. It does not close Stage 2.2 because the ordinary raw-C2 numerical
+  comparator remains failed from the earlier raw-C2 probes.
+- The next Stage 2.2 work should use this now-valid token/cumsum/tile-state evidence to continue isolating
+  the official GMM2 accumulator/D2 mapping, C2V handoff, and `BlockEpilogue2` source mapping. It should not
+  restart public grouped-matmul experiments or add SVDQ BF16 projections.
+
+Validation before this report update:
+
+- Focused debug kernel build: passed.
+- Repo-local debug kernel artifact hashes: refreshed and matched build outputs.
+- Four-visible-NPU loop-state probe: completed on `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, wrote summary, and
+  correctly reported Stage 2.2 `passed: false` because numerical parity is still unresolved.
+
+## W2 NZ Layout Comparator Diagnostic - 2026-06-26T19:00Z
+
+This section is historical evidence. The `2026-06-26T19:31Z` section above supersedes it for current status.
 
 | Item | Status | Evidence / blocker |
 |---|---|---|

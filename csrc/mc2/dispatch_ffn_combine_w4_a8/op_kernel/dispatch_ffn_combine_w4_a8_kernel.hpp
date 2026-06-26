@@ -701,6 +701,12 @@ private:
         int64_t preCurrentmSum = 0;
         int32_t syncLoopIdx = -1;
 
+        if (IsGMM2OnlyLoopStatsDebug(params)) {
+            AscendC::CrossCoreWaitFlag<0x2>(SYNCFLAGV2C);
+            WriteGMM2OnlyLoopStats(params);
+            return;
+        }
+
         for (uint32_t groupIdx = 0; groupIdx < params.expertPerRank; ++groupIdx) {
             uint32_t currentM = cumsumMM((params.EP - 1) * params.expertPerRank + groupIdx);
             if (preCurrentmSum >= params.maxOutputSize) {
@@ -1372,6 +1378,10 @@ private:
         AscendC::SyncAll<false>();
         AscendC::SyncAll<false>();
 #endif
+
+        if (IsGMM2OnlyLoopStatsDebug(params)) {
+            return;
+        }
 
         CombineV2(params, blockEpilogue2);
         AscendC::SyncAll<true>();
