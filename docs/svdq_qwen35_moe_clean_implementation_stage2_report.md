@@ -232,3 +232,96 @@ Recommended next action after environment rebuild:
 3. Before launching, verify which custom OPP vendor path ACL actually resolves when both the system vendor path and repository-local `ASCEND_CUSTOM_OPP_PATH` exist.
 4. Continue debugging the `The binary bin not found` launch failure from ACL custom-op binary discovery and descriptor matching.
 5. Do not proceed to Stage 2.1 or GMM2 integration until `svdq_mixed_epilogue_debug_readback` launches on logical NPU 0.
+
+## Current Handoff State - 2026-06-26T07:45Z
+
+Status: IN PROGRESS.
+
+Current resolved boundary:
+
+- The Stage 2.0 custom-op discovery failure is resolved in this environment.
+- The seven-output ABI is now consistent across generated kernel metadata, installed dynamic files, `libcust_opapi.so`, and the in-place Python extension.
+- The real logical-NPU-0 mixed epilogue probe launches and passes, including exact packed hidden INT4 readback.
+
+Root cause fixed during this handoff:
+
+- The first launch blocker, `AclNN_Inner_Error(EZ9999): The binary bin not found`, persisted after installing the seven-output package because `libcust_opapi.so` was still a stale six-output wrapper.
+- `strings csrc/build/libcust_opapi.so` originally showed no `hiddenInt4PackedOut` and the old output order.
+- Rebuilding the supported generated host/opapi targets fixed this layer:
+  - `cmake --build csrc/build --target ops_aclnn -- -B -j1`
+  - `cmake --build csrc/build --target cust_opapi -- -B -j1`
+  - Evidence:
+    - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_rebuild_ops_aclnn_for_mixed7.log`
+    - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_rebuild_cust_opapi_for_mixed7.log`
+- A refreshed install package was generated and installed into both the repo-local custom OPP mirror and the system OPP:
+  - `cmake --install csrc/build --prefix /tmp/svdq_install_probe3`
+  - `(cd /tmp/svdq_install_probe3 && ./install.sh --install-path=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom)`
+  - `(cd /tmp/svdq_install_probe3 && ./install.sh --install-path=/usr/local/Ascend/cann-9.0.0/opp)`
+  - Evidence:
+    - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_cmake_install_probe3_after_opapi_rebuild.log`
+    - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_install_probe3_to_repo_custom_ops.log`
+    - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_install_probe3_to_system_opp.log`
+- The refreshed `libcust_opapi.so` checksum in build, repo-local install, and system install is:
+  - `12b00f273661368fecca86e52736f257668f23b4f4ef1cc41fd4a35e4957dd69`
+- The second launch blocker was a stale in-place Python extension. It still advertised the old six-output torch schema and then segfaulted in `NnopbaseMatchArgs` after the opapi layer was updated.
+- Rebuilding and installing the extension from the existing CMake build tree fixed this layer:
+  - `cmake --build build/temp.linux-aarch64-cpython-312 --target vllm_ascend_C -- -B -j1`
+  - `cmake --install build/temp.linux-aarch64-cpython-312`
+  - Evidence:
+    - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_rebuild_vllm_ascend_C_mixed7.log`
+    - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_install_vllm_ascend_C_mixed7.log`
+- The rebuilt extension schema includes:
+  - `hidden_int4_packed` between `hidden_int8` and `hidden_scale`.
+
+Validation after the fixes:
+
+- Focused schema/meta/adapter pytest:
+  - Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 pytest -q tests/ut/ops/test_svdq_moe_abi.py::test_svdq_mixed_epilogue_debug_torch_schema_meta_and_adapter_are_registered`
+  - Result: pass.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_pytest_mixed_epilogue_schema_meta_adapter_after_extension_rebuild.log`
+- Real-device mixed epilogue probe:
+  - Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH} python tools/svdq_mixed_epilogue_device_probe.py --require-npu --summary-name phase_mixed_epilogue_packed_i4_summary_after_extension_rebuild.json`
+  - Result: pass.
+  - Evidence log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_mixed_epilogue_device_probe_after_extension_rebuild.log`
+  - Evidence summary: `/root/workspace/lza/svdq_clean_evidence/phase_mixed_epilogue_packed_i4_summary_after_extension_rebuild.json`
+
+Numerical evidence from the passing probe:
+
+- Environment:
+  - `npu_device_count: 4`
+  - `selected_device: 0`
+  - `runtime_soc_version: Ascend910B4`
+- Appendix 3 gate sequence:
+  - `residual_only`: pass.
+  - `svdq_only`: pass.
+  - `two_branch_nonzero`: pass.
+- Exact hidden quantization/readback checks:
+  - `hidden_q_exact_match: true`
+  - `hidden_q_mismatch_count: 0`
+  - `hidden_q_max_abs_diff: 0`
+  - `hidden_q_packed_exact_match: true`
+  - `hidden_q_packed_mismatch_count: 0`
+  - `hidden_q_packed_max_abs_diff: 0`
+- Final probe result:
+  - `passed: true`
+
+Current remaining boundary:
+
+- Stage 2.0 launch/register is now validated.
+- Stage 2.1 packed hidden INT4 readback is validated for the mixed epilogue debug operator.
+- The next unresolved gate is the official W4A8 GMM2 consumer boundary:
+  `SVDQ-modified canonical BF16 hidden -> official hidden quantization/high-low packed INT4 -> official W4A8 GMM2`.
+- The next work should reuse or isolate the official `dispatch_ffn_combine_w4_a8` GMM2 consumer path against the packed hidden buffer that has now been validated.
+- Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed.
+- No public `torch_npu.npu_grouped_matmul` path was modified, debugged, or used as progress.
+
+Git/worktree state to preserve across rebuild:
+
+- Repo: `/root/workspace/lza/vllm-ascend`
+- Branch: `codex/svdq-lowrank-l0-reuse-debug`
+- HEAD before this report update: `2ac7af0a47d5bae9687d4d55579791b44fe3de3a`
+- Pre-existing dirty/untracked paths intentionally left untouched:
+  - `csrc/utils/inc/kernel/moe_distribute_base.h`
+  - `csrc/build_out/`
+  - `extra-info/`
+- Generated custom-op install mirrors under `vllm_ascend/_cann_ops_custom` were refreshed for local validation but are not intended to be committed except for tracked placeholders.
