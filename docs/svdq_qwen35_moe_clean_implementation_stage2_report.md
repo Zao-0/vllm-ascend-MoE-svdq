@@ -1,5 +1,99 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Raw C2 Diagnostic - 2026-06-26T17:05Z
+
+This section is the latest Stage 2.2 status. Older sections are historical evidence unless explicitly referenced here.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Source packed hidden exact-match still reports mismatch count 0. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | New full-lifecycle raw-C2 diagnostic proves the official GMM2/C2V/BlockEpilogue2 raw high-low decode is finite and nonzero, but post-override hidden/scale readback is still not exact and final post-dequant still fails the unfused reference. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+Binding constraints remain unchanged:
+
+- Use only `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
+- Do not use or debug public `torch_npu.npu_grouped_matmul`.
+- Official `dispatch_ffn_combine_w4_a8` remains the only W4A8 source of truth.
+- Do not advance to SVDQ down, final combine, or production enablement while Stage 2.2 fails.
+
+Source locations inspected and used:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h`: `InitGMM2OnlyFromPacked` still calls the full official init path and leaves `gmm2OnlyFromPacked_ = false`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp`: full lifecycle `GMM2(params)`, hidden/scale override copy, hidden/scale readback copy, and `CombineV2(params, blockEpilogue2)`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp`: existing `rawDebugOnly` branch reads official `gmC2`, decodes high/low FP16 halves into FP32 with `high * 16 + low`, and writes the existing W4A8_DEBUG `gmGMM2` tap before aux bias, hidden scale, BF16 cast, or peer-output routing.
+
+Files changed for this attempt:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp`
+  - Added `IsFullLifecycleGMM2RawDebug(params)`, enabled only for `450000.0 < swigluLimit < 460000.0`.
+  - Passes that sentinel into the existing `BlockEpilogue2::Params rawDebugOnly` flag in the full official lifecycle.
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+  - Added parsing/reporting for the raw-C2 diagnostic mode.
+  - No Torch schema, adapter ABI, production SVDQ, or public grouped-matmul behavior changed.
+
+Build/install evidence:
+
+- Kernel rebuild: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_rebuild_kernel.log`
+- Packaged install: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_cmake_install_custom_ops.log`
+- Repo-local OPP install: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_install_repo_custom_ops.log`, result `SUCCESS`
+- System OPP install: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_install_system_opp.log`, result `SUCCESS`
+- `libcust_opapi.so` SHA in build, repo-local OPP, and system OPP: `8cfa363941ac96c04904cf4c0b727b9e4f17ae4d17de740283333fa6b043d2d5`
+- `libcust_opmaster_rt2.0.so` SHA in build, repo-local OPP, and system OPP: `3e61b3d074c42bbec446e6cbf159a2af36646af138985cc55bdd938e5f6050e6`
+
+Raw C2 diagnostic probe:
+
+- Command used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, repo-local `ASCEND_CUSTOM_OPP_PATH`, repo-local `libcust_opapi.so`, top-1 expert 0, 64 tokens, `max_output_size=64`, and `--swiglu-limit 454545`.
+- Log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_top1_expert0_max64.log`
+- Summary: `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_raw_c2_top1_expert0_max64.json`
+- Top-level `passed: false` by design because Stage 2.2 is not complete.
+- Source packed hidden remains exact: `exact_match: true`, `mismatch_count: 0`.
+- Post-override packed readback still fails: `mismatch_count: 2743`, first rows `[27, 29, 31, 33, 35, 37, 39]`.
+- Post-override scale readback still fails: `exact_mismatch_count: 2`, indices `[34, 35]`.
+- Gate B raw C2 high/low decode:
+  - finite: `true`
+  - nonzero: `true`
+  - `max_abs: 19.904296875`
+  - `mean_abs: 2.100557327270508`
+  - `nan_count: 0`
+  - `inf_count: 0`
+  - first sample: `[-3.12115478515625, 0.0625152587890625, -0.81787109375, 1.11474609375]`
+- Status-field interpretation:
+  - `official_gmm2_entry_reached: true`
+  - `official_gmm2_aic_raw_output_finite: true`
+  - `official_gmm2_aic_raw_output_nonzero: true`
+  - `official_gmm2_c2v_handoff_verified: true` for the raw-C2 readback boundary
+  - `official_gmm2_aic_reference_passed: false` because an accumulator-level reference comparison is not implemented yet
+  - `official_gmm2_post_dequant_reference_passed: false`
+  - `official_gmm2_numerical_gate_passed: false`
+
+Normal post-dequant regression check after the raw-C2 patch:
+
+- Command used the same top-1 expert-0/max64 shape without the raw sentinel.
+- Log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_post_dequant_top1_expert0_max64_after_raw_c2_patch.log`
+- Summary: `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_post_dequant_top1_expert0_max64_after_raw_c2_patch.json`
+- Top-level `passed: false`.
+- Source packed hidden remains exact: `exact_match: true`, `mismatch_count: 0`.
+- Post-override packed readback still fails: `mismatch_count: 5992`, first rows `[9, 13, 17, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 47]`.
+- Post-override scale readback still fails: `exact_mismatch_count: 12`, indices `[28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]`.
+- Post-dequant active output is finite and nonzero: `max_abs: 0.46528252959251404`, `mean_abs: 0.03993524983525276`, `nan_count: 0`, `inf_count: 0`.
+- Unfused post-dequant reference still fails: `max_abs: 0.552257776260376`, `mean_abs: 0.06802959740161896`.
+
+Current interpretation:
+
+- The official GMM2 AIC/C2V/BlockEpilogue2 raw decode boundary is alive and nonzero in the full official lifecycle.
+- The previous all-zero/raw-unproven hypothesis is superseded.
+- Stage 2.2 remains failed because Gate A after official override/readback is still not exact and Gate C post-dequant still fails the strict reference.
+- Next work should compare the raw-C2 diagnostic against an official accumulator-level reference or add a tile-local raw comparison, then isolate whether the remaining final mismatch is caused by hidden/scale override corruption, aux/scale dequant, row routing, or post-dequant readback.
+
+Validation before commit:
+
+- `git diff --check`: passed.
+- `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
+- `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 pytest -q tests/ut/ops/test_svdq_moe_abi.py::test_svdq_w4a8_gmm2_debug_torch_schema_meta_and_adapter_are_registered`: `1 passed, 16 warnings`.
+
 ## Rebuild Handoff - 2026-06-26T16:25Z
 
 This section is the latest handoff before the environment rebuild. It supersedes the `2026-06-26T15:58Z` section for current state, but the older section remains valid historical evidence.

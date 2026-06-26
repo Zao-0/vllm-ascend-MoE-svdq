@@ -785,6 +785,12 @@ private:
     }
 
     CATLASS_DEVICE
+    bool IsFullLifecycleGMM2RawDebug(Params const &params)
+    {
+        return params.swigluLimit > 450000.0f && params.swigluLimit < 460000.0f;
+    }
+
+    CATLASS_DEVICE
     bool HasExternalGMM2HiddenOverride(Params const &params)
     {
         return params.ptrExternalHiddenX != nullptr && params.ptrExternalHiddenScale != nullptr &&
@@ -1294,7 +1300,8 @@ private:
             static_cast<int32_t>(n2),
             static_cast<int32_t>(L1TileShape::N),
             shmem,
-            static_cast<int32_t>(peermemInfo.offsetD)};
+            static_cast<int32_t>(peermemInfo.offsetD),
+            IsFullLifecycleGMM2RawDebug(params)};
 
         uint32_t n = params.problemShape.n();
         BlockEpilogue2 blockEpilogue2(resource, epilogueParams);

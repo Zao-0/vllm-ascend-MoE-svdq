@@ -226,6 +226,10 @@ def _is_gmm2_loop_stats_debug(swiglu_limit: float) -> bool:
     return 430000.0 < float(swiglu_limit) < 440000.0
 
 
+def _is_gmm2_raw_c2_debug(swiglu_limit: float) -> bool:
+    return 450000.0 < float(swiglu_limit) < 460000.0
+
+
 def _parse_gmm2_loop_stats(tensor: torch.Tensor, *, expert_per_rank: int) -> dict[str, Any]:
     values = tensor.detach().cpu().flatten()[:512].tolist()
     group_count = min(int(values[1]) if len(values) > 1 else 0, int(expert_per_rank), 48)
@@ -379,6 +383,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
     )
 
     loop_stats_debug = _is_gmm2_loop_stats_debug(args.swiglu_limit)
+    raw_c2_debug = _is_gmm2_raw_c2_debug(args.swiglu_limit)
     reference, reference_contract = _official_gmm2_unfused_reference(
         hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
         hidden_x_scale=hidden_x_scale[:active_rows],
@@ -462,6 +467,114 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                 "canonical_hidden_finite": bool(torch.isfinite(mixed["hidden_bf16"].float()).all().item()),
                 "canonical_hidden_nonzero": bool(torch.any(mixed["hidden_bf16"].float().abs() > 0).item()),
                 "official_gmm2_numerical_gate_passed": False,
+            },
+            "passed": False,
+        }
+
+    if raw_c2_debug:
+        hidden_scale_active = hidden_x_scale[:active_rows].detach().cpu()
+        raw_c2_active = gmm2_post_dequant[:active_rows].detach().cpu()
+        raw_c2_stats = _float_stats(raw_c2_active)
+        raw_c2_finite = bool(torch.isfinite(raw_c2_active).all().item())
+        raw_c2_nonzero = bool(torch.any(raw_c2_active.abs() > 0).item())
+        return {
+            "stage": "stage2_modified_hidden_official_w4a8_gmm2_raw_c2",
+            "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback -> aclnnSVDQW4A8GMM2DebugReadback",
+            "mixed_hidden_source_op": "torch.ops._C_ascend.svdq_mixed_epilogue_debug_readback",
+            "official_source_of_truth": (
+                "dispatch_ffn_combine_w4_a8 full lifecycle GMM2 AIC path plus "
+                "BlockEpilogue2 rawDebugOnly C2 high/low decode"
+            ),
+            "public_grouped_matmul_used": False,
+            "real_checkpoint_validation": True,
+            "production_svdq_host_tiling_fail_closed": True,
+            "diagnostic_mode": "full_lifecycle_gmm2_raw_c2_readback",
+            "diagnostic_swiglu_limit": args.swiglu_limit,
+            "layer_index": args.layer,
+            "layer_name": spec.prefix,
+            "residual_checkpoint_key_count": residual_key_count,
+            "routed_experts": routed_experts,
+            "shape": {
+                "num_experts": spec.num_experts,
+                "local_num_experts": local_num_experts,
+                "hidden_size": spec.hidden_size,
+                "intermediate_size": spec.intermediate_size,
+                "num_tokens": args.num_tokens,
+                "top_k": args.top_k,
+                "max_output_size": args.max_output_size,
+                "active_rows": active_rows,
+            },
+            "routing_identity": {
+                "expert_token_nums_shape": list(external_expert_token_nums.shape),
+                "expert_token_nums": external_expert_token_nums.detach().cpu().tolist(),
+                "expert_token_total": int(external_expert_token_nums.detach().cpu().sum().item()),
+                "expert_contiguous_rows": True,
+                "row_source": "mixed epilogue rows are generated in the same expert-contiguous order described by expert_token_nums",
+                "reference_group_counts": reference_contract["group_counts"],
+            },
+            "official_postload": {
+                "loader": "AscendW4A8DynamicFusedMoEMethod.process_weights_after_loading_modelslim",
+                "metadata": _postload_metadata(layer),
+            },
+            "hidden_boundary": {
+                "canonical_hidden_bf16": _float_stats(mixed["hidden_bf16"]),
+                "hidden_int8": _float_stats(mixed["hidden_q"]),
+                "hidden_int4_packed": _float_stats(hidden_x_int4_packed[:active_rows]),
+                "hidden_scale": _float_stats(hidden_scale_active),
+                "hidden_q_packed_exact_reference": packed_exact,
+                "hidden_q_post_override_readback_exact_reference": hidden_x_readback_exact,
+                "hidden_scale_post_override_readback_error": hidden_scale_readback_error,
+                "hidden_scale_post_override_exact_match": hidden_scale_readback_exact,
+                "hidden_q_exact_match_from_stage2_1_probe": None,
+                "hidden_q_packed_exact_match": packed_exact["exact_match"],
+                "hidden_q_packed_mismatch_count": packed_exact["mismatch_count"],
+            },
+            "gmm2": {
+                "raw_c2_high_low_decoded_active": raw_c2_stats,
+                "raw_c2_contract": {
+                    "source_boundary": (
+                        "BlockEpilogue2 reads official gmC2 after GMM2/C2V, casts high/low "
+                        "FP16 halves to FP32, computes high * 16 + low, and writes the "
+                        "existing W4A8_DEBUG gmGMM2 tap before aux bias, hidden scale, "
+                        "BF16 cast, or peer-output routing."
+                    ),
+                    "source_file": (
+                        "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/"
+                        "block_epilogue_w4a8post_pertoken_v2.hpp"
+                    ),
+                    "enabled_by_swiglu_limit_range": [450000.0, 460000.0],
+                },
+                "unfused_reference": {
+                    "enabled": True,
+                    "contract": reference_contract,
+                    "post_dequant_comparison_run": False,
+                    "reason": "raw C2 diagnostic stops before aux/scale/final post-dequant semantics",
+                    "max_abs_tolerance": args.gmm2_reference_max_abs_tol,
+                    "mean_abs_tolerance": args.gmm2_reference_mean_abs_tol,
+                },
+            },
+            "checks": {
+                "official_gmm2_entry_reached": True,
+                "official_gmm2_loop_count": None,
+                "official_gmm2_active_tile_count": None,
+                "official_gmm2_aic_raw_output_finite": raw_c2_finite,
+                "official_gmm2_aic_raw_output_nonzero": raw_c2_nonzero,
+                "official_gmm2_aic_reference_passed": False,
+                "official_gmm2_c2v_handoff_verified": bool(raw_c2_finite and raw_c2_nonzero),
+                "official_gmm2_post_dequant_finite": False,
+                "official_gmm2_post_dequant_nonzero": False,
+                "official_gmm2_post_dequant_reference_passed": False,
+                "official_gmm2_numerical_gate_passed": False,
+                "hidden_packed_exact": packed_exact["exact_match"],
+                "hidden_packed_mismatch_count_zero": packed_exact["mismatch_count"] == 0,
+                "hidden_post_override_readback_exact": (
+                    hidden_x_readback_exact is not None and hidden_x_readback_exact["exact_match"]
+                ),
+                "hidden_scale_post_override_readback_exact": bool(hidden_scale_readback_exact),
+                "hidden_scale_finite": bool(torch.isfinite(hidden_scale_active).all().item()),
+                "hidden_scale_nonzero": bool(torch.any(hidden_scale_active.abs() > 0).item()),
+                "canonical_hidden_finite": bool(torch.isfinite(mixed["hidden_bf16"].float()).all().item()),
+                "canonical_hidden_nonzero": bool(torch.any(mixed["hidden_bf16"].float().abs() > 0).item()),
             },
             "passed": False,
         }
