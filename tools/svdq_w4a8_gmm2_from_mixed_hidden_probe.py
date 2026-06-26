@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -744,6 +745,129 @@ def _official_gmm2_d2_half_reference(
             "Per-half D2 boundary comparator for isolating the official Fixpipe/FP16 rounding contract; "
             "not a substitute GMM2 implementation."
         ),
+    }
+
+
+def _scale_bits_to_fp32(scale: torch.Tensor, *, word: str) -> torch.Tensor:
+    scale_u64 = scale.detach().contiguous().cpu().numpy().astype(np.uint64, copy=False)
+    if word == "low32":
+        scale_u32 = (scale_u64 & np.uint64(0xFFFFFFFF)).astype(np.uint32, copy=False)
+    elif word == "high32":
+        scale_u32 = (scale_u64 >> np.uint64(32)).astype(np.uint32, copy=False)
+    else:
+        raise ValueError(f"unsupported scale word: {word}")
+    scale_fp32 = torch.from_numpy(scale_u32.view(np.float32).copy()).float()
+    if scale_fp32.dim() == 3 and scale_fp32.shape[1] == 1:
+        return scale_fp32[:, 0, :]
+    return scale_fp32
+
+
+def _fp32_to_fp16_mode(values: torch.Tensor, *, mode: str) -> torch.Tensor:
+    values_cpu = values.detach().cpu().float()
+    if mode == "none":
+        return values_cpu
+    if mode == "nearest_even":
+        return values_cpu.to(torch.float16).float()
+
+    values_np = values_cpu.numpy().astype(np.float32, copy=False)
+    rounded = values_np.astype(np.float16)
+    rounded_fp32 = rounded.astype(np.float32)
+    adjusted = rounded.copy()
+    if mode == "toward_zero":
+        mask = np.abs(rounded_fp32) > np.abs(values_np)
+        if np.any(mask):
+            adjusted[mask] = np.nextafter(rounded[mask], np.float16(0.0)).astype(np.float16)
+    elif mode == "floor":
+        mask = rounded_fp32 > values_np
+        if np.any(mask):
+            adjusted[mask] = np.nextafter(rounded[mask], np.float16(-np.inf)).astype(np.float16)
+    elif mode == "ceil":
+        mask = rounded_fp32 < values_np
+        if np.any(mask):
+            adjusted[mask] = np.nextafter(rounded[mask], np.float16(np.inf)).astype(np.float16)
+    else:
+        raise ValueError(f"unsupported fp16 rounding mode: {mode}")
+    return torch.from_numpy(adjusted.astype(np.float32, copy=True)).float()
+
+
+def _official_gmm2_d2_half_variant_diagnostics(
+    *,
+    actual: torch.Tensor,
+    hidden_x_int4_packed: torch.Tensor,
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    expert_token_nums: torch.Tensor,
+    output_columns: int,
+    max_rows: int,
+    half: str,
+    max_abs_tol: float,
+) -> dict[str, Any]:
+    if half not in {"high", "low"}:
+        return {"enabled": False, "reason": f"unsupported D2 half mode: {half}"}
+    x_high, x_low = _packed_i4_hidden_to_parts_variant(
+        hidden_x_int4_packed[:max_rows],
+        half_order="high_low",
+        nibble_order="low_high",
+    )
+    row_count = min(int(x_high.shape[0]), int(x_low.shape[0]), int(max_rows))
+    counts = _clip_group_counts_for_limit(expert_token_nums, row_count)
+    unpacked_weight = _unpack_postloaded_w4_columns_zN(weight, output_columns)
+    scale_variants = {
+        "low32": _scale_bits_to_fp32(weight_scale, word="low32"),
+        "high32": _scale_bits_to_fp32(weight_scale, word="high32"),
+    }
+    rounding_modes = ("nearest_even", "toward_zero", "floor", "ceil", "none")
+
+    variant_reports: dict[str, Any] = {}
+    best_name: str | None = None
+    best_key: tuple[float, float, int] | None = None
+    for scale_name, scale_fp32 in scale_variants.items():
+        for rounding_mode in rounding_modes:
+            outputs: list[torch.Tensor] = []
+            row_start = 0
+            for expert_id, count in enumerate(counts):
+                count = int(count)
+                if count <= 0:
+                    continue
+                row_end = row_start + count
+                weight_e = unpacked_weight[expert_id]
+                if half == "high":
+                    acc = x_high[row_start:row_end].matmul(weight_e)
+                else:
+                    acc = x_low[row_start:row_end].matmul(weight_e)
+                product = acc.float() * scale_fp32[expert_id].reshape(1, -1)
+                outputs.append(_fp32_to_fp16_mode(product, mode=rounding_mode))
+                row_start = row_end
+            reference = torch.cat(outputs, dim=0) if outputs else torch.empty((0, output_columns), dtype=torch.float32)
+            actual_slice = actual[: reference.shape[0], : reference.shape[1]]
+            error = _tensor_error(actual_slice, reference)
+            error.update(_threshold_error_counts(actual_slice, reference, max_abs_tol=max_abs_tol))
+            name = f"scale_{scale_name}_fp16_{rounding_mode}"
+            variant_reports[name] = {
+                "scale_word": scale_name,
+                "fp16_rounding_mode": rounding_mode,
+                "error": error,
+            }
+            key = (
+                float(error["max_abs"]),
+                float(error["mean_abs"]),
+                int(error["failed_element_count_abs_gt_tolerance"]),
+            )
+            if best_key is None or key < best_key:
+                best_key = key
+                best_name = name
+
+    return {
+        "enabled": True,
+        "diagnostic_only": (
+            "Compares the official D2 half readback against narrow Fixpipe scale-word and FP16 rounding "
+            "candidates. This does not alter the strict gate or replace the official kernel path."
+        ),
+        "half": half,
+        "group_counts": counts,
+        "best_variant": best_name,
+        "best_key": list(best_key) if best_key is not None else None,
+        "variants": variant_reports,
     }
 
 
@@ -1484,6 +1608,23 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             and raw_c2_error["max_abs"] <= args.gmm2_raw_c2_reference_max_abs_tol
             and raw_c2_error["mean_abs"] <= args.gmm2_raw_c2_reference_mean_abs_tol
         )
+        if raw_debug_mode in {"d2_high_half", "d2_low_half"}:
+            raw_c2_d2_half_variant_diagnostics = _official_gmm2_d2_half_variant_diagnostics(
+                actual=raw_actual,
+                hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
+                weight=layer.w2_weight,
+                weight_scale=layer.w2_weight_scale,
+                expert_token_nums=external_expert_token_nums,
+                output_columns=spec.hidden_size,
+                max_rows=args.gmm2_reference_max_rows,
+                half="high" if raw_debug_mode == "d2_high_half" else "low",
+                max_abs_tol=args.gmm2_raw_c2_reference_max_abs_tol,
+            )
+        else:
+            raw_c2_d2_half_variant_diagnostics = {
+                "enabled": False,
+                "reason": "D2 half variant diagnostics require raw debug mode d2_high_half or d2_low_half",
+            }
         hidden_row_exact_mask = None
         hidden_readback_raw_reference = None
         hidden_readback_raw_reference_passed = None
@@ -1695,6 +1836,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                     "contract": raw_reference_contract,
                     "error": raw_c2_error,
                     "residual_distribution": _residual_distribution_diagnostics(raw_actual, raw_reference),
+                    "d2_half_variant_diagnostics": raw_c2_d2_half_variant_diagnostics,
                     "max_abs_tolerance": args.gmm2_raw_c2_reference_max_abs_tol,
                     "mean_abs_tolerance": args.gmm2_raw_c2_reference_mean_abs_tol,
                     "diagnostic_only": (

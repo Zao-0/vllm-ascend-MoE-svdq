@@ -1,8 +1,108 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
-## Stage 2.2 D2 Half Boundary Diagnostic - 2026-06-26T21:10Z
+## Stage 2.2 D2 Half Rounding/Scale Variant Diagnostic - 2026-06-26T21:35Z
 
 This section is the latest Stage 2.2 status. Older sections are historical evidence unless explicitly
+referenced here.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Current Stage 2.2 top-1 runs still use the validated packed hidden INT4 and hidden-scale boundary. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | D2 high/low halves remain finite and nonzero but fail strict Gate B. New variant diagnostics reject high32 scale-word interpretation and common FP16 rounding modes as sufficient explanations. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 modified-hidden official W4A8 GMM2 numerical gates. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+This attempt is host-probe/report work only. It does not modify device kernel code, synchronization, GMM2
+lifecycle, packed-weight access, public grouped matmul usage, tolerance values, or production SVDQ host
+tiling. It adds diagnostic-only comparisons against narrow Fixpipe candidate contracts while keeping the
+strict Gate B pass/fail comparator unchanged.
+
+Files changed:
+
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+  - Added D2 half variant diagnostics for:
+    - W2 scale low 32-bit FP32 interpretation;
+    - W2 scale high 32-bit FP32 interpretation;
+    - FP16 nearest-even, toward-zero, floor, ceil, and no-FP16-rounding candidates.
+  - The existing `raw_c2_unfused_reference.passed` gate remains unchanged.
+
+Official source locations inspected:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_mmad_w4a4.hpp:440` through `:459`:
+  official GMM2 copies the per-channel scale into the Fixpipe buffer and calls `copyL0CToGm(...)`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp:196`
+  and `:198`: `BlockEpilogue2` casts the official FP16 D2 high/low halves back to FP32.
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py` now records `d2_half_variant_diagnostics` under
+  `raw_c2_unfused_reference`.
+
+High D2 half variant probe:
+
+- Sentinel: `--swiglu-limit 451111`
+- NPU preflight log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_d2_high_half_rounding_variants_npu_smi.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_d2_high_half_rounding_variants_top1_expert0_max64.log`
+- Summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_d2_high_half_rounding_variants_top1_expert0_max64.json`
+- Probe exit: `1`, expected because strict comparator failed.
+- Strict Gate B comparator remains failed:
+  - `max_abs: 0.0009765625`
+  - `mean_abs: 0.00004492711741477251`
+  - failed elements over strict abs tolerance: `9010`
+  - NaN/Inf counts: `0`
+- Best variant by `(max_abs, mean_abs, failed_count)`:
+  - `scale_low32_fp16_none`
+  - key `[0.0009606480598449707, 0.000049416819820180535, 4087]`
+- Best mean-error variant:
+  - `scale_low32_fp16_toward_zero`
+  - `max_abs: 0.0009765625`, `mean_abs: 0.000023340806365013123`, failed count `4840`
+- High32 scale variants are rejected: best high32 rows have `max_abs: 1.2626953125`,
+  `mean_abs: 0.1390603929758072`, failed count `130042`.
+
+Low D2 half variant probe:
+
+- Sentinel: `--swiglu-limit 453333`
+- NPU preflight log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_d2_low_half_rounding_variants_npu_smi.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_d2_low_half_rounding_variants_top1_expert0_max64.log`
+- Summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_d2_low_half_rounding_variants_top1_expert0_max64.json`
+- Probe exit: `1`, expected because strict comparator failed.
+- Strict Gate B comparator remains failed:
+  - `max_abs: 0.001953125`
+  - `mean_abs: 0.00014362166984938085`
+  - failed elements over strict abs tolerance: `38381`
+  - NaN/Inf counts: `0`
+- Best variant:
+  - `scale_low32_fp16_toward_zero`
+  - key `[0.001953125, 0.00007615549839101732, 20533]`
+- High32 scale variants are rejected: best high32 rows have `max_abs: 3.37109375`,
+  `mean_abs: 0.4442445635795593`, failed count `130747`.
+
+Current conclusion:
+
+- Low32 scale-word interpretation remains the only plausible scale-bit interpretation among the tested
+  official packed scale words.
+- Simple FP16 rounding-mode substitution improves some mean-error metrics but does not close max error or
+  strict failed-element count for either half.
+- Gate B remains failed. Gate C remains blocked until the official D2 half/Fixpipe contract is matched.
+- The next useful diagnostic is lower than the current D2 half readback: expose or otherwise prove the exact
+  official accumulator-to-Fixpipe dequant behavior or the concrete `CopyL0CToGm`/Fixpipe configuration used
+  by the CATLASS tile copy, without changing the official GMM2 lifecycle.
+
+Validation before this report update:
+
+- `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
+- `git diff --check`: passed.
+- Four-visible-NPU high-half and low-half rounding/scale variant probes completed and wrote summaries, both
+  with expected nonzero exits because `passed: false`.
+
+## Stage 2.2 D2 Half Boundary Diagnostic - 2026-06-26T21:10Z
+
+This section is historical evidence. The `2026-06-26T21:35Z` section above supersedes it for current
+status. Older sections are historical evidence unless explicitly
 referenced here. It incorporates the binding requirements from
 `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md`.
 
