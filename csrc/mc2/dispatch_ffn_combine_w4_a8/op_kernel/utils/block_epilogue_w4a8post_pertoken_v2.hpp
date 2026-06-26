@@ -55,12 +55,13 @@ public:
         int32_t rank;
         HcclShmem shmem;
         int32_t offsetD;
+        bool rawDebugOnly{false};
 
         CATLASS_DEVICE
         Params(){};
         CATLASS_DEVICE
         Params(int32_t EP_, int32_t expertPerRank_, int32_t rank_, __gm__ int32_t *ptrTokenPerExpert_, LayoutC layoutC_,
-               int32_t n2_, int32_t n0_, HcclShmem &shmem_, int32_t offsetD_)
+               int32_t n2_, int32_t n0_, HcclShmem &shmem_, int32_t offsetD_, bool rawDebugOnly_ = false)
             : ptrTokenPerExpert(ptrTokenPerExpert_),
               EP(EP_),
               expertPerRank(expertPerRank_),
@@ -69,7 +70,8 @@ public:
               n2(n2_),
               n0(n0_),
               shmem(shmem_),
-              offsetD(offsetD_)
+              offsetD(offsetD_),
+              rawDebugOnly(rawDebugOnly_)
         {
         }
     };
@@ -195,6 +197,18 @@ public:
         AscendC::Muls(ubFp32, ubFp32, DEFAULT_MUL_SCALE, actualBlockShape.m() * actualBlockShape.n() / 2);
         PipeBarrier<PIPE_V>();
         AscendC::Add(ubFp32, ubFp32, ubFp32L, actualBlockShape.m() * actualBlockShape.n() / 2);
+        if (params.rawDebugOnly) {
+            AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(eventUbTileWMTE2VList[ubListId]);
+            AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(eventUbTileCVMTE2List[ubListId]);
+#ifdef W4A8_DEBUG
+            AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID7);
+            AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID7);
+            copyUbToGmGMM2(gmTileGMM2, ubFp32, layoutGM, layoutUB);
+            AscendC::SetFlag<AscendC::HardEvent::MTE3_V>(EVENT_ID7);
+#endif
+            ubListId = (ubListId + 1 < UB_STAGES) ? (ubListId + 1) : 0;
+            return;
+        }
         // Add W4A8 auxiliary matrix on UB
         PipeBarrier<PIPE_V>();
         AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(eventUbTileWMTE2VList[ubListId]);

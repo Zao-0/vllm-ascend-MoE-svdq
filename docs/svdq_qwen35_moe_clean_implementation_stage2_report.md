@@ -684,3 +684,93 @@ Git/worktree state for this handoff:
   - `csrc/build_out/`
   - `extra-info/`
 - Generated custom-op install mirrors under `vllm_ascend/_cann_ops_custom` were refreshed for validation but are not intended to be committed.
+
+## Current Handoff State - 2026-06-26T11:00Z
+
+Status: IN PROGRESS. Stage 2.2 remains open.
+
+Purpose of this handoff:
+
+- The environment is expected to be rebuilt, so this section records the current source state, evidence, and unresolved diagnostic boundary.
+- This is not a Stage 2.2 pass. The new raw-C2 path has build evidence only; it has not yet been installed or launched as a real-device numerical gate.
+
+Authoritative constraints still in force:
+
+- `svdq_qwen35_moe_clean_implementation_stage2_prompt.md` was read and remains the active working prompt.
+- The unresolved boundary remains: SVDQ-modified canonical BF16 hidden -> official hidden quant/pack -> official W4A8 GMM2 AIC -> official AIV dequant/readback.
+- Production `DispatchFFNCombineW4A8SVDQ` host tiling remains fail-closed.
+- Public `torch_npu.npu_grouped_matmul` was not modified, debugged, or used.
+- The packed hidden INT4 exact-match gate remains accepted and should not be reopened as a packing/scale issue without new contradictory real-device evidence.
+
+Official full-W4A8 control evidence:
+
+- Command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH} python tools/svdq_w4a8_debug_readback_real_checkpoint_probe.py --require-npu --summary-name phase_stage2_control_full_w4a8_debug_after_aiv_producer.json`
+- Result: pass, `passed: true`.
+- Evidence:
+  - Log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_control_full_w4a8_debug_after_aiv_producer.log`
+  - Summary: `/root/workspace/lza/svdq_clean_evidence/phase_stage2_control_full_w4a8_debug_after_aiv_producer.json`
+- Interpretation:
+  - The installed full official W4A8 debug path, including official GMM2 and post-dequant readback, is healthy.
+  - The remaining all-zero failure is isolated to the GMM2-only path from SVDQ-modified hidden, not to the official full W4A8 kernel generally.
+
+Files changed in this handoff:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp`
+  - Added `BlockEpilogue2::Params::rawDebugOnly`.
+  - Added a debug-only branch in `BlockEpilogue2::operator()` after the official high/low C2 accumulator combination (`high * 16 + low`) and before hidden-scale/weight-aux dequantization.
+  - In raw mode, the combined raw C2 accumulator is copied to the existing `gmm2PostDequant` debug GM output under `W4A8_DEBUG`, then the epilogue tile returns without applying hidden scale, auxiliary weight, or BF16 final output conversion.
+  - The branch waits/releases the already-issued weight-aux MTE2 event before returning so the UB slot lifecycle is not left with a pending event.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp`
+  - The isolated `GMM2OnlyDequantReadback` path passes `rawDebugOnly = true` only when `swigluLimit` is in the sentinel range `(400000, 500000)`.
+  - The intended probe switch is `--swiglu-limit 424242`.
+  - Normal probes keep the existing post-dequant path because their default `swigluLimit` is outside the sentinel range.
+
+Why this diagnostic exists:
+
+- The previous Stage 2.2 real-device probe still returned all-zero GMM2 post-dequant output despite healthy canonical hidden, exact packed hidden INT4, nonzero hidden scale, op registration, and kernel launch.
+- The raw-C2 branch is designed to distinguish:
+  - nonzero raw C2 with zero post-dequant: AIC produced data and the remaining issue is in AIV dequant/scale/readback;
+  - zero raw C2: the isolated GMM2-only AIC producer did not write the expected C2 data or the AIV readback is pointed at the wrong region.
+- This diagnostic directly reuses the official W4A8 `BlockEpilogue2` entry and official C2 accumulator combine location. It is not a public grouped-matmul experiment, scalar substitute, or alternative dequant formula.
+
+Focused build evidence for the raw-C2 diagnostic:
+
+- Command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 cmake --build csrc/build --target svdqw4_a8_gmm2_debug_readback_ascend910b -- -B -j1`
+- Result: pass, `[100%] Built target svdqw4_a8_gmm2_debug_readback_ascend910b`.
+- Evidence:
+  - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_debug_kernel_build_raw_c2_probe.log`
+- Scope:
+  - This proves the raw-C2 diagnostic branch compiles through the focused AscendC generated-kernel target.
+  - It does not prove numerical correctness and does not close Stage 2.2 because the rebuilt op was not installed/launched after this patch before the environment rebuild handoff.
+
+Next action after environment rebuild:
+
+1. Re-establish the four-NPU boundary with `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
+2. Rebuild/install the raw-C2 patched GMM2 debug op through the supported flow:
+   - `cmake --build csrc/build --target ops_aclnn -- -B -j1`
+   - `cmake --build csrc/build --target cust_opapi -- -B -j1`
+   - `/usr/local/python3.12.13/bin/python3.12 csrc/cmake/scripts/util/ascendc_ops_config.py -p csrc/build/binary/ascend910b/bin -s ascend910b`
+   - `cmake --install csrc/build --prefix /tmp/svdq_install_gmm2_debug_raw_c2_probe`
+   - install to both repo-local custom OPP and system OPP as in the prior successful Stage 2.2 install flow.
+3. Rebuild/install the in-place Python extension if adapter or linked op API freshness is uncertain.
+4. Run the raw-C2 sentinel probe:
+   `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH} python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py --require-npu --swiglu-limit 424242 --summary-name phase_stage2_gmm2_raw_c2_probe.json`
+5. Inspect `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_raw_c2_probe.json`, especially `stage.gmm2.post_dequant_active.nonzero`, `max_abs`, and `mean_abs`.
+6. Run the normal probe again without the sentinel after the raw-C2 result to verify the ordinary post-dequant path has not regressed.
+
+Git/worktree state for this handoff:
+
+- Repo: `/root/workspace/lza/vllm-ascend`
+- Branch: `codex/svdq-lowrank-l0-reuse-debug`
+- Origin: `git@github.com:Zao-0/vllm-ascend-MoE-svdq.git`
+- Previous pushed commit before this diagnostic: `906fcd4ca2f74b398a8aeb1a5606572c112cfd90` (`Record Stage 2.2 AIV producer handoff`).
+- Intended committed files for this handoff:
+  - `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp`
+  - `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp`
+  - `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+- Pre-existing dirty/untracked paths still intentionally left out:
+  - `csrc/utils/inc/kernel/moe_distribute_base.h`
+  - `csrc/build_out/`
+  - `extra-info/`

@@ -846,7 +846,8 @@ private:
             static_cast<int32_t>(n2),
             static_cast<int32_t>(L1TileShape::N),
             shmem,
-            static_cast<int32_t>(peermemInfo.offsetD)};
+            static_cast<int32_t>(peermemInfo.offsetD),
+            params.swigluLimit > 400000.0f && params.swigluLimit < 500000.0f};
 
         BlockEpilogue2 blockEpilogue2(resource, epilogueParams);
         if (coreIdx == 0) {
