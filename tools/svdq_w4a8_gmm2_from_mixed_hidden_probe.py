@@ -213,6 +213,51 @@ def _tensor_float_exact_locations(actual: torch.Tensor, expected: torch.Tensor) 
     }
 
 
+def _fp16_bit_distance_diagnostics(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, Any]:
+    actual_fp16 = actual.detach().cpu().float().numpy().astype(np.float16, copy=False)
+    expected_fp16 = expected.detach().cpu().float().numpy().astype(np.float16, copy=False)
+    actual_bits = actual_fp16.view(np.uint16)
+    expected_bits = expected_fp16.view(np.uint16)
+    equal = actual_bits == expected_bits
+
+    def _ordered(bits: np.ndarray) -> np.ndarray:
+        bits_u32 = bits.astype(np.uint32, copy=False)
+        sign = bits_u32 & np.uint32(0x8000)
+        return np.where(sign != 0, np.uint32(0x8000) - bits_u32, bits_u32 + np.uint32(0x8000)).astype(
+            np.int32,
+            copy=False,
+        )
+
+    ulp = np.abs(_ordered(actual_bits).astype(np.int32) - _ordered(expected_bits).astype(np.int32))
+    finite = np.isfinite(actual_fp16.astype(np.float32)) & np.isfinite(expected_fp16.astype(np.float32))
+    mismatch_indices = np.argwhere(~equal)
+    first_mismatches: list[dict[str, Any]] = []
+    for coord in mismatch_indices[:16]:
+        index = tuple(int(v) for v in coord.tolist())
+        first_mismatches.append(
+            {
+                "index": list(index),
+                "actual_fp16_bits": int(actual_bits[index]),
+                "expected_fp16_bits": int(expected_bits[index]),
+                "actual": float(actual_fp16[index]),
+                "expected": float(expected_fp16[index]),
+                "ulp_abs": int(ulp[index]),
+            }
+        )
+    return {
+        "fp16_bit_exact_match_count": int(equal.sum()),
+        "fp16_bit_mismatch_count": int((~equal).sum()),
+        "fp16_bit_total_count": int(equal.size),
+        "fp16_bit_exact_match_ratio": float(equal.mean()) if equal.size else 1.0,
+        "fp16_ulp_max_abs": int(ulp.max()) if ulp.size else 0,
+        "fp16_ulp_mean_abs": float(ulp.mean()) if ulp.size else 0.0,
+        "fp16_ulp_gt_1_count": int((ulp > 1).sum()),
+        "fp16_ulp_gt_2_count": int((ulp > 2).sum()),
+        "fp16_finite_pair_count": int(finite.sum()),
+        "fp16_bit_mismatch_first16": first_mismatches,
+    }
+
+
 def _threshold_error_counts(
     actual: torch.Tensor,
     expected: torch.Tensor,
@@ -842,6 +887,7 @@ def _official_gmm2_d2_half_variant_diagnostics(
             actual_slice = actual[: reference.shape[0], : reference.shape[1]]
             error = _tensor_error(actual_slice, reference)
             error.update(_threshold_error_counts(actual_slice, reference, max_abs_tol=max_abs_tol))
+            error.update(_fp16_bit_distance_diagnostics(actual_slice, reference))
             name = f"scale_{scale_name}_fp16_{rounding_mode}"
             variant_reports[name] = {
                 "scale_word": scale_name,
@@ -1644,6 +1690,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                 max_abs_tol=args.gmm2_raw_c2_reference_max_abs_tol,
             )
         )
+        raw_c2_error.update(_fp16_bit_distance_diagnostics(raw_actual, raw_reference))
         raw_c2_reference_passed = (
             raw_c2_error["actual_finite"]
             and raw_c2_error["expected_finite"]
@@ -1718,6 +1765,9 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                     hidden_readback_raw_reference,
                     max_abs_tol=args.gmm2_raw_c2_reference_max_abs_tol,
                 )
+            )
+            hidden_readback_raw_error.update(
+                _fp16_bit_distance_diagnostics(hidden_readback_raw_actual, hidden_readback_raw_reference)
             )
             hidden_readback_raw_reference_passed = (
                 hidden_readback_raw_error["actual_finite"]

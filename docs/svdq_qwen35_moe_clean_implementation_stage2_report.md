@@ -104,6 +104,49 @@ Post-handoff real-device rerun:
   - `hidden_post_override_readback_exact: true`
   - `hidden_scale_post_override_readback_exact: true`
 
+True top-k=1 FP16 ULP diagnostic:
+
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py` now adds diagnostic-only FP16 bit/ULP fields to the
+  strict raw-C2 D2 half comparator, hidden-readback comparator, and D2 half rounding/scale variants.
+  Gate logic and tolerances are unchanged.
+- The previous `phase_stage2_gmm2_fixpipe_contract_high_half_top1_expert0_max64.json` filename was
+  misleading: the summary proves it used default `top_k: 8` and routed experts `[0,1,2,3,4,5,6,7]`.
+  New evidence below uses real `--top-k 1 --route-experts 0 --local-num-experts 8`.
+- High half command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH} python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py --require-npu --top-k 1 --route-experts 0 --local-num-experts 8 --swiglu-limit 451111 --summary-name phase_stage2_gmm2_d2_high_half_fp16_ulp_true_top1_expert0.json`
+  - NPU preflight:
+    `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_d2_high_half_fp16_ulp_true_top1_expert0_npu_smi.log`
+  - Probe log:
+    `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_d2_high_half_fp16_ulp_true_top1_expert0.log`
+  - Summary:
+    `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_d2_high_half_fp16_ulp_true_top1_expert0.json`
+  - Strict comparator: `max_abs: 0.0009765625`, `mean_abs: 0.00004444917431101203`,
+    failed elements `2227`, FP16 exact ratio `0.531585693359375`, max ULP `2`, ULP > 1 count `259`.
+  - Best variant: `scale_low32_fp16_toward_zero`, key `[0.00048828125, 0.000022813444957137108, 1136]`,
+    FP16 exact ratio `0.7774658203125`, max ULP `2`, ULP > 1 count `6`.
+- Low half command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH} python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py --require-npu --top-k 1 --route-experts 0 --local-num-experts 8 --swiglu-limit 453333 --summary-name phase_stage2_gmm2_d2_low_half_fp16_ulp_true_top1_expert0.json`
+  - NPU preflight:
+    `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_d2_low_half_fp16_ulp_true_top1_expert0_npu_smi.log`
+  - Probe log:
+    `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_d2_low_half_fp16_ulp_true_top1_expert0.log`
+  - Summary:
+    `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_d2_low_half_fp16_ulp_true_top1_expert0.json`
+  - Strict comparator: `max_abs: 0.001953125`, `mean_abs: 0.00014361337525770068`,
+    failed elements `9569`, FP16 exact ratio `0.531768798828125`, max ULP `2`, ULP > 1 count `288`.
+  - Best variant: `scale_low32_fp16_toward_zero`, key `[0.001953125, 0.00007748615462332964, 5221]`,
+    FP16 exact ratio `0.755615234375`, max ULP `2`, ULP > 1 count `7`.
+
+Conclusion from this diagnostic:
+
+- The true single-expert case still fails, so the failure is not caused by the earlier top-k=8 grouping.
+- Low32 scale plus toward-zero FP16 conversion is the closest tested host approximation for both D2 halves,
+  but it is not exact and does not pass strict Gate B.
+- The next useful boundary is below host rounding-mode substitution: expose/prove the official L0C
+  accumulator before `SetFixPipeConfig<uint64_t, false>` / `VDEQF16`, or reproduce the exact hardware
+  vector dequantization semantics in a dedicated isolated diagnostic. Do not relax tolerance or enable
+  production on this evidence.
+
 Validation before this report update:
 
 - `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
@@ -112,6 +155,12 @@ Validation before this report update:
   because the strict comparator remains failed.
 - `git diff --check -- docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`: passed after adding the
   post-handoff rerun evidence.
+- `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed after adding FP16 ULP
+  diagnostics.
+- `git diff --check -- tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed after adding FP16 ULP
+  diagnostics.
+- True top-k=1 high-half and low-half ULP real-device probes completed and wrote the summaries listed above;
+  both exited `1` as expected because strict Gate B remains failed.
 
 ## Stage 2.2 D2 Half Rounding/Scale Variant Diagnostic - 2026-06-26T21:35Z
 
