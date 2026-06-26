@@ -1,8 +1,135 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## External Hidden Override Pre-Barrier Diagnostic - 2026-06-26T18:34Z
+
+This section is the latest Stage 2.2 status. Older sections are historical evidence unless explicitly
+referenced here.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Source packed hidden exact-match and post-override readback both report mismatch count 0 after the pre-barrier patch. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | The external debug override handoff is now deterministic, and raw C2 is finite/nonzero, but strict raw-C2 parity against the unfused reference still fails. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 raw-C2 parity. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+Binding constraints remain unchanged:
+
+- Use only `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
+- Do not use or debug public `torch_npu.npu_grouped_matmul`.
+- Official `dispatch_ffn_combine_w4_a8` remains the only W4A8 source of truth.
+- Do not advance to SVDQ down, final combine, or production enablement while Stage 2.2 fails.
+
+Appendix `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` remains binding.
+The change below preserves the official full-lifecycle GMM2 path and only fixes the external debug
+hidden/scale replacement boundary.
+
+Files changed for this attempt:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp`
+  - Added `AscendC::SyncAll<true>()` inside `HasExternalGMM2HiddenOverride(params)` before core 0 copies
+    external packed hidden and external hidden scale into the official `gmA2I4_I8` and `gmPerTokenScale2`
+    buffers.
+  - The existing post-copy `SyncAll<true>()` remains in place before the official `SYNCFLAGV2C` handoff
+    to GMM2.
+  - The ordinary official W4A8 path is unchanged because the new barrier is only entered when an
+    external GMM2 hidden override is supplied.
+
+Official source locations used to justify the patch:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_swiglu.hpp:184-206`:
+  `BlockEpilogue1` distributes epilogue rows across AIV cores; each core may return at a different time.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_swiglu.hpp:388`
+  and `:412`: AIV cores write the high and low packed hidden halves into `gmA2I4_I8`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_swiglu.hpp:422`:
+  AIV cores write `gmPerTokenScale2`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1326-1330`:
+  the official full-lifecycle path calls `BlockEpilogue1`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1332-1345`:
+  the debug override now waits for all AIV cores before core 0 replaces packed hidden and scale.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1348-1350`:
+  the existing post-copy barrier still precedes the official GMM2 notify flag.
+
+Build/install evidence:
+
+- Focused debug kernel rebuild:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_override_prebarrier_build_kernel.log`
+- `ops_aclnn` rebuild:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_override_prebarrier_build_ops_aclnn.log`
+- `cust_opapi` rebuild:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_override_prebarrier_build_cust_opapi.log`
+- Ascend custom-op config generation:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_override_prebarrier_ops_config.log`
+- Staged package install:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_override_prebarrier_cmake_install.log`
+- Repo-local custom OPP install:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_override_prebarrier_install_repo_custom_ops.log`,
+  result `SUCCESS`.
+- System OPP install:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_override_prebarrier_install_system_opp.log`,
+  result `SUCCESS`.
+- Installed `libcust_opapi.so` checksum in repo-local and system OPP locations:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_override_prebarrier_installed_opapi_sha.log`,
+  SHA256 `8cfa363941ac96c04904cf4c0b727b9e4f17ae4d17de740283333fa6b043d2d5`.
+
+Raw-C2 override pre-barrier probe:
+
+- Command used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, repo-local `ASCEND_CUSTOM_OPP_PATH`,
+  repo-local `libcust_opapi.so`, top-1 expert 0, 64 tokens, `max_output_size=64`, and
+  `--swiglu-limit 454545`.
+- Preflight `npu-smi info` showed physical NPUs 0-3 as 910B4 with no running NPU processes.
+- NPU preflight log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_override_prebarrier_npu_smi.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_override_prebarrier_top1_expert0_max64.log`
+- Summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_raw_c2_override_prebarrier_top1_expert0_max64.json`
+- Top-level `passed: false`; Stage 2.2 remains failed.
+- `production_svdq_host_tiling_fail_closed: true`.
+- Source packed hidden exact-match remains zero mismatch.
+- Post-override packed hidden readback now matches exactly:
+  `hidden_q_post_override_readback_exact_reference.mismatch_count: 0`.
+- Post-override hidden scale readback now matches exactly:
+  `hidden_scale_post_override_readback_error.exact_mismatch_count: 0`,
+  `max_abs: 0.0`.
+- `official_gmm2_aic_raw_output_nonzero: true`.
+- `official_gmm2_post_dequant_nonzero: false` in the raw-C2 sentinel run.
+- Best layout variant by mean absolute error remains `official_high_low_low_high_nibbles`.
+- Raw-C2 unfused reference error still fails:
+  - `max_abs: 23.6250057220459`
+  - `mean_abs: 3.0852577686309814`
+- Readback-hidden raw-C2 reference error is identical:
+  - `max_abs: 23.6250057220459`
+  - `mean_abs: 3.0852577686309814`
+- Hidden readback mismatched row count is now `0`.
+
+Conclusion:
+
+- The previous post-override hidden/scale corruption was a real debug-boundary race: core 0 could copy
+  external packed hidden and scale before other AIV cores finished the official `BlockEpilogue1` writes.
+- The added pre-override AIV barrier fixes that boundary without changing official no-override W4A8
+  behavior.
+- This does not close Stage 2.2. The current blocker has moved to official-path raw-C2 parity for
+  modified hidden after the override data are confirmed exact.
+- Stage 2.3 SVDQ BF16 projections, mixed AIV epilogues, SwiGLU, hidden quantization, and production
+  host tiling remain blocked.
+
+Validation before this report update:
+
+- Focused kernel build: passed.
+- `ops_aclnn` build: passed.
+- `cust_opapi` build: passed.
+- Repo-local and system OPP installs: passed.
+- Four-NPU raw-C2 probe: ran on `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, wrote summary, and correctly
+  reported Stage 2.2 `passed: false`.
+- `git diff --check`: passed.
+- Focused ABI/schema test:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 pytest -q tests/ut/ops/test_svdq_moe_abi.py::test_svdq_w4a8_gmm2_debug_torch_schema_meta_and_adapter_are_registered`,
+  result `1 passed, 16 warnings`.
+
 ## Raw C2 Layout Variant Diagnostic - 2026-06-26T18:03Z
 
-This section is the latest Stage 2.2 status. Older sections are historical evidence unless explicitly referenced here.
+This section is historical evidence. The `2026-06-26T18:34Z` section above supersedes it for current status.
 
 | Item | Status | Evidence / blocker |
 |---|---|---|
