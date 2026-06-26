@@ -170,6 +170,45 @@ def _pad_hidden_boundary(
     return packed, scale
 
 
+def _is_gmm2_loop_stats_debug(swiglu_limit: float) -> bool:
+    return 430000.0 < float(swiglu_limit) < 440000.0
+
+
+def _parse_gmm2_loop_stats(tensor: torch.Tensor, *, expert_per_rank: int) -> dict[str, Any]:
+    values = tensor.detach().cpu().flatten()[:256].tolist()
+    group_count = min(int(values[1]) if len(values) > 1 else 0, int(expert_per_rank), 48)
+    groups = []
+    for group_idx in range(group_count):
+        base = 16 + group_idx * 5
+        groups.append(
+            {
+                "group_idx": group_idx,
+                "raw_current_m": int(values[base + 0]),
+                "clipped_current_m": int(values[base + 1]),
+                "doubled_current_m": int(values[base + 2]),
+                "core_loops": int(values[base + 3]),
+                "pre_current_m_sum": int(values[base + 4]),
+            }
+        )
+    return {
+        "enabled": True,
+        "magic": float(values[0]) if values else 0.0,
+        "expert_per_rank": int(values[1]) if len(values) > 1 else 0,
+        "max_output_size": int(values[2]) if len(values) > 2 else 0,
+        "total_active_rows": int(values[3]) if len(values) > 3 else 0,
+        "total_doubled_rows": int(values[4]) if len(values) > 4 else 0,
+        "total_core_loops": int(values[5]) if len(values) > 5 else 0,
+        "groups_with_work": int(values[6]) if len(values) > 6 else 0,
+        "final_pre_current_m_sum": int(values[7]) if len(values) > 7 else 0,
+        "n2": int(values[8]) if len(values) > 8 else 0,
+        "k2": int(values[9]) if len(values) > 9 else 0,
+        "core_num": int(values[10]) if len(values) > 10 else 0,
+        "groups": groups,
+        "valid_magic": bool(values and abs(float(values[0]) - 434343.0) < 0.5),
+        "active_tile_count_nonzero": bool(len(values) > 5 and int(values[5]) > 0),
+    }
+
+
 def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
     device = torch.device(f"npu:{args.device_id}")
     routed_experts = _routed_experts(args)
@@ -243,6 +282,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
     )
     torch.npu.synchronize()
 
+    loop_stats_debug = _is_gmm2_loop_stats_debug(args.swiglu_limit)
     reference, reference_contract = _official_gmm2_unfused_reference(
         hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
         hidden_x_scale=hidden_x_scale[:active_rows],
@@ -253,6 +293,80 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         output_columns=spec.hidden_size,
         max_rows=args.gmm2_reference_max_rows,
     )
+    if loop_stats_debug:
+        hidden_scale_active = hidden_x_scale[:active_rows].detach().cpu()
+        loop_stats = _parse_gmm2_loop_stats(gmm2_post_dequant, expert_per_rank=local_num_experts)
+        return {
+            "stage": "stage2_modified_hidden_official_w4a8_gmm2_loop_stats",
+            "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback -> aclnnSVDQW4A8GMM2DebugReadback",
+            "mixed_hidden_source_op": "torch.ops._C_ascend.svdq_mixed_epilogue_debug_readback",
+            "official_source_of_truth": "dispatch_ffn_combine_w4_a8 GMM2 AIC scheduling path",
+            "public_grouped_matmul_used": False,
+            "real_checkpoint_validation": True,
+            "production_svdq_host_tiling_fail_closed": True,
+            "diagnostic_mode": "gmm2_loop_stats_only",
+            "diagnostic_swiglu_limit": args.swiglu_limit,
+            "layer_index": args.layer,
+            "layer_name": spec.prefix,
+            "residual_checkpoint_key_count": residual_key_count,
+            "routed_experts": routed_experts,
+            "shape": {
+                "num_experts": spec.num_experts,
+                "local_num_experts": local_num_experts,
+                "hidden_size": spec.hidden_size,
+                "intermediate_size": spec.intermediate_size,
+                "num_tokens": args.num_tokens,
+                "top_k": args.top_k,
+                "max_output_size": args.max_output_size,
+                "active_rows": active_rows,
+            },
+            "routing_identity": {
+                "expert_token_nums_shape": list(external_expert_token_nums.shape),
+                "expert_token_nums": external_expert_token_nums.detach().cpu().tolist(),
+                "expert_token_total": int(external_expert_token_nums.detach().cpu().sum().item()),
+                "expert_contiguous_rows": True,
+                "row_source": "mixed epilogue rows are generated in the same expert-contiguous order described by expert_token_nums",
+                "reference_group_counts": reference_contract["group_counts"],
+            },
+            "official_postload": {
+                "loader": "AscendW4A8DynamicFusedMoEMethod.process_weights_after_loading_modelslim",
+                "metadata": _postload_metadata(layer),
+            },
+            "hidden_boundary": {
+                "canonical_hidden_bf16": _float_stats(mixed["hidden_bf16"]),
+                "hidden_int8": _float_stats(mixed["hidden_q"]),
+                "hidden_int4_packed": _float_stats(hidden_x_int4_packed[:active_rows]),
+                "hidden_scale": _float_stats(hidden_scale_active),
+                "hidden_q_packed_exact_reference": packed_exact,
+                "hidden_q_exact_match_from_stage2_1_probe": None,
+                "hidden_q_packed_exact_match": packed_exact["exact_match"],
+                "hidden_q_packed_mismatch_count": packed_exact["mismatch_count"],
+            },
+            "gmm2": {
+                "loop_stats": loop_stats,
+                "unfused_reference": {
+                    "enabled": True,
+                    "contract": reference_contract,
+                    "max_abs_tolerance": args.gmm2_reference_max_abs_tol,
+                    "mean_abs_tolerance": args.gmm2_reference_mean_abs_tol,
+                },
+            },
+            "checks": {
+                "official_gmm2_entry_reached": bool(loop_stats["valid_magic"]),
+                "official_gmm2_loop_count": int(loop_stats["total_core_loops"]),
+                "official_gmm2_active_tile_count": int(loop_stats["total_core_loops"]),
+                "official_gmm2_active_tile_count_nonzero": bool(loop_stats["active_tile_count_nonzero"]),
+                "hidden_packed_exact": packed_exact["exact_match"],
+                "hidden_packed_mismatch_count_zero": packed_exact["mismatch_count"] == 0,
+                "hidden_scale_finite": bool(torch.isfinite(hidden_scale_active).all().item()),
+                "hidden_scale_nonzero": bool(torch.any(hidden_scale_active.abs() > 0).item()),
+                "canonical_hidden_finite": bool(torch.isfinite(mixed["hidden_bf16"].float()).all().item()),
+                "canonical_hidden_nonzero": bool(torch.any(mixed["hidden_bf16"].float().abs() > 0).item()),
+                "official_gmm2_numerical_gate_passed": False,
+            },
+            "passed": False,
+        }
+
     actual = gmm2_post_dequant[: reference.shape[0], : reference.shape[1]]
     error = _tensor_error(actual, reference)
     gmm2_reference_passed = (

@@ -8,9 +8,73 @@ This table supersedes ambiguous status statements in older handoff sections. Old
 |---|---|---|
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Built, installed, registered, and launched on logical NPU 0 in prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden exact-match gate passed with mismatch count 0. |
-| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Official GMM2-only post-dequant readback remains all zeros while real-checkpoint reference is nonzero. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Rebuilt loop-stats diagnostic proves the official GMM2-only entry path executes, but `cumsumMM` is zero at scheduling time, so official GMM2 schedules zero active tiles. Gate B/Gate C remain blocked. |
 | Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 Gate B/Gate C. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Host tiling must remain fail-closed until Stage 2.2+ production gates pass. |
+
+## Current State - 2026-06-26T12:28Z
+
+Status: Stage 2.2 remains FAIL / IN PROGRESS.
+
+Binding prompt and appendix state:
+
+- `svdq_qwen35_moe_clean_implementation_stage2_prompt.md` remains the active working prompt.
+- `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` was read and is binding for this handoff.
+- The public `torch_npu.npu_grouped_matmul` path was not modified, debugged, or used as progress.
+- The official `dispatch_ffn_combine_w4_a8` producer/dequant path remains the only source of truth for W4A8 GMM2.
+- Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed.
+
+New debug change:
+
+- Added a debug-only GMM2 loop-stats sentinel to `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp`.
+- The sentinel is enabled by `430000.0f < swigluLimit < 440000.0f`; the current probe uses `--swiglu-limit 434343`.
+- In GMM2-only mode it writes scheduling state to `ptrDebugGMM2` and returns before MMAD/dequant. It does not change the production SVDQ operator.
+- The probe parser in `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py` records `loop_stats` and marks the diagnostic as non-passing numerical evidence by design.
+
+Build and install evidence:
+
+- First loop-stats probe before forcing the generated kernel rebuild was invalid as code-behavior evidence: the copied generated kernel source did not yet contain the loop-stats marker.
+- Forced kernel rebuild initially exposed an AscendC compile restriction: unsigned-counter to `float` casts in AIC/AIV code are rejected.
+- Fixed the diagnostic by casting unsigned counters through `int32_t` before writing the float debug buffer.
+- Forced target rebuild:
+  - Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 cmake --build csrc/build --target svdqw4_a8_gmm2_debug_readback_ascend910b -- -B -j1`
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_loop_stats_build_kernel_after_cast_fix.log`
+  - Log scan found no `error:`, `[ERROR]`, OPC failure, `ld.lld: error`, or old unsigned-cast failure markers.
+  - Generated `.o`/`.json` files were refreshed from `2026-06-26 12:17:05` through `2026-06-26 12:22:19` UTC.
+- Staged install:
+  - `ascendc_ops_config.py`: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_loop_stats_after_cast_fix_ops_config.log`
+  - `cmake --install`: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_loop_stats_after_cast_fix_cmake_install.log`
+  - Correct install invocation must run from the staged root. Two earlier wrong-path/wrong-cwd install attempts are retained as install-script path evidence, not device evidence.
+  - Repo-local install from staged root: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_loop_stats_after_cast_fix_install_repo_root_cwd.log`, result `SUCCESS`.
+  - System OPP install from staged root: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_loop_stats_after_cast_fix_install_system_opp_root_cwd.log`, result `SUCCESS`.
+
+Validation evidence:
+
+- Device boundary:
+  - `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 npu-smi info`
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_loop_stats_after_cast_fix_npu_smi.log`
+  - Physical NPUs `0,1,2,3` are visible, all `910B4`, health `OK`, no running NPU processes.
+- Torch/NPU visibility:
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_loop_stats_after_cast_fix_torch_npu_visibility.log`
+  - `npu_available: True`, `visible_device_count: 4`, logical devices `0..3` are `Ascend910B4`.
+- ABI registration:
+  - Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 pytest -q tests/ut/ops/test_svdq_moe_abi.py::test_svdq_w4a8_gmm2_debug_torch_schema_meta_and_adapter_are_registered`
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_loop_stats_after_cast_fix_abi.log`
+  - Result: `1 passed, 16 warnings`.
+- Loop-stats probe:
+  - Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ... python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py --require-npu --swiglu-limit 434343 --summary-name phase_stage2_gmm2_loop_stats_probe_after_cast_fix.json`
+  - Log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_loop_stats_probe_after_cast_fix.log`
+  - Summary: `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_loop_stats_probe_after_cast_fix.json`
+  - Result: diagnostic `passed: false` by design; `loop_stats.magic == 434343.0`, proving the official GMM2-only entry path executed.
+  - Gate A remains valid: `hidden_packed_exact: true`, `hidden_packed_mismatch_count_zero: true`, `hidden_scale_finite: true`, `hidden_scale_nonzero: true`, `canonical_hidden_finite: true`, `canonical_hidden_nonzero: true`.
+  - New blocker: `total_active_rows: 0`, `total_core_loops: 0`, `groups_with_work: 0`; every group reports `raw_current_m: 0`, `clipped_current_m: 0`, and `core_loops: 0`.
+
+Interpretation:
+
+- The loop-stats diagnostic converts the previous all-zero GMM2 output from an ambiguous MMAD/dequant/readback failure into a token-state/scheduling boundary failure.
+- Official GMM2 entry is reached, but the state visible through `cumsumMM` at scheduling time contains zero rows for every local expert.
+- Because no active tiles are scheduled, a raw-C2 follow-up would not be meaningful until the official-path GMM2-only debug op seeds or reuses the same token-count/cumsum lifecycle as the successful official W4A8 path.
+- Stage 2.2 Gate B and Gate C remain failed.
 
 ## Baseline - 2026-06-26T06:17Z
 

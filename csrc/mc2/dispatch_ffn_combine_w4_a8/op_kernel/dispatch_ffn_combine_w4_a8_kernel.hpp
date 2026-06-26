@@ -779,6 +779,82 @@ private:
     }
 
     CATLASS_DEVICE
+    bool IsGMM2OnlyLoopStatsDebug(Params const &params)
+    {
+        return params.swigluLimit > 430000.0f && params.swigluLimit < 440000.0f;
+    }
+
+    CATLASS_DEVICE
+    void WriteGMM2OnlyLoopStats(Params const &params)
+    {
+        if (coreIdx != 0 || params.ptrDebugGMM2 == nullptr) {
+            return;
+        }
+
+        AscendC::GlobalTensor<float> debugGm;
+        debugGm.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(params.ptrDebugGMM2));
+        for (uint32_t i = 0; i < 256; ++i) {
+            debugGm.SetValue(i, 0.0f);
+        }
+
+        BlockScheduler blockScheduler;
+        uint32_t n2 = params.problemShape.k();
+        uint32_t k2 = params.problemShape.n() / 2;
+        int64_t preCurrentmSum = 0;
+        uint32_t totalActiveRows = 0;
+        uint32_t totalDoubledRows = 0;
+        uint32_t totalCoreLoops = 0;
+        uint32_t groupsWithWork = 0;
+
+        debugGm.SetValue(0, 434343.0f);
+        debugGm.SetValue(1, static_cast<float>(static_cast<int32_t>(params.expertPerRank)));
+        debugGm.SetValue(2, static_cast<float>(static_cast<int32_t>(params.maxOutputSize)));
+        debugGm.SetValue(8, static_cast<float>(static_cast<int32_t>(n2)));
+        debugGm.SetValue(9, static_cast<float>(static_cast<int32_t>(k2)));
+        debugGm.SetValue(10, static_cast<float>(static_cast<int32_t>(coreNum)));
+
+        for (uint32_t groupIdx = 0; groupIdx < params.expertPerRank && groupIdx < 48; ++groupIdx) {
+            uint32_t rawCurrentM = cumsumMM((params.EP - 1) * params.expertPerRank + groupIdx);
+            uint32_t clippedCurrentM = rawCurrentM;
+            if (preCurrentmSum >= params.maxOutputSize) {
+                clippedCurrentM = 0;
+            } else if (preCurrentmSum + clippedCurrentM > params.maxOutputSize) {
+                clippedCurrentM = params.maxOutputSize - preCurrentmSum;
+            }
+
+            uint32_t doubledCurrentM = clippedCurrentM;
+            if constexpr (std::is_same_v<ElementB, AscendC::int4b_t>) {
+                doubledCurrentM = clippedCurrentM * 2;
+            }
+
+            GemmCoord inGroupProblemShape{doubledCurrentM, n2, k2};
+            blockScheduler.Update(inGroupProblemShape, MakeCoord(L1TileShape::M, L1TileShape::N));
+            uint32_t coreLoops = blockScheduler.GetCoreLoops();
+            if (doubledCurrentM > 0) {
+                groupsWithWork++;
+            }
+            totalActiveRows += clippedCurrentM;
+            totalDoubledRows += doubledCurrentM;
+            totalCoreLoops += coreLoops;
+
+            uint32_t base = 16 + groupIdx * 5;
+            debugGm.SetValue(base + 0, static_cast<float>(static_cast<int32_t>(rawCurrentM)));
+            debugGm.SetValue(base + 1, static_cast<float>(static_cast<int32_t>(clippedCurrentM)));
+            debugGm.SetValue(base + 2, static_cast<float>(static_cast<int32_t>(doubledCurrentM)));
+            debugGm.SetValue(base + 3, static_cast<float>(static_cast<int32_t>(coreLoops)));
+            debugGm.SetValue(base + 4, static_cast<float>(preCurrentmSum));
+
+            preCurrentmSum += doubledCurrentM / 2;
+        }
+
+        debugGm.SetValue(3, static_cast<float>(static_cast<int32_t>(totalActiveRows)));
+        debugGm.SetValue(4, static_cast<float>(static_cast<int32_t>(totalDoubledRows)));
+        debugGm.SetValue(5, static_cast<float>(static_cast<int32_t>(totalCoreLoops)));
+        debugGm.SetValue(6, static_cast<float>(static_cast<int32_t>(groupsWithWork)));
+        debugGm.SetValue(7, static_cast<float>(preCurrentmSum));
+    }
+
+    CATLASS_DEVICE
     void SignalGMM2OnlyReady(Params const &params)
     {
         for (uint32_t groupIdx = 0; groupIdx < params.expertPerRank; ++groupIdx) {
@@ -830,12 +906,19 @@ private:
             SeedGMM2OnlyTokenState(params);
         }
         AscendC::SyncAll<true>();
+        if (IsGMM2OnlyLoopStatsDebug(params)) {
+            WriteGMM2OnlyLoopStats(params);
+            return;
+        }
         GMM2(params);
     }
 
     CATLASS_DEVICE
     void GMM2OnlyDequantReadback(Params const &params)
     {
+        if (IsGMM2OnlyLoopStatsDebug(params)) {
+            return;
+        }
         uint32_t n2 = params.problemShape.k();
         typename BlockEpilogue2::Params epilogueParams{
             static_cast<int32_t>(params.EP),
