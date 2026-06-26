@@ -1,6 +1,6 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
-## Raw C2 Row Diagnostic - 2026-06-26T17:35Z
+## Raw C2 Parity Diagnostic - 2026-06-26T17:44Z
 
 This section is the latest Stage 2.2 status. Older sections are historical evidence unless explicitly referenced here.
 
@@ -8,7 +8,7 @@ This section is the latest Stage 2.2 status. Older sections are historical evide
 |---|---|---|
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Source packed hidden exact-match still reports mismatch count 0. |
-| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Full-lifecycle raw-C2 diagnostic proves the official GMM2/C2V/BlockEpilogue2 raw high-low decode is finite and nonzero, but Gate B scaled raw-C2 reference comparison still fails. New row diagnostics reject hidden-copy corruption as the sole cause because rows with exact post-override hidden readback also fail raw C2. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Full-lifecycle raw-C2 diagnostic proves the official GMM2/C2V/BlockEpilogue2 raw high-low decode is finite and nonzero, but Gate B scaled raw-C2 reference comparison still fails. Row diagnostics reject hidden-copy corruption as the sole cause, and parity diagnostics reject a simple adjacent even/odd row collapse or high/low row-pair swap as the sole cause. |
 | Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
 
@@ -63,11 +63,40 @@ Files changed for this attempt:
   - Added parsing/reporting for the raw-C2 diagnostic mode.
   - Added strict predeclared raw-C2 comparator tolerances, failed-element counts, relative error, and NaN/Inf counts.
   - Added raw-C2 row diagnostics comparing source hidden, post-override readback hidden, exact hidden rows, corrupted hidden rows, and best row alignment.
+  - Added raw-C2 even/odd and adjacent-row pattern diagnostics for the official doubled-M INT4 row interpretation.
   - No Torch schema, adapter ABI, production SVDQ, or public grouped-matmul behavior changed.
 - `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
   - Added the mandatory official-vs-debug state table before any further behavioral GMM2 patch.
 
 No kernel rebuild was required for the 17:20Z comparator update because only Python probe/report code changed after the already-installed raw-C2 debug kernel.
+
+Raw-C2 parity diagnostic probe:
+
+- Command used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, repo-local `ASCEND_CUSTOM_OPP_PATH`, repo-local `libcust_opapi.so`, top-1 expert 0, 64 tokens, `max_output_size=64`, and `--swiglu-limit 454545`.
+- Preflight: `npu-smi info` showed no active NPU processes on physical NPUs 0-3; Python saw logical `npu_device_count: 4`, selected logical device `0`, runtime SOC `224`.
+- Log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_parity_top1_expert0_max64.log`
+- Summary: `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_raw_c2_parity_top1_expert0_max64.json`
+- Top-level `passed: false`; Stage 2.2 remains failed.
+- Gate A source packed hidden remains exact: `exact_match: true`, `mismatch_count: 0`.
+- Gate A post-override packed readback still fails in this run: `mismatch_count: 3290`, first rows `[13, 21, 23, 31, 33, 35, 37, 39]`.
+- Gate A post-override scale readback still fails in this run: `exact_mismatch_count: 4`.
+- Source-hidden raw-C2 even/odd split:
+  - even rows: `row_count: 32`, `mean_abs: 3.14512300491333`, `max_abs: 21.408472061157227`
+  - odd rows: `row_count: 32`, `mean_abs: 2.848015785217285`, `max_abs: 23.6250057220459`
+  - first adjacent actual even/odd mean-abs values: `[2.902888536453247, 3.2883198261260986, 2.9655027389526367, 2.751413345336914]`
+  - first adjacent expected even/odd mean-abs values: `[2.830193519592285, 3.3786818981170654, 2.761028528213501, 3.000396251678467]`
+- Readback-hidden raw-C2 even/odd split:
+  - even rows: `row_count: 32`, `mean_abs: 3.14512300491333`, `max_abs: 21.408472061157227`
+  - odd rows: `row_count: 32`, `mean_abs: 2.5995981693267822`, `max_abs: 23.6250057220459`
+- Row-alignment diagnostic remains non-identity:
+  - Source-hidden reference: `nonidentity_best_row_count: 63`, `mean_best_row_abs: 2.613636016845703`, `mean_diagonal_abs: 2.9965696334838867`.
+  - Readback-hidden reference: `nonidentity_best_row_count: 63`, `mean_best_row_abs: 2.1697492599487305`, `mean_diagonal_abs: 2.8723604679107666`.
+
+Rejected root-cause hypothesis:
+
+- The remaining Gate B mismatch is not explained by a simple adjacent even/odd row collapse or high/low row-pair swap.
+- Evidence: actual adjacent even/odd rows differ substantially, and both even and odd logical rows have large raw-C2 comparator error.
+- The best-row diagnostic is still non-identity for 63 of 64 rows, so the unresolved boundary remains the official GMM2 physical tile/layout/row-state mapping for modified hidden, not a single parity-only remap.
 
 Raw-C2 row diagnostic probe:
 

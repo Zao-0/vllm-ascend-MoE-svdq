@@ -286,6 +286,49 @@ def _row_alignment_summary(actual: torch.Tensor, expected: torch.Tensor, *, max_
     }
 
 
+def _row_pair_pattern_summary(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, Any]:
+    actual_cpu = actual.detach().cpu().float()
+    expected_cpu = expected.detach().cpu().float()
+    diff = (actual_cpu - expected_cpu).abs()
+    even_rows = torch.arange(diff.shape[0]) % 2 == 0 if diff.ndim == 2 else torch.empty((0,), dtype=torch.bool)
+    odd_rows = ~even_rows if even_rows.numel() else even_rows
+    adjacent_actual = (
+        (actual_cpu[0::2] - actual_cpu[1::2]).abs().mean(dim=1)
+        if actual_cpu.ndim == 2 and actual_cpu.shape[0] > 1
+        else torch.empty((0,), dtype=torch.float32)
+    )
+    adjacent_expected = (
+        (expected_cpu[0::2] - expected_cpu[1::2]).abs().mean(dim=1)
+        if expected_cpu.ndim == 2 and expected_cpu.shape[0] > 1
+        else torch.empty((0,), dtype=torch.float32)
+    )
+    adjacent_cross = (
+        (actual_cpu[0::2] - expected_cpu[1::2]).abs().mean(dim=1)
+        if actual_cpu.ndim == 2 and actual_cpu.shape[0] > 1
+        else torch.empty((0,), dtype=torch.float32)
+    )
+
+    def summarize(mask: torch.Tensor) -> dict[str, Any]:
+        if not mask.numel() or not bool(mask.any().item()):
+            return {"row_count": 0, "mean_abs": 0.0, "max_abs": 0.0}
+        selected = diff[mask]
+        return {
+            "row_count": int(mask.sum().item()),
+            "mean_abs": float(selected.mean().item()),
+            "max_abs": float(selected.max().item()),
+        }
+
+    return {
+        "even_rows": summarize(even_rows),
+        "odd_rows": summarize(odd_rows),
+        "actual_adjacent_even_odd_mean_abs_first32": adjacent_actual[:32].tolist(),
+        "expected_adjacent_even_odd_mean_abs_first32": adjacent_expected[:32].tolist(),
+        "actual_even_to_expected_odd_mean_abs_first32": adjacent_cross[:32].tolist(),
+        "actual_row_norm_first32": actual_cpu.norm(dim=1)[:32].tolist() if actual_cpu.ndim == 2 else [],
+        "expected_row_norm_first32": expected_cpu.norm(dim=1)[:32].tolist() if expected_cpu.ndim == 2 else [],
+    }
+
+
 def _pad_hidden_boundary(
     *,
     hidden_x_int4_packed: torch.Tensor,
@@ -631,6 +674,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         raw_c2_row_diagnostics = {
             "source_hidden_row_error": _rowwise_abs_error_summary(raw_actual, raw_reference),
             "source_hidden_row_alignment": _row_alignment_summary(raw_actual, raw_reference),
+            "source_hidden_even_odd_pattern": _row_pair_pattern_summary(raw_actual, raw_reference),
         }
         if hidden_row_exact_mask is not None:
             exact_count = int(hidden_row_exact_mask.sum().item())
@@ -659,6 +703,10 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                             hidden_readback_raw_reference[: raw_actual.shape[0], : raw_actual.shape[1]],
                         ),
                         "readback_hidden_row_alignment": _row_alignment_summary(
+                            raw_actual,
+                            hidden_readback_raw_reference[: raw_actual.shape[0], : raw_actual.shape[1]],
+                        ),
+                        "readback_hidden_even_odd_pattern": _row_pair_pattern_summary(
                             raw_actual,
                             hidden_readback_raw_reference[: raw_actual.shape[0], : raw_actual.shape[1]],
                         ),
