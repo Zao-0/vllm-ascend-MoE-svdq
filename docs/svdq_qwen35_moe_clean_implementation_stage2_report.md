@@ -1,5 +1,78 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Rebuild Handoff - 2026-06-26T16:25Z
+
+This section is the latest handoff before the environment rebuild. It supersedes the `2026-06-26T15:58Z` section for current state, but the older section remains valid historical evidence.
+
+Status: Stage 2.2 remains FAIL / IN PROGRESS. Do not proceed to Stage 2.3, SVDQ down composition, final combine, or production host tiling.
+
+Requirements re-read for this handoff:
+
+- `/root/workspace/lza/svdq_qwen35_moe_clean_implementation_prompt.md`
+- `/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_prompt.md`
+- `/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md`
+- `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+- `/root/workspace/lza/svdq_qwen35_moe_clean_implementation_report_clarified_completed.md` was requested by older notes but does not exist; `find /root/workspace/lza -maxdepth 3 -name '*clarified*' -o -name '*completed*'` returned no file.
+
+Binding constraints that still govern the next session:
+
+- Only use logical/physical NPUs `0,1,2,3`; real-device commands must set `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
+- Do not use, modify, reinterpret, or further debug public `torch_npu.npu_grouped_matmul`.
+- Official `dispatch_ffn_combine_w4_a8` remains the only source of truth for W4A8 GMM2 packed-weight access, AIC accumulation, AIV dequantization, and debug readback.
+- Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed.
+- Source inspection, manifests, scalar substitutes, public grouped-matmul experiments, or scale-formula guessing are not progress toward the Stage 2.2 gate.
+
+Current official-path behavior:
+
+- `InitGMM2OnlyFromPacked` still runs the full official `DispatchAndCombine` lifecycle and only injects external hidden/scale in the official path.
+- The hidden override copy is in `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp` at the `CopyGMToGM(gmA2I4_I8[gmOffsetD], externalHiddenX[gmOffsetD], ...)` and `CopyGMToGM(gmPerTokenScale2[rowStartThisCore], externalHiddenScale[rowStartThisCore], ...)` boundary.
+- The readback copy is immediately after the official hidden override path and copies `gmA2I4_I8` to `ptrDebugHiddenX` and `gmPerTokenScale2` to `ptrDebugHiddenScale`.
+- For `expertPerRank=8`, top-1 expert-0 routing gives `dequantSum` equivalent to `[0, 64, 64, 64, 64]`; rows 0-63 should be covered in one chunk. The remaining mismatch is therefore not explained only by padded capacity.
+
+Latest constrained `max_output_size=64` probe evidence:
+
+| Probe | Summary | Packed hidden source | Post-override packed readback | Post-override scale readback | GMM2 reference |
+|---|---|---|---|---|---|
+| Baseline source before workspace experiment | `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_hidden_readback_top1_expert0_max64.json` | exact, mismatch count 0 | fail, 4057 mismatches across rows `[19, 25, 27, 29, 31, 33, 35, 37, 39]` | fail, 4 mismatches at indices `[36, 37, 38, 39]` | fail, max abs `0.552257776260376`, mean abs `0.07091927528381348` |
+| Guarded debug-workspace host-tiling experiment | `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_hidden_readback_top1_expert0_max64_after_workspace_fix.json` | exact, mismatch count 0 | fail, 6760 mismatches across rows `[5, 11, 15, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 45]` | fail, 10 mismatches at indices `[28, 29, 30, 31, 32, 33, 36, 37, 38, 39]` | fail, max abs `0.552257776260376`, mean abs `0.06795954704284668` |
+| Unguarded debug-workspace host-tiling experiment | `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_hidden_readback_top1_expert0_max64_after_workspace_fix_unguarded.json` | exact, mismatch count 0 | fail, 19721 mismatches across 44 rows; first rows `[3, 5, 7, 8, 9, 11, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]` | fail, 39 mismatches; first indices `[2, 3, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]` | fail, max abs `0.552257776260376`, mean abs `0.0572160966694355` |
+
+Workspace experiment result:
+
+- Hypothesis tested: the GMM2-only debug op may under-declare workspace because `WorkspaceInfo` can allocate internal FP32 debug taps for GMM1/GMM1-hidden/GMM2 when some external debug pointers are null.
+- Guarded source patch built and installed but likely did not affect the shared host tiling object because the tiling object is not compiled with the same `W4A8_DEBUG` definition.
+- Unguarded source patch produced a new host library SHA `ff02c29715eab1a31ce7fe6037fe5ab77f48ff8a671efc0b1c52a9b43025a4eb` and installed it into both repo-local and system OPP locations, but the probe got worse.
+- Because the unguarded change did not help and grew production W4A8 workspace, the source patch was reverted before commit. There is no retained production-facing code change from this experiment.
+- Important environment note: the currently installed repo-local and system OPP host libraries were overwritten by the unguarded experiment before the source revert. A fresh environment should rebuild/install from committed source; do not treat the current installed OPP as the committed source state.
+
+Build/install logs for the negative workspace experiment:
+
+- Guarded rebuild/install:
+  - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_workspace_debug_rebuild_ops_aclnn.log`
+  - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_workspace_debug_rebuild_cust_opapi.log`
+  - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_workspace_debug_cmake_install_custom_ops.log`
+  - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_workspace_debug_install_repo_custom_ops.log`
+  - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_workspace_debug_install_system_opp.log`
+- Unguarded rebuild/install:
+  - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_workspace_debug_rebuild_cust_opmaster_unguarded.log`
+  - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_workspace_debug_unguarded_cmake_install_custom_ops.log`
+  - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_workspace_debug_unguarded_install_repo_custom_ops.log`
+  - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_workspace_debug_unguarded_install_system_opp.log`
+  - `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_hidden_readback_top1_expert0_max64_after_workspace_fix_unguarded.log`
+
+Next required work:
+
+- Keep Stage 2.2 focused on the official hidden/scale override and readback boundary.
+- Do not continue the workspace-size hypothesis unless new evidence directly proves workspace overlap.
+- Add a decisive official-path diagnostic for hidden override timing, row mapping, chunk/tail behavior, and C2V/Gate B raw AIC output.
+- Gate A remains valid only at the source hidden packed tensor. Gate A after official override/readback still fails. Gate B raw AIC remains unproven. Gate C post-dequant remains nonzero but reference-failing.
+
+Validation before handoff commit:
+
+- `git diff --check`: passed.
+- `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
+- `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 pytest -q tests/ut/ops/test_svdq_moe_abi.py::test_svdq_w4a8_gmm2_debug_torch_schema_meta_and_adapter_are_registered`: `1 passed, 16 warnings`.
+
 ## Authoritative Status - 2026-06-26T15:58Z
 
 This table supersedes ambiguous status statements in older handoff sections. Older sections are historical evidence unless explicitly referenced by the latest active section.
