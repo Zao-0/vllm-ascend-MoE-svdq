@@ -235,6 +235,57 @@ def _threshold_error_counts(
     }
 
 
+def _rowwise_abs_error_summary(
+    actual: torch.Tensor,
+    expected: torch.Tensor,
+    *,
+    row_mask: torch.Tensor | None = None,
+) -> dict[str, Any]:
+    actual_cpu = actual.detach().cpu().float()
+    expected_cpu = expected.detach().cpu().float()
+    if row_mask is not None:
+        mask_cpu = row_mask.detach().cpu().bool()
+        actual_cpu = actual_cpu[mask_cpu]
+        expected_cpu = expected_cpu[mask_cpu]
+    diff = (actual_cpu - expected_cpu).abs()
+    finite = bool(torch.isfinite(diff).all().item()) if diff.numel() else True
+    row_mean = diff.mean(dim=1) if diff.ndim == 2 and diff.shape[0] else torch.empty((0,), dtype=torch.float32)
+    row_max = diff.max(dim=1).values if diff.ndim == 2 and diff.shape[0] else torch.empty((0,), dtype=torch.float32)
+    return {
+        "row_count": int(actual_cpu.shape[0]) if actual_cpu.ndim >= 1 else 0,
+        "finite": finite,
+        "mean_abs": float(diff.mean().item()) if diff.numel() and finite else float("inf"),
+        "max_abs": float(diff.max().item()) if diff.numel() and finite else float("inf"),
+        "row_mean_abs_first32": row_mean[:32].tolist(),
+        "row_max_abs_first32": row_max[:32].tolist(),
+    }
+
+
+def _row_alignment_summary(actual: torch.Tensor, expected: torch.Tensor, *, max_rows: int = 64) -> dict[str, Any]:
+    actual_cpu = actual.detach().cpu().float()[:max_rows]
+    expected_cpu = expected.detach().cpu().float()[:max_rows]
+    row_count = min(int(actual_cpu.shape[0]), int(expected_cpu.shape[0]))
+    if row_count == 0:
+        return {"enabled": True, "row_count": 0}
+    actual_cpu = actual_cpu[:row_count]
+    expected_cpu = expected_cpu[:row_count]
+    pairwise_mean_abs = torch.cdist(actual_cpu, expected_cpu, p=1) / max(1, int(actual_cpu.shape[1]))
+    best_error, best_expected_row = pairwise_mean_abs.min(dim=1)
+    diagonal_error = pairwise_mean_abs.diag()
+    nonidentity = best_expected_row != torch.arange(row_count, dtype=best_expected_row.dtype)
+    return {
+        "enabled": True,
+        "row_count": row_count,
+        "diagonal_mean_abs_first32": diagonal_error[:32].tolist(),
+        "best_expected_row_for_actual_first32": best_expected_row[:32].tolist(),
+        "best_row_mean_abs_first32": best_error[:32].tolist(),
+        "nonidentity_best_row_count": int(nonidentity.sum().item()),
+        "nonidentity_actual_rows_first32": nonidentity.nonzero().flatten()[:32].tolist(),
+        "mean_best_row_abs": float(best_error.mean().item()),
+        "mean_diagonal_abs": float(diagonal_error.mean().item()),
+    }
+
+
 def _pad_hidden_boundary(
     *,
     hidden_x_int4_packed: torch.Tensor,
@@ -532,6 +583,87 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             and raw_c2_error["max_abs"] <= args.gmm2_raw_c2_reference_max_abs_tol
             and raw_c2_error["mean_abs"] <= args.gmm2_raw_c2_reference_mean_abs_tol
         )
+        hidden_row_exact_mask = None
+        hidden_readback_raw_reference = None
+        hidden_readback_raw_reference_passed = None
+        hidden_readback_raw_reference_report: dict[str, Any] = {
+            "enabled": False,
+            "reason": "debug op did not return hidden_x_readback",
+        }
+        if hidden_x_readback is not None:
+            hidden_readback_active = hidden_x_readback[:active_rows].detach().cpu()
+            source_hidden_active = hidden_x_int4_packed[:active_rows].detach().cpu()
+            hidden_row_exact_mask = (hidden_readback_active == source_hidden_active).all(dim=1)
+            hidden_readback_raw_reference, hidden_readback_raw_contract = _official_gmm2_raw_c2_reference(
+                hidden_x_int4_packed=hidden_x_readback[:active_rows],
+                weight=layer.w2_weight,
+                weight_scale=layer.w2_weight_scale,
+                expert_token_nums=external_expert_token_nums,
+                output_columns=spec.hidden_size,
+                max_rows=args.gmm2_reference_max_rows,
+            )
+            hidden_readback_raw_actual = raw_c2_active[
+                : hidden_readback_raw_reference.shape[0], : hidden_readback_raw_reference.shape[1]
+            ]
+            hidden_readback_raw_error = _tensor_error(hidden_readback_raw_actual, hidden_readback_raw_reference)
+            hidden_readback_raw_error.update(
+                _threshold_error_counts(
+                    hidden_readback_raw_actual,
+                    hidden_readback_raw_reference,
+                    max_abs_tol=args.gmm2_raw_c2_reference_max_abs_tol,
+                )
+            )
+            hidden_readback_raw_reference_passed = (
+                hidden_readback_raw_error["actual_finite"]
+                and hidden_readback_raw_error["expected_finite"]
+                and hidden_readback_raw_error["diff_finite"]
+                and hidden_readback_raw_error["max_abs"] <= args.gmm2_raw_c2_reference_max_abs_tol
+                and hidden_readback_raw_error["mean_abs"] <= args.gmm2_raw_c2_reference_mean_abs_tol
+            )
+            hidden_readback_raw_reference_report = {
+                "enabled": True,
+                "passed": bool(hidden_readback_raw_reference_passed),
+                "contract": hidden_readback_raw_contract,
+                "error": hidden_readback_raw_error,
+                "max_abs_tolerance": args.gmm2_raw_c2_reference_max_abs_tol,
+                "mean_abs_tolerance": args.gmm2_raw_c2_reference_mean_abs_tol,
+            }
+        raw_c2_row_diagnostics = {
+            "source_hidden_row_error": _rowwise_abs_error_summary(raw_actual, raw_reference),
+            "source_hidden_row_alignment": _row_alignment_summary(raw_actual, raw_reference),
+        }
+        if hidden_row_exact_mask is not None:
+            exact_count = int(hidden_row_exact_mask.sum().item())
+            mismatch_count = int((~hidden_row_exact_mask).sum().item())
+            raw_c2_row_diagnostics.update(
+                {
+                    "hidden_readback_exact_row_count": exact_count,
+                    "hidden_readback_mismatched_row_count": mismatch_count,
+                    "source_reference_error_on_hidden_exact_rows": _rowwise_abs_error_summary(
+                        raw_actual,
+                        raw_reference,
+                        row_mask=hidden_row_exact_mask[: raw_actual.shape[0]],
+                    ),
+                    "source_reference_error_on_hidden_mismatched_rows": _rowwise_abs_error_summary(
+                        raw_actual,
+                        raw_reference,
+                        row_mask=(~hidden_row_exact_mask[: raw_actual.shape[0]]),
+                    ),
+                }
+            )
+            if hidden_readback_raw_reference is not None:
+                raw_c2_row_diagnostics.update(
+                    {
+                        "readback_hidden_row_error": _rowwise_abs_error_summary(
+                            raw_actual,
+                            hidden_readback_raw_reference[: raw_actual.shape[0], : raw_actual.shape[1]],
+                        ),
+                        "readback_hidden_row_alignment": _row_alignment_summary(
+                            raw_actual,
+                            hidden_readback_raw_reference[: raw_actual.shape[0], : raw_actual.shape[1]],
+                        ),
+                    }
+                )
         return {
             "stage": "stage2_modified_hidden_official_w4a8_gmm2_raw_c2",
             "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback -> aclnnSVDQW4A8GMM2DebugReadback",
@@ -611,6 +743,8 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                         "not an alternative implementation or a substitute for the official kernel path."
                     ),
                 },
+                "raw_c2_readback_hidden_reference": hidden_readback_raw_reference_report,
+                "raw_c2_row_diagnostics": raw_c2_row_diagnostics,
                 "unfused_reference": {
                     "enabled": True,
                     "contract": reference_contract,

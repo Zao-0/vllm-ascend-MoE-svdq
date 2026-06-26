@@ -1,6 +1,6 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
-## Raw C2 Scaled Reference Diagnostic - 2026-06-26T17:20Z
+## Raw C2 Row Diagnostic - 2026-06-26T17:35Z
 
 This section is the latest Stage 2.2 status. Older sections are historical evidence unless explicitly referenced here.
 
@@ -8,7 +8,7 @@ This section is the latest Stage 2.2 status. Older sections are historical evide
 |---|---|---|
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Source packed hidden exact-match still reports mismatch count 0. |
-| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Full-lifecycle raw-C2 diagnostic proves the official GMM2/C2V/BlockEpilogue2 raw high-low decode is finite and nonzero, but Gate B scaled raw-C2 reference comparison still fails and post-override packed-hidden readback is still not exact. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Full-lifecycle raw-C2 diagnostic proves the official GMM2/C2V/BlockEpilogue2 raw high-low decode is finite and nonzero, but Gate B scaled raw-C2 reference comparison still fails. New row diagnostics reject hidden-copy corruption as the sole cause because rows with exact post-override hidden readback also fail raw C2. |
 | Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
 
@@ -62,11 +62,48 @@ Files changed for this attempt:
 - `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
   - Added parsing/reporting for the raw-C2 diagnostic mode.
   - Added strict predeclared raw-C2 comparator tolerances, failed-element counts, relative error, and NaN/Inf counts.
+  - Added raw-C2 row diagnostics comparing source hidden, post-override readback hidden, exact hidden rows, corrupted hidden rows, and best row alignment.
   - No Torch schema, adapter ABI, production SVDQ, or public grouped-matmul behavior changed.
 - `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
   - Added the mandatory official-vs-debug state table before any further behavioral GMM2 patch.
 
 No kernel rebuild was required for the 17:20Z comparator update because only Python probe/report code changed after the already-installed raw-C2 debug kernel.
+
+Raw-C2 row diagnostic probe:
+
+- Command used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, repo-local `ASCEND_CUSTOM_OPP_PATH`, repo-local `libcust_opapi.so`, top-1 expert 0, 64 tokens, `max_output_size=64`, and `--swiglu-limit 454545`.
+- Preflight: `npu-smi info` showed no active NPU processes on physical NPUs 0-3; Python saw logical `npu_device_count: 4`, selected logical device `0`, runtime SOC `224`.
+- Log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_rowdiag_top1_expert0_max64.log`
+- Summary: `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_raw_c2_rowdiag_top1_expert0_max64.json`
+- Top-level `passed: false`; Stage 2.2 remains failed.
+- Gate A source packed hidden remains exact: `exact_match: true`, `mismatch_count: 0`.
+- Gate A post-override packed readback still fails: `mismatch_count: 10816`, first rows `[3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 34, 35, 37, 39, 45, 47, 59, 61, 63]`.
+- Gate A post-override scale readback still fails in this run: `exact_mismatch_count: 22`.
+- Gate B source-hidden scaled raw-C2 comparator:
+  - `passed: false`
+  - `max_abs: 23.6250057220459`
+  - `mean_abs: 2.808938980102539`
+  - `failed_element_count_abs_gt_tolerance: 131052` of `131072`
+- Gate B post-override-readback-hidden scaled raw-C2 comparator:
+  - `passed: false`
+  - `max_abs: 23.6250057220459`
+  - `mean_abs: 2.397221803665161`
+  - `failed_element_count_abs_gt_tolerance: 130842` of `131072`
+- Row split:
+  - hidden readback exact rows: `39`
+  - hidden readback mismatched rows: `25`
+  - raw-C2 source-reference error on hidden-exact rows: `max_abs: 23.6250057220459`, `mean_abs: 3.1165595054626465`
+  - raw-C2 source-reference error on hidden-mismatched rows: `max_abs: 18.12263298034668`, `mean_abs: 2.3290510177612305`
+- Row-alignment diagnostic:
+  - Source-hidden reference: `nonidentity_best_row_count: 63`, `mean_best_row_abs: 2.387960195541382`, `mean_diagonal_abs: 2.8089394569396973`.
+  - Readback-hidden reference: `nonidentity_best_row_count: 63`, `mean_best_row_abs: 1.872459888458252`, `mean_diagonal_abs: 2.397221565246582`.
+
+Rejected root-cause hypothesis:
+
+- The remaining Gate B mismatch is not explained solely by corrupted post-override hidden readback.
+- Evidence: the 39 rows whose post-override hidden readback exactly equals the intended source hidden still fail the source-hidden raw-C2 comparator, and their mean raw-C2 error is larger than the rows with corrupted hidden readback.
+- The readback-hidden comparator is closer than the source-hidden comparator but still fails almost all elements, so hidden readback corruption is a contributor or symptom, not a sufficient root cause.
+- The next unresolved boundary is official GMM2 tile/layout/row-state semantics for the modified-hidden full lifecycle, including whether the external mixed-hidden rows are mapped to the same physical A2/C2 tile coordinates consumed by AIC GMM2 and AIV `BlockEpilogue2`.
 
 Scaled raw-C2 reference probe:
 
