@@ -1,5 +1,63 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Stage 2.2 Pre-Fixpipe Accumulator Tap Attempt - 2026-06-26T22:17:48Z
+
+This section is the latest Stage 2.2 status for the environment rebuild. It records an attempted
+debug-only route to the official GMM2 pre-Fixpipe accumulator boundary and the reason that route was
+not kept in source.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Current Stage 2.2 probes still use the validated packed hidden INT4 and hidden-scale boundary. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | The direct no-quant pre-Fixpipe accumulator tap does not compile with the available CATLASS AtlasA2 copy path. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 modified-hidden official W4A8 GMM2 numerical gates. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+Attempted diagnostic:
+
+- Added a temporary debug-only sentinel range `460000 < swiglu_limit < 462000`.
+- Intended to copy the full GMM2 `int32_t` L0C accumulator into the existing FP32 GMM2 debug output before
+  `SetFixPipeConfig<uint64_t, false>`, `VDEQF16`, FP16 storage, aux bias, hidden-scale multiplication, or
+  peer-output routing.
+- Intended row layout was high-accumulator and low-accumulator rows interleaved for each logical hidden row.
+- This was only an isolated debug experiment; it did not alter production `DispatchFFNCombineW4A8SVDQ`.
+
+Build command:
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 cmake --build csrc/build --target svdqw4_a8_gmm2_debug_readback_ascend910b -- -B -j1
+```
+
+Evidence:
+
+- Build log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_prefix_accumulator_debug_build.log`
+- The relevant compile failure is:
+  `Unsupported copy l0c to gm, can not find the specialization.`
+- The missing specialization is:
+  `CopyL0CToGmQuantMode<Catlass::Arch::AtlasA2, int, float, Catlass::Gemm::Tile::ScaleGranularity::NO_QUANT>`.
+- The failing instantiation came from the temporary `BlockMmad` accumulator tap using
+  `CopyL0CToGm<AtlasA2, int32_t, GemmType<float, RowMajor>, NO_QUANT, false>`.
+
+Conclusion:
+
+- Direct `int32_t` L0C accumulator to FP32 GM copy through the existing CATLASS no-quant `CopyL0CToGm`
+  path is unsupported on this AtlasA2 specialization.
+- The unsupported source changes were reverted and are not committed.
+- This attempt is negative evidence only. It is not progress toward the Stage 2.2 numerical gate.
+- The next valid accumulator-boundary route must use a supported official/device path, for example a
+  supported int32 GM debug output mode, a dedicated AscendC accumulator extraction path if available, or a
+  separately proven reproduction of the official hardware `VDEQF16` semantics.
+- Do not relax tolerances, switch to public `torch_npu.npu_grouped_matmul`, or enable production host tiling
+  on this evidence.
+
+Validation after reverting the unsupported tap:
+
+- Source files touched by the temporary tap were restored to the previously committed Stage 2.2 state.
+- `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
+- `git diff --check -- docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`: passed.
+
 ## Stage 2.2 Official Fixpipe Contract Handoff
 
 This section is the latest Stage 2.2 status for the environment rebuild. Older sections are historical
