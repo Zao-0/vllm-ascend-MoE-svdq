@@ -109,6 +109,10 @@ public:
         GM_ADDR ptrDebugHiddenX;
         GM_ADDR ptrDebugHiddenScale;
         GM_ADDR ptrDebugGMM2;
+        GM_ADDR ptrExternalHiddenX;
+        GM_ADDR ptrExternalHiddenScale;
+        GM_ADDR ptrExternalExpertTokenNums;
+        bool gmm2OnlyFromPacked;
         //--------------
         GM_ADDR expertIdx;
         GM_ADDR moeInitRoutingQuantV2Scale;
@@ -146,7 +150,9 @@ public:
                GM_ADDR symmetricPtr_ = nullptr, GM_ADDR ptrDebugRoutedX_ = nullptr,
                GM_ADDR ptrDebugRoutedScale_ = nullptr, GM_ADDR ptrDebugGMM1_ = nullptr,
                GM_ADDR ptrDebugGMM1Hidden_ = nullptr, GM_ADDR ptrDebugHiddenX_ = nullptr,
-               GM_ADDR ptrDebugHiddenScale_ = nullptr, GM_ADDR ptrDebugGMM2_ = nullptr)
+               GM_ADDR ptrDebugHiddenScale_ = nullptr, GM_ADDR ptrDebugGMM2_ = nullptr,
+               GM_ADDR ptrExternalHiddenX_ = nullptr, GM_ADDR ptrExternalHiddenScale_ = nullptr,
+               GM_ADDR ptrExternalExpertTokenNums_ = nullptr, bool gmm2OnlyFromPacked_ = false)
             : problemShape(problemShape_),
               EP(EP_),
               listLen(listLen_),
@@ -189,6 +195,10 @@ public:
               ptrDebugHiddenX(ptrDebugHiddenX_),
               ptrDebugHiddenScale(ptrDebugHiddenScale_),
               ptrDebugGMM2(ptrDebugGMM2_),
+              ptrExternalHiddenX(ptrExternalHiddenX_),
+              ptrExternalHiddenScale(ptrExternalHiddenScale_),
+              ptrExternalExpertTokenNums(ptrExternalExpertTokenNums_),
+              gmm2OnlyFromPacked(gmm2OnlyFromPacked_),
               ptrXActiveMask(ptrXActiveMask_),
               moeInitRoutingQuantV2TilingData(moeInitRoutingQuantV2TilingData_),
               swigluLimit(swigluLimit_)
@@ -234,6 +244,10 @@ public:
     template <>
     CATLASS_DEVICE void operator()<AscendC::AIC>(Params const &params)
     {
+        if (params.gmm2OnlyFromPacked) {
+            GMM2OnlyFromPacked(params);
+            return;
+        }
 #ifdef SYNC_MODE
         AscendC::SyncAll<false>();
 #endif
@@ -251,6 +265,10 @@ public:
     template <>
     CATLASS_DEVICE void operator()<AscendC::AIV>(Params const &params)
     {
+        if (params.gmm2OnlyFromPacked) {
+            SignalGMM2OnlyReady(params);
+            return;
+        }
         DispatchAndCombine(params);
     }
 
@@ -758,6 +776,41 @@ private:
             blockMmad.SynchronizeBlock();
             blockMmad.Finalize(params.expertPerRank - 1, 0);
         }
+    }
+
+    CATLASS_DEVICE
+    void SignalGMM2OnlyReady(Params const &params)
+    {
+        for (uint32_t groupIdx = 0; groupIdx < params.expertPerRank; ++groupIdx) {
+            if (groupIdx == 0 || IsSyncTask(groupIdx - 1, params.expertPerRank)) {
+                AscendC::CrossCoreSetFlag<0x2, PIPE_MTE3>(SYNCFLAGV2C);
+            }
+        }
+    }
+
+    CATLASS_DEVICE
+    void GMM2OnlyFromPacked(Params const &params)
+    {
+        if (coreIdx == 0) {
+            AscendC::GlobalTensor<int8_t> externalHiddenX;
+            externalHiddenX.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t *>(params.ptrExternalHiddenX));
+            CopyGMToGM(gmA2I4_I8, externalHiddenX, params.maxOutputSize * (params.problemShape.n() / 2),
+                       params.ubMoveNum);
+
+            AscendC::GlobalTensor<ElementPerTokenScale> externalHiddenScale;
+            externalHiddenScale.SetGlobalBuffer(
+                reinterpret_cast<__gm__ ElementPerTokenScale *>(params.ptrExternalHiddenScale));
+            CopyGMToGM(gmPerTokenScale2, externalHiddenScale, params.maxOutputSize, params.ubMoveNum);
+
+            AscendC::GlobalTensor<int32_t> externalExpertTokenNums;
+            externalExpertTokenNums.SetGlobalBuffer(
+                reinterpret_cast<__gm__ int32_t *>(params.ptrExternalExpertTokenNums));
+            CopyGMToGM(tokenPerExpert[tokenPerExpertLayout(params.rank, 0, 0)], externalExpertTokenNums,
+                       params.expertPerRank, params.ubMoveNum);
+            GetCumsumForMMAIV(tokenPerExpert, cumsumMM, params.expertPerRank, params.rank, params.EP);
+        }
+        AscendC::SyncAll<true>();
+        GMM2(params);
     }
 
     CATLASS_DEVICE

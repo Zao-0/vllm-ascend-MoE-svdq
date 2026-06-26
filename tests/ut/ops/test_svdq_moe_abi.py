@@ -249,6 +249,46 @@ def test_svdq_mixed_epilogue_debug_torch_schema_meta_and_adapter_are_registered(
         assert name in adapter
 
 
+def test_svdq_w4a8_gmm2_debug_torch_schema_meta_and_adapter_are_registered():
+    binding = (REPO_ROOT / "csrc/torch_binding.cpp").read_text()
+    meta = (REPO_ROOT / "csrc/torch_binding_meta.cpp").read_text()
+    adapter = (
+        REPO_ROOT / "csrc/mc2/svdq_w4a8_gmm2_debug_readback/"
+        "svdq_w4a8_gmm2_debug_readback_torch_adpt.h"
+    ).read_text()
+    op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8"
+    cmake = (op_root / "op_host/CMakeLists.txt").read_text()
+    op_def = (op_root / "op_host/svdqw4_a8_gmm2_debug_readback_def.cpp").read_text()
+    kernel = (op_root / "op_kernel/svdqw4_a8_gmm2_debug_readback.cpp").read_text()
+    official = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp").read_text()
+
+    assert "svdq_w4a8_gmm2_debug_readback(Tensor x" in binding
+    assert 'ops.impl("svdq_w4a8_gmm2_debug_readback", torch::kPrivateUse1' in binding
+    assert "svdq_w4a8_gmm2_debug_readback_meta" in meta
+    assert 'ops.impl("svdq_w4a8_gmm2_debug_readback"' in meta
+    assert "svdq_w4a8_gmm2_debug_readback(" in adapter
+    assert "EXEC_NPU_CMD(" in adapter
+    assert "aclnnSVDQW4A8GMM2DebugReadback" in adapter
+    assert "aclnn_svdq_w4a8_gmm2_debug_readback.h" in adapter
+
+    for name in (
+        "hidden_x_int4_packed",
+        "hidden_x_scale",
+        "external_expert_token_nums",
+        "gmm2_post_dequant",
+    ):
+        assert name in binding
+        assert name in meta
+        assert name in adapter
+
+    assert "SVDQW4A8GMM2DebugReadback" in cmake
+    assert "svdqw4_a8_gmm2_debug_readback" in cmake
+    assert "OP_ADD(SVDQW4A8GMM2DebugReadback)" in op_def
+    assert "InitGMM2OnlyFromPacked" in kernel
+    assert "GMM2OnlyFromPacked" in official
+    assert "GMM2(params)" in official
+
+
 def test_svdq_cann_op_host_surface_uses_canonical_five_factor_abi():
     op_root = REPO_ROOT / "csrc/mc2/dispatch_ffn_combine_w4_a8_svdq"
     cmake = (op_root / "op_host/CMakeLists.txt").read_text()

@@ -527,6 +527,85 @@ svdq_w4a8_debug_readback_meta(
             hidden_x_int4_packed, hidden_x_scale, gmm2_post_dequant};
 }
 
+at::Tensor svdq_w4a8_gmm2_debug_readback_meta(
+    const at::Tensor& x,
+    const at::TensorList& weight1,
+    const at::TensorList& weight2,
+    const at::Tensor& expert_idx,
+    const at::TensorList& scale1,
+    const at::TensorList& scale2,
+    const at::TensorList& bias1,
+    const at::TensorList& bias2,
+    const at::Tensor& probs,
+    const at::Tensor& hidden_x_int4_packed,
+    const at::Tensor& hidden_x_scale,
+    const at::Tensor& external_expert_token_nums,
+    c10::string_view group,
+    int64_t max_output_size,
+    const c10::optional<at::Tensor>& x_active_mask,
+    double swiglu_limit)
+{
+    TORCH_CHECK(x.dim() == 2, "x must be rank-2.");
+    TORCH_CHECK(expert_idx.dim() == 2, "expert_idx must be rank-2.");
+    TORCH_CHECK(probs.dim() == 2, "probs must be rank-2.");
+    TORCH_CHECK(hidden_x_int4_packed.dim() == 2, "hidden_x_int4_packed must be rank-2.");
+    TORCH_CHECK(hidden_x_scale.dim() == 1, "hidden_x_scale must be rank-1.");
+    TORCH_CHECK(external_expert_token_nums.dim() == 2, "external_expert_token_nums must be rank-2.");
+    TORCH_CHECK(x.scalar_type() == at::kBFloat16 || x.scalar_type() == at::kHalf,
+                "x must be BF16 or FP16.");
+    TORCH_CHECK(expert_idx.scalar_type() == at::kInt, "expert_idx must be INT32.");
+    TORCH_CHECK(probs.scalar_type() == at::kFloat, "probs must be FP32.");
+    TORCH_CHECK(hidden_x_int4_packed.scalar_type() == at::kChar, "hidden_x_int4_packed must be INT8.");
+    TORCH_CHECK(hidden_x_scale.scalar_type() == at::kFloat, "hidden_x_scale must be FP32.");
+    TORCH_CHECK(external_expert_token_nums.scalar_type() == at::kInt,
+                "external_expert_token_nums must be INT32.");
+    TORCH_CHECK(expert_idx.sizes() == probs.sizes(), "expert_idx shape must match probs shape.");
+    TORCH_CHECK(expert_idx.size(0) == x.size(0), "expert_idx token dimension must match x.");
+    TORCH_CHECK(!weight1.empty(), "weight1 must not be an empty tensor list.");
+    TORCH_CHECK(!weight2.empty(), "weight2 must not be an empty tensor list.");
+    TORCH_CHECK(!scale1.empty(), "scale1 must not be an empty tensor list.");
+    TORCH_CHECK(!scale2.empty(), "scale2 must not be an empty tensor list.");
+    TORCH_CHECK(!bias1.empty(), "bias1 must not be an empty tensor list.");
+    TORCH_CHECK(!bias2.empty(), "bias2 must not be an empty tensor list.");
+    TORCH_CHECK(weight1[0].dim() == 3, "weight1 must be rank-3.");
+    TORCH_CHECK(weight2[0].dim() == 3, "weight2 must be rank-3.");
+    TORCH_CHECK(weight1[0].scalar_type() == at::kInt, "weight1 must be INT32 packed W4.");
+    TORCH_CHECK(weight2[0].scalar_type() == at::kInt, "weight2 must be INT32 packed W4.");
+    TORCH_CHECK(scale1[0].scalar_type() == at::kLong, "scale1 must be INT64 packed FP32 bits.");
+    TORCH_CHECK(scale2[0].scalar_type() == at::kLong, "scale2 must be INT64 packed FP32 bits.");
+    TORCH_CHECK(bias1[0].scalar_type() == at::kFloat, "bias1 must be FP32.");
+    TORCH_CHECK(bias2[0].scalar_type() == at::kFloat, "bias2 must be FP32.");
+    TORCH_CHECK(weight1[0].size(0) == weight2[0].size(0), "weight1/weight2 expert counts must match.");
+    TORCH_CHECK(weight1[0].size(1) == x.size(1), "weight1 K dimension must match x hidden dim.");
+    TORCH_CHECK(weight2[0].size(2) * INT4_NUMS_IN_INT32 == x.size(1),
+                "weight2 packed N dimension must match x hidden dim.");
+    TORCH_CHECK(max_output_size > 0, "max_output_size must be positive.");
+    if (x_active_mask.has_value()) {
+        TORCH_CHECK(x_active_mask.value().dim() == 1, "x_active_mask must be rank-1.");
+        TORCH_CHECK(x_active_mask.value().size(0) == x.size(0), "x_active_mask token dimension must match x.");
+        TORCH_CHECK(x_active_mask.value().scalar_type() == at::kBool, "x_active_mask must be bool.");
+    }
+    (void)group;
+    (void)swiglu_limit;
+
+    const auto num_experts = weight1[0].size(0);
+    const auto hidden_size = x.size(1);
+    const auto gmm1_columns = weight1[0].size(2) * INT4_NUMS_IN_INT32;
+    const auto intermediate_size = gmm1_columns / 2;
+    TORCH_CHECK(gmm1_columns % 2 == 0, "GMM1 output columns must contain gate and up halves.");
+    TORCH_CHECK(weight2[0].size(1) == intermediate_size, "weight2 K dimension must match GMM1 half width.");
+    TORCH_CHECK(hidden_x_int4_packed.size(0) == max_output_size,
+                "hidden_x_int4_packed row count must equal max_output_size.");
+    TORCH_CHECK(hidden_x_int4_packed.size(1) == intermediate_size,
+                "hidden_x_int4_packed width must match GMM2 K.");
+    TORCH_CHECK(hidden_x_scale.size(0) == max_output_size, "hidden_x_scale row count must equal max_output_size.");
+    TORCH_CHECK(external_expert_token_nums.size(0) == 1, "external_expert_token_nums must be rank-2 [1, experts].");
+    TORCH_CHECK(external_expert_token_nums.size(1) == num_experts,
+                "external_expert_token_nums expert count must match weights.");
+
+    return at::empty({max_output_size, hidden_size}, x.options().dtype(at::kFloat).device(at::kMeta));
+}
+
 at::Tensor npu_lightning_indexer_meta(
     const at::Tensor &query, const at::Tensor &key, const at::Tensor &weights,
     const c10::optional<at::Tensor> &actual_seq_lengths_query,
@@ -1886,6 +1965,7 @@ TORCH_LIBRARY_IMPL_EXPAND(CONCAT(_C, _ascend), Meta, ops) {
     ops.impl("svdq_mixed_epilogue_debug_readback",
              &vllm_ascend::meta::svdq_mixed_epilogue_debug_readback_meta);
     ops.impl("svdq_w4a8_debug_readback", &vllm_ascend::meta::svdq_w4a8_debug_readback_meta);
+    ops.impl("svdq_w4a8_gmm2_debug_readback", &vllm_ascend::meta::svdq_w4a8_gmm2_debug_readback_meta);
     // matmul allreduce add rmsnorm
     ops.impl("matmul_allreduce_add_rmsnorm", &vllm_ascend::meta::matmul_allreduce_add_rmsnorm_meta);
     // moe_init_routing_custom

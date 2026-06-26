@@ -325,3 +325,99 @@ Git/worktree state to preserve across rebuild:
   - `csrc/build_out/`
   - `extra-info/`
 - Generated custom-op install mirrors under `vllm_ascend/_cann_ops_custom` were refreshed for local validation but are not intended to be committed except for tracked placeholders.
+
+## Current Handoff State - 2026-06-26T08:40Z
+
+Status: IN PROGRESS.
+
+Current working prompt:
+
+- `svdq_qwen35_moe_clean_implementation_stage2_prompt.md` was reread and remains the active working prompt.
+- The immediate unresolved Stage 2.2 boundary is:
+  `validated SVDQ-modified packed hidden INT4 + per-token hidden scale -> official W4A8 GMM2 consumer path`.
+- The public `torch_npu.npu_grouped_matmul` path was not modified, reinterpreted, debugged, or used as progress.
+- No scale-guessing, repacking workaround, scalar substitute, or public grouped-matmul probe is counted as progress.
+- Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed.
+
+Repository state before this handoff commit:
+
+- Repo: `/root/workspace/lza/vllm-ascend`
+- Branch: `codex/svdq-lowrank-l0-reuse-debug`
+- HEAD before this report update: `484a40f6f3b7ee78c19ffea6a553ffda6c0163b1`
+- Origin: `git@github.com:Zao-0/vllm-ascend-MoE-svdq.git`
+- Pre-existing dirty/untracked paths still intentionally left out of this work:
+  - `csrc/utils/inc/kernel/moe_distribute_base.h`
+  - `csrc/build_out/`
+  - `extra-info/`
+
+New isolated Stage 2.2 implementation work:
+
+- Added a debug-only W4A8 GMM2 relaunch path that seeds the official W4A8 internal packed-hidden buffers from an externally validated packed INT4 hidden tensor and hidden scale tensor.
+- The path enters the official `DispatchFFNCombineW4A8` kernel with `gmm2OnlyFromPacked` enabled.
+- AIC copies the supplied packed hidden bytes into official `gmA2I4_I8`, copies the supplied per-token hidden scales into official `gmPerTokenScale2`, copies external expert-token counts into official `tokenPerExpert`, builds the official `cumsumMM`, and then calls the official `GMM2(params)`.
+- AIV only emits the synchronization flags needed to unblock the official GMM2 wait points; it does not implement a second GMM2 or public grouped-matmul substitute.
+- This intentionally skips redoing hidden quantization inside the new operator. The input packed hidden boundary is expected to come from the already validated Stage 2.1 mixed epilogue debug op.
+
+Source files added:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/svdqw4_a8_gmm2_debug_readback.cpp`
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/svdqw4_a8_gmm2_debug_readback_def.cpp`
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/op_api/aclnn_svdq_w4a8_gmm2_debug_readback.h`
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/op_api/aclnn_svdq_w4a8_gmm2_debug_readback.cpp`
+- `csrc/mc2/svdq_w4a8_gmm2_debug_readback/svdq_w4a8_gmm2_debug_readback_torch_adpt.h`
+
+Source files modified:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp`
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h`
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/CMakeLists.txt`
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/dispatch_ffn_combine_w4_a8_tiling.cpp`
+- `csrc/build_aclnn.sh`
+- `csrc/torch_binding.cpp`
+- `csrc/torch_binding_meta.cpp`
+- `tests/ut/ops/test_svdq_moe_abi.py`
+
+New torch op surface:
+
+- `torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback(...) -> Tensor`
+- Inputs include the original official W4A8 argument set plus:
+  - `hidden_x_int4_packed`
+  - `hidden_x_scale`
+  - `external_expert_token_nums`
+- Output is the official debug GMM2 post-dequant readback tensor.
+
+Build and static validation evidence:
+
+- Generate compile commands:
+  - Command: `cmake --build csrc/build --target generate_compile_cmd_ascend910b -- -B -j1`
+  - First result: fail because the new opdef dtype/format option lists were inconsistent.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_build_gmm2_debug_generate_compile_cmd.log`
+  - Fix: align all input/output dtype and format option-list lengths with the existing official W4A8 debug opdef.
+- Generate compile commands retry:
+  - Command: `cmake --build csrc/build --target generate_compile_cmd_ascend910b -- -B -j1`
+  - Result: pass.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_build_gmm2_debug_generate_compile_cmd_retry.log`
+- Focused Ascend910B kernel build:
+  - Command: `cmake --build csrc/build --target svdqw4_a8_gmm2_debug_readback_ascend910b -- -B -j1`
+  - Result: pass across generated variants `_0` through `_7`.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_build_svdqw4a8_gmm2_debug_readback_ascend910b.log`
+- Focused torch schema/meta/adapter test:
+  - Command: `pytest -q tests/ut/ops/test_svdq_moe_abi.py::test_svdq_w4a8_gmm2_debug_torch_schema_meta_and_adapter_are_registered`
+  - Result: pass, `1 passed, 16 warnings`.
+
+Current limitation:
+
+- This handoff stops at source implementation, focused CANN kernel build, and torch registration/static validation because the environment is about to be rebuilt.
+- The new GMM2 debug op has not yet been installed into the refreshed custom OPP package, rebuilt into the in-place Python extension, launched on logical NPU 0, or compared numerically against the unfused official-GMM2 reference.
+- Therefore the Stage 2.2 real-device numerical gate is still pending.
+
+Required next steps after environment rebuild:
+
+1. Keep `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3` and reconfirm exactly four visible logical NPUs.
+2. Regenerate/build/install the new custom op through the supported flow:
+   - `cmake --build csrc/build --target generate_compile_cmd_ascend910b -- -B -j1`
+   - `cmake --build csrc/build --target svdqw4_a8_gmm2_debug_readback_ascend910b -- -B -j1`
+   - rebuild `ops_aclnn`, `cust_opapi`, and the in-place `vllm_ascend_C` extension before launch.
+3. Add or run a Stage 2.2 device probe that feeds the Stage 2.1 validated mixed hidden packed bytes and scales into `svdq_w4a8_gmm2_debug_readback`.
+4. Compare the returned official GMM2 post-dequant tensor against the unfused official-GMM2 reference using real-checkpoint W2/scales and same routing.
+5. Only after the real-device GMM2 gate passes should work proceed to down projection SVDQ composition, final combine, or production fused integration.
