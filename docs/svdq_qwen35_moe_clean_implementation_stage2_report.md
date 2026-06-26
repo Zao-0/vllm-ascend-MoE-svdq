@@ -1,5 +1,93 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Stage 2.2 Gate A Manifest Plumbing and Rerun - 2026-06-26T22:43:36Z
+
+This section is the latest Stage 2.2 status for the environment rebuild. It adds explicit Gate A input-boundary
+metadata to the existing modified-hidden GMM2 probe and records one real-device rerun.
+
+The local UTC clock for this update is `2026-06-26T22:43:36Z`. The immediately following state-table section
+has a later manual timestamp in its heading, but it is historical relative to this top section.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Gate A manifest rerun confirms exact packed-hidden override readback. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Gate A manifest is now emitted; Gate B high-half comparator still fails strict tolerance. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 modified-hidden official W4A8 GMM2 numerical gates. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+Files changed:
+
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+  - Extended tensor byte manifests with device, storage size, logical byte size, element size, and contiguity.
+  - Added sampled metadata manifests for large W2 tensors so the real checkpoint weight metadata is recorded without
+    copying or hashing full packed weights.
+  - Added `gate_a_input_boundary` to every Stage 2.2 probe summary mode.
+- `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+  - Added this status section.
+
+New `gate_a_input_boundary` fields include:
+
+- `canonical_hidden_bf16`
+- `hidden_int8`
+- `hidden_int4_packed_active`
+- `hidden_int4_packed_full_padded`
+- `hidden_scale_active`
+- `hidden_scale_full_padded`
+- `expert_token_nums`
+- active expert IDs, expert prefix sums, expert-local row starts, expert-local row offsets, and first row map entries
+- active-row count and padded-row interpretation
+- sampled W2 packed weight metadata, W2 scale metadata, and W2 scale-bias metadata
+- official source contract notes for packed hidden workspace, hidden-scale workspace, and W2 access
+
+Validation commands:
+
+- `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
+- `git diff --check -- tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
+- NPU preflight:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 npu-smi info`
+  - Log:
+    `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_gate_a_manifest_npu_smi.log`
+- Real-device probe command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH} python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py --require-npu --top-k 1 --route-experts 0 --local-num-experts 8 --swiglu-limit 451111 --summary-name phase_stage2_gmm2_gate_a_manifest_high_half_true_top1_expert0.json`
+  - Log:
+    `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_gate_a_manifest_high_half_true_top1_expert0.log`
+  - Exit code file:
+    `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_gate_a_manifest_high_half_true_top1_expert0.exitcode`
+  - Summary:
+    `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_gate_a_manifest_high_half_true_top1_expert0.json`
+
+Rerun result:
+
+- Probe exit code: `1`, expected because strict Stage 2.2 Gate B remains failed.
+- Summary stage: `stage2_modified_hidden_official_w4a8_gmm2_raw_c2`.
+- `gate_a_input_boundary` present: `true`.
+- Gate A manifest status: `diagnostic_manifest_only`.
+- Active rows: `16`.
+- `expert_token_total_matches_active_rows`: `true`.
+- Padded rows: hidden INT4 zero `true`, hidden scale zero `true`.
+- `canonical_hidden_bf16.dtype`: `torch.bfloat16`.
+- `hidden_int8.dtype`: `torch.int8`.
+- W2 packed metadata shape: `[8, 512, 256]`.
+- W2 scale metadata shape: `[8, 1, 2048]`.
+- `hidden_post_override_readback_exact`: `true`.
+- `hidden_scale_post_override_readback_exact`: `true`.
+- `official_gmm2_aic_raw_output_finite`: `true`.
+- `official_gmm2_aic_raw_output_nonzero`: `true`.
+- `official_gmm2_aic_reference_passed`: `false`.
+- `official_gmm2_numerical_gate_passed`: `false`.
+- Raw high-half comparator remains failed:
+  - `max_abs: 0.0009765625`
+  - `mean_abs: 0.00004444917431101203`
+  - failed elements over strict tolerance: `2227`
+
+Conclusion:
+
+- Gate A evidence is now emitted in a single explicit summary section and was verified in a real-device run.
+- This does not close Stage 2.2. The remaining active boundary is still Gate B: exact official GMM2 D2/Fixpipe
+  high/low-half semantics before post-dequant/final output.
+- Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed.
+
 ## Stage 2.2 Official-vs-Debug GMM2 State Table - 2026-06-26T23:05Z
 
 This section is the latest Stage 2.2 status for the environment rebuild. It responds to

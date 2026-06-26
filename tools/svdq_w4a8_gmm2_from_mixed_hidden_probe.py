@@ -499,14 +499,47 @@ def _tensor_raw_bytes(tensor: torch.Tensor) -> bytes:
 
 def _tensor_byte_manifest(tensor: torch.Tensor, *, max_sample_bytes: int = 64) -> dict[str, Any]:
     raw = _tensor_raw_bytes(tensor)
+    try:
+        storage_nbytes = int(tensor.untyped_storage().nbytes())
+    except Exception:
+        storage_nbytes = None
     return {
         "shape": list(tensor.shape),
         "dtype": str(tensor.dtype),
+        "device": str(tensor.device),
         "stride": list(tensor.stride()),
         "storage_offset": int(tensor.storage_offset()),
         "numel": int(tensor.numel()),
+        "element_size": int(tensor.element_size()),
+        "logical_nbytes": int(tensor.numel() * tensor.element_size()),
+        "storage_nbytes": storage_nbytes,
+        "is_contiguous": bool(tensor.is_contiguous()),
         "sha256": hashlib.sha256(raw).hexdigest(),
         "sample_bytes": list(raw[:max_sample_bytes]),
+    }
+
+
+def _tensor_metadata_manifest(tensor: torch.Tensor, *, max_sample_elements: int = 64) -> dict[str, Any]:
+    try:
+        storage_nbytes = int(tensor.untyped_storage().nbytes())
+    except Exception:
+        storage_nbytes = None
+    sample = tensor.detach().flatten()[:max_sample_elements].cpu().contiguous()
+    sample_bytes = _tensor_raw_bytes(sample)
+    return {
+        "shape": list(tensor.shape),
+        "dtype": str(tensor.dtype),
+        "device": str(tensor.device),
+        "stride": list(tensor.stride()),
+        "storage_offset": int(tensor.storage_offset()),
+        "numel": int(tensor.numel()),
+        "element_size": int(tensor.element_size()),
+        "logical_nbytes": int(tensor.numel() * tensor.element_size()),
+        "storage_nbytes": storage_nbytes,
+        "is_contiguous": bool(tensor.is_contiguous()),
+        "sample_element_count": int(sample.numel()),
+        "sample_sha256": hashlib.sha256(sample_bytes).hexdigest(),
+        "sample_bytes": list(sample_bytes[:128]),
     }
 
 
@@ -655,6 +688,70 @@ def _routing_identity_manifest(
             "hidden_scale_padded_rows_zero": padded_scale_zero,
             "hidden_int4_padded_nonzero_count": int((padded_hidden != 0).sum().item()) if padded_hidden.numel() else 0,
             "hidden_scale_padded_nonzero_count": int((padded_scale != 0).sum().item()) if padded_scale.numel() else 0,
+        },
+    }
+
+
+def _gate_a_input_boundary_manifest(
+    *,
+    mixed: dict[str, torch.Tensor],
+    hidden_x_int4_packed: torch.Tensor,
+    hidden_x_scale: torch.Tensor,
+    external_expert_token_nums: torch.Tensor,
+    layer: Any,
+    routing_identity: dict[str, Any],
+    active_rows: int,
+    max_output_size: int,
+) -> dict[str, Any]:
+    return {
+        "gate": "Gate A - GMM2 Input Boundary",
+        "status": "diagnostic_manifest_only",
+        "scope": (
+            "Records the exact tensors and row identity supplied to the official modified-hidden "
+            "W4A8 GMM2 debug boundary. This does not claim Gate B or Gate C numerical success."
+        ),
+        "canonical_hidden_bf16": _tensor_byte_manifest(mixed["hidden_bf16"][:active_rows]),
+        "hidden_int8": _tensor_byte_manifest(mixed["hidden_q"][:active_rows]),
+        "hidden_int4_packed_active": _tensor_byte_manifest(hidden_x_int4_packed[:active_rows]),
+        "hidden_int4_packed_full_padded": _tensor_byte_manifest(hidden_x_int4_packed),
+        "hidden_scale_active": _tensor_byte_manifest(hidden_x_scale[:active_rows]),
+        "hidden_scale_full_padded": _tensor_byte_manifest(hidden_x_scale),
+        "expert_token_nums": _tensor_byte_manifest(external_expert_token_nums),
+        "routing_identity": {
+            "active_expert_ids": routing_identity["active_expert_ids"],
+            "expert_token_nums": routing_identity["expert_token_nums"],
+            "expert_token_total": routing_identity["expert_token_total"],
+            "expert_token_total_matches_active_rows": routing_identity["expert_token_total_matches_active_rows"],
+            "expert_prefix_sums": routing_identity["expert_prefix_sums"],
+            "expert_local_row_starts": routing_identity["expert_local_row_starts"],
+            "expert_local_row_offsets": routing_identity["expert_local_row_offsets"],
+            "routed_row_map_first64": routing_identity["routed_row_map_first64"],
+            "reference_group_counts": routing_identity["reference_group_counts"],
+            "reference_group_counts_match_expert_token_nums": routing_identity[
+                "reference_group_counts_match_expert_token_nums"
+            ],
+            "top_k_expansion": routing_identity["top_k_expansion"],
+            "tp_ep_mapping": routing_identity["tp_ep_mapping"],
+        },
+        "active_row_count": int(active_rows),
+        "max_output_size": int(max_output_size),
+        "padded_row_interpretation": routing_identity["padded_row_interpretation"],
+        "w2_packed_weight_metadata": _tensor_metadata_manifest(layer.w2_weight),
+        "w2_scale_metadata": _tensor_metadata_manifest(layer.w2_weight_scale),
+        "w2_scale_bias_metadata": _tensor_metadata_manifest(layer.w2_scale_bias),
+        "official_source_contract": {
+            "packed_hidden_workspace": (
+                "dispatch_ffn_combine_w4_a8_kernel.hpp binds gmA2I4/gmA2I4_I8 to "
+                "workspaceInfo.ptrA2Int4 and GMM2 consumes gmA2I4 through the official BlockMmad path."
+            ),
+            "hidden_scale_workspace": (
+                "dispatch_ffn_combine_w4_a8_kernel.hpp binds gmPerTokenScale2 to "
+                "workspaceInfo.ptrPerTokenScale2 and BlockEpilogue2 consumes that scale."
+            ),
+            "w2_access": (
+                "GMM2 selects W2 and W2 scale through GetTensorAddr on params.ptrB2 and params.ptrScale2, "
+                "preserving the official postloaded packed-W4 zN layout."
+            ),
         },
     }
 
@@ -1575,6 +1672,16 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         hidden_scale_readback=hidden_scale_readback,
         reference_group_counts=reference_contract.get("group_counts"),
     )
+    gate_a_input_boundary = _gate_a_input_boundary_manifest(
+        mixed=mixed,
+        hidden_x_int4_packed=hidden_x_int4_packed,
+        hidden_x_scale=hidden_x_scale,
+        external_expert_token_nums=external_expert_token_nums,
+        layer=layer,
+        routing_identity=routing_identity,
+        active_rows=active_rows,
+        max_output_size=args.max_output_size,
+    )
     if loop_stats_debug:
         hidden_scale_active = hidden_x_scale[:active_rows].detach().cpu()
         loop_stats = _parse_gmm2_loop_stats(gmm2_post_dequant, expert_per_rank=local_num_experts)
@@ -1603,6 +1710,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                 "active_rows": active_rows,
             },
             "routing_identity": routing_identity,
+            "gate_a_input_boundary": gate_a_input_boundary,
             "official_postload": {
                 "loader": "AscendW4A8DynamicFusedMoEMethod.process_weights_after_loading_modelslim",
                 "metadata": _postload_metadata(layer),
@@ -1883,6 +1991,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                 "active_rows": active_rows,
             },
             "routing_identity": routing_identity,
+            "gate_a_input_boundary": gate_a_input_boundary,
             "official_postload": {
                 "loader": "AscendW4A8DynamicFusedMoEMethod.process_weights_after_loading_modelslim",
                 "metadata": _postload_metadata(layer),
@@ -2012,6 +2121,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             "active_rows": active_rows,
         },
         "routing_identity": routing_identity,
+        "gate_a_input_boundary": gate_a_input_boundary,
         "official_postload": {
             "loader": "AscendW4A8DynamicFusedMoEMethod.process_weights_after_loading_modelslim",
             "metadata": _postload_metadata(layer),
