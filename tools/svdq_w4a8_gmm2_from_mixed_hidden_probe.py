@@ -239,6 +239,103 @@ def _threshold_error_counts(
     }
 
 
+def _residual_distribution_diagnostics(
+    actual: torch.Tensor,
+    expected: torch.Tensor,
+    *,
+    abs_thresholds: tuple[float, ...] = (1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 5e-3, 1e-2),
+    top_k: int = 16,
+) -> dict[str, Any]:
+    actual_cpu = actual.detach().cpu().float()
+    expected_cpu = expected.detach().cpu().float()
+    signed = actual_cpu - expected_cpu
+    abs_diff = signed.abs()
+    finite = bool(torch.isfinite(abs_diff).all().item()) if abs_diff.numel() else True
+    flat_abs = abs_diff.flatten()
+    flat_signed = signed.flatten()
+    if not flat_abs.numel() or not finite:
+        return {
+            "enabled": True,
+            "finite": finite,
+            "numel": int(flat_abs.numel()),
+            "reason": "empty or non-finite residual tensor",
+        }
+
+    quantiles = torch.tensor(
+        [0.0, 0.5, 0.9, 0.95, 0.99, 0.999, 1.0],
+        dtype=torch.float32,
+    )
+    quantile_values = torch.quantile(flat_abs, quantiles)
+    threshold_counts = {
+        f"abs_le_{threshold:g}": int((flat_abs <= threshold).sum().item()) for threshold in abs_thresholds
+    }
+    threshold_counts.update(
+        {f"abs_gt_{threshold:g}": int((flat_abs > threshold).sum().item()) for threshold in abs_thresholds}
+    )
+
+    top_count = min(int(top_k), int(flat_abs.numel()))
+    top_values, top_indices = torch.topk(flat_abs, k=top_count)
+    top_entries: list[dict[str, Any]] = []
+    for value, flat_index in zip(top_values.tolist(), top_indices.tolist(), strict=True):
+        index_tuple = torch.unravel_index(torch.tensor(int(flat_index)), abs_diff.shape)
+        index = [int(v) for v in index_tuple]
+        idx = tuple(index)
+        top_entries.append(
+            {
+                "index": index,
+                "abs_diff": float(value),
+                "signed_diff": float(signed[idx].item()),
+                "actual": float(actual_cpu[idx].item()),
+                "expected": float(expected_cpu[idx].item()),
+            }
+        )
+
+    row_max = abs_diff.max(dim=1).values if abs_diff.ndim == 2 and abs_diff.shape[0] else torch.empty(0)
+    col_max = abs_diff.max(dim=0).values if abs_diff.ndim == 2 and abs_diff.shape[1] else torch.empty(0)
+    row_top_values, row_top_indices = (
+        torch.topk(row_max, k=min(16, int(row_max.numel()))) if row_max.numel() else (torch.empty(0), torch.empty(0, dtype=torch.int64))
+    )
+    col_top_values, col_top_indices = (
+        torch.topk(col_max, k=min(16, int(col_max.numel()))) if col_max.numel() else (torch.empty(0), torch.empty(0, dtype=torch.int64))
+    )
+
+    positive_count = int((flat_signed > 0).sum().item())
+    negative_count = int((flat_signed < 0).sum().item())
+    zero_count = int((flat_signed == 0).sum().item())
+    return {
+        "enabled": True,
+        "finite": finite,
+        "numel": int(flat_abs.numel()),
+        "signed": {
+            "mean": float(flat_signed.mean().item()),
+            "min": float(flat_signed.min().item()),
+            "max": float(flat_signed.max().item()),
+            "positive_count": positive_count,
+            "negative_count": negative_count,
+            "zero_count": zero_count,
+        },
+        "abs": {
+            "mean": float(flat_abs.mean().item()),
+            "max": float(flat_abs.max().item()),
+            "quantiles": {f"q{float(q):g}": float(v) for q, v in zip(quantiles.tolist(), quantile_values.tolist(), strict=True)},
+            "threshold_counts": threshold_counts,
+        },
+        "top_abs_entries": top_entries,
+        "row_max_abs_top16": [
+            {"row": int(idx), "max_abs": float(value)}
+            for value, idx in zip(row_top_values.tolist(), row_top_indices.tolist(), strict=True)
+        ],
+        "col_max_abs_top16": [
+            {"col": int(idx), "max_abs": float(value)}
+            for value, idx in zip(col_top_values.tolist(), col_top_indices.tolist(), strict=True)
+        ],
+        "diagnostic_only": (
+            "Residual distribution for narrowing the official FP16 D2/Fixpipe mismatch. "
+            "It does not relax tolerances and is not a substitute reference implementation."
+        ),
+    }
+
+
 def _rowwise_abs_error_summary(
     actual: torch.Tensor,
     expected: torch.Tensor,
@@ -1475,6 +1572,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                     "passed": bool(raw_c2_reference_passed),
                     "contract": raw_reference_contract,
                     "error": raw_c2_error,
+                    "residual_distribution": _residual_distribution_diagnostics(raw_actual, raw_reference),
                     "max_abs_tolerance": args.gmm2_raw_c2_reference_max_abs_tol,
                     "mean_abs_tolerance": args.gmm2_raw_c2_reference_mean_abs_tol,
                     "diagnostic_only": (
@@ -1580,6 +1678,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                 "passed": bool(gmm2_reference_passed),
                 "contract": reference_contract,
                 "error": error,
+                "residual_distribution": _residual_distribution_diagnostics(actual, reference),
                 "max_abs_tolerance": args.gmm2_reference_max_abs_tol,
                 "mean_abs_tolerance": args.gmm2_reference_mean_abs_tol,
             },

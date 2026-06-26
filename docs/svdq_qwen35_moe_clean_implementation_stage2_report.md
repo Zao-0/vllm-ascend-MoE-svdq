@@ -1,8 +1,119 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
-## Stage 2.2 Multi-Expert Gate A Boundary Manifest - 2026-06-26T20:22Z
+## Stage 2.2 Residual Distribution Diagnostic - 2026-06-26T20:31Z
 
 This section is the latest Stage 2.2 status. Older sections are historical evidence unless explicitly
+referenced here.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Source packed hidden exact-match and post-override readback both report mismatch count 0. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Raw-C2 and post-dequant summaries now include residual distributions. The post-dequant residual is tightly bounded after hidden-scale application, but the strict Gate C max tolerance still fails; Gate B raw-C2 strict tolerance also still fails. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 modified-hidden official W4A8 GMM2 numerical gates. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+This attempt is diagnostic-only. It does not modify device kernel code, synchronization, GMM2 lifecycle,
+packed-weight access, scale formulas, public grouped matmul, tolerance values, or production SVDQ host tiling.
+
+Files changed:
+
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+  - Added `_residual_distribution_diagnostics(...)`.
+  - Raw-C2 and post-dequant reference blocks now report signed residual stats, absolute-error quantiles,
+    threshold counts, top absolute-error locations, and row/column maxima.
+  - Pass/fail logic and tolerances are unchanged.
+
+Raw-C2 residual distribution probe:
+
+- Command used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, repo-local `ASCEND_CUSTOM_OPP_PATH`,
+  repo-local `libcust_opapi.so`, top-1 expert 0, 64 tokens, `max_output_size=64`, and
+  `--swiglu-limit 454545`.
+- NPU preflight log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_residual_distribution_npu_smi.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_residual_distribution_top1_expert0_max64.log`
+- Summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_raw_c2_residual_distribution_top1_expert0_max64.json`
+- Top-level stage `passed: false`; this remains expected because the strict Gate B raw-C2 numerical gate
+  still fails.
+
+Raw-C2 residual evidence:
+
+- error: `max_abs: 0.0166015625`, `mean_abs: 0.0007681758143007755`, failed elements over strict abs
+  tolerance: `70547`
+- signed residual mean: `0.00000616212491877377`
+- signed counts: positive `41238`, negative `40921`, zero `48913`
+- absolute-error quantiles:
+  - q0.5: `0.000244140625`
+  - q0.9: `0.00201416015625`
+  - q0.95: `0.0037841796875`
+  - q0.99: `0.00439453125`
+  - q0.999: `0.0079345703125`
+  - q1: `0.0166015625`
+- threshold counts:
+  - `abs_le_0.0002: 60525`, `abs_gt_0.0002: 70547`
+  - `abs_le_0.001: 100098`, `abs_gt_0.001: 30974`
+  - `abs_le_0.01: 131065`, `abs_gt_0.01: 7`
+- top raw-C2 residual locations include `[44,1468]` with abs diff `0.0166015625`,
+  `[54,1758]` with abs diff `0.01611328125`, and `[37,578]` with abs diff `0.0156402587890625`.
+
+Post-dequant residual distribution probe:
+
+- Command used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, repo-local `ASCEND_CUSTOM_OPP_PATH`,
+  repo-local `libcust_opapi.so`, top-1 expert 0, 64 tokens, and `max_output_size=64`.
+- NPU preflight log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_post_dequant_residual_distribution_npu_smi.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_post_dequant_residual_distribution_top1_expert0_max64.log`
+- Summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_post_dequant_residual_distribution_top1_expert0_max64.json`
+- Top-level stage `passed: false`; Gate C remains finite/nonzero and mean-error passes the old threshold,
+  but max-error still exceeds the strict threshold.
+
+Post-dequant residual evidence:
+
+- error: `max_abs: 0.00037679076194763184`, `mean_abs: 0.000018463411834090948`
+- signed residual mean: `0.0000001488513277081438`
+- signed counts: positive `41238`, negative `40921`, zero `48913`
+- absolute-error quantiles:
+  - q0.5: `0.000005893409252166748`
+  - q0.9: `0.00005221366882324219`
+  - q0.95: `0.00008362531661987305`
+  - q0.99: `0.00011137127876281738`
+  - q0.999: `0.00019773695385083556`
+  - q1: `0.00037679076194763184`
+- threshold counts:
+  - `abs_le_0.0002: 130953`, `abs_gt_0.0002: 119`
+  - `abs_le_0.001: 131072`, `abs_gt_0.001: 0`
+- top post-dequant residual locations include `[7,871]` with abs diff `0.00037679076194763184`,
+  `[37,578]` with abs diff `0.0003540515899658203`, and `[49,1312]` with abs diff
+  `0.00035199522972106934`.
+
+Current conclusion:
+
+- The post-dequant residual is much smaller than the raw-C2 residual after official AIV hidden-scale
+  application, but strict Stage 2.2 numerical gates still fail.
+- The signed residual distribution is balanced and shares the same positive/negative/zero counts between
+  raw-C2 and post-dequant summaries, which is consistent with the same underlying C2 residual being scaled
+  through the AIV path.
+- This does not prove an accepted rounding model and does not justify tolerance relaxation. The next useful
+  numerical step is a stricter official D2/Fixpipe boundary diagnostic, such as exposing high/low D2 halves
+  or otherwise proving the exact device-side FP16 rounding contract without changing the official lifecycle.
+
+Validation before this report update:
+
+- `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
+- `git diff --check`: passed.
+- Four-visible-NPU raw-C2 residual-distribution probe completed and wrote the new summary, with expected
+  nonzero exit because `passed: false`.
+- Four-visible-NPU post-dequant residual-distribution probe completed and wrote the new summary, with expected
+  nonzero exit because `passed: false`.
+
+## Stage 2.2 Multi-Expert Gate A Boundary Manifest - 2026-06-26T20:22Z
+
+This section is historical evidence. The `2026-06-26T20:31Z` section above supersedes it for current
+status. Older sections are historical evidence unless explicitly
 referenced here.
 
 | Item | Status | Evidence / blocker |
