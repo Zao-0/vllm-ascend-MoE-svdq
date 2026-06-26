@@ -139,6 +139,21 @@ def _tensor_int_exact(actual: torch.Tensor, expected: torch.Tensor) -> dict[str,
     actual_cpu = actual.detach().cpu()
     expected_cpu = expected.detach().cpu()
     diff = (actual_cpu.to(torch.int16) - expected_cpu.to(torch.int16)).abs()
+    mismatch = diff != 0
+    first_mismatch_coords = mismatch.nonzero()[:16]
+    first_mismatches: list[dict[str, Any]] = []
+    for coord in first_mismatch_coords:
+        index = tuple(int(v) for v in coord.tolist())
+        first_mismatches.append(
+            {
+                "index": list(index),
+                "actual": int(actual_cpu[index].item()),
+                "expected": int(expected_cpu[index].item()),
+                "abs_diff": int(diff[index].item()),
+            }
+        )
+    mismatch_rows = mismatch.any(dim=1) if mismatch.dim() >= 2 else torch.empty((0,), dtype=torch.bool)
+    mismatch_cols = mismatch.any(dim=0) if mismatch.dim() >= 2 else torch.empty((0,), dtype=torch.bool)
     return {
         "actual_shape": list(actual_cpu.shape),
         "expected_shape": list(expected_cpu.shape),
@@ -147,8 +162,45 @@ def _tensor_int_exact(actual: torch.Tensor, expected: torch.Tensor) -> dict[str,
         "exact_match": bool(torch.equal(actual_cpu, expected_cpu)),
         "mismatch_count": int((diff != 0).sum().item()),
         "max_abs_diff": int(diff.max().item()) if diff.numel() else 0,
+        "mismatch_row_count": int(mismatch_rows.sum().item()) if mismatch.dim() >= 2 else None,
+        "mismatch_col_count": int(mismatch_cols.sum().item()) if mismatch.dim() >= 2 else None,
+        "mismatch_rows_first32": mismatch_rows.nonzero().flatten()[:32].tolist() if mismatch.dim() >= 2 else [],
+        "mismatch_cols_first32": mismatch_cols.nonzero().flatten()[:32].tolist() if mismatch.dim() >= 2 else [],
+        "first_mismatches": first_mismatches,
         "actual_sample": actual_cpu.flatten()[:16].tolist(),
         "expected_sample": expected_cpu.flatten()[:16].tolist(),
+    }
+
+
+def _tensor_float_exact_locations(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, Any]:
+    actual_cpu = actual.detach().cpu().float()
+    expected_cpu = expected.detach().cpu().float()
+    diff = (actual_cpu - expected_cpu).abs()
+    mismatch = diff != 0
+    first_mismatch_coords = mismatch.nonzero()[:16]
+    first_mismatches: list[dict[str, Any]] = []
+    for coord in first_mismatch_coords:
+        index = tuple(int(v) for v in coord.tolist())
+        first_mismatches.append(
+            {
+                "index": list(index),
+                "actual": float(actual_cpu[index].item()),
+                "expected": float(expected_cpu[index].item()),
+                "abs_diff": float(diff[index].item()),
+            }
+        )
+    max_abs_index: list[int] = []
+    if diff.numel():
+        flat_index = int(diff.flatten().argmax().item())
+        max_abs_index = list(torch.unravel_index(torch.tensor(flat_index), diff.shape))
+        max_abs_index = [int(v) for v in max_abs_index]
+    return {
+        "exact_mismatch_count": int(mismatch.sum().item()),
+        "exact_mismatch_indices_first32": mismatch.nonzero().flatten()[:32].tolist()
+        if mismatch.dim() == 1
+        else mismatch.nonzero()[:32].tolist(),
+        "max_abs_index": max_abs_index,
+        "first_exact_mismatches": first_mismatches,
     }
 
 
@@ -314,6 +366,10 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         if hidden_scale_readback is not None
         else None
     )
+    if hidden_scale_readback_error is not None:
+        hidden_scale_readback_error.update(
+            _tensor_float_exact_locations(hidden_scale_readback[:active_rows], hidden_x_scale[:active_rows])
+        )
     hidden_scale_readback_exact = (
         hidden_scale_readback_error is not None
         and hidden_scale_readback_error["actual_finite"]
