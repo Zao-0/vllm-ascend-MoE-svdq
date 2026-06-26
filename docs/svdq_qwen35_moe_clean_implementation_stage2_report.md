@@ -141,3 +141,94 @@ Blocking boundary:
 - Stage 2.0 source and focused binary compile are now validated.
 - Stage 2.0 install/register/launch is still incomplete.
 - Stage 2.1 packed-hidden exact-match validation has not started in this environment.
+
+## Current Handoff State - 2026-06-26T07:16Z
+
+Status: IN PROGRESS.
+
+Working prompt:
+
+- `svdq_qwen35_moe_clean_implementation_stage2_prompt.md` was read and is the active working prompt.
+- The authoritative unresolved boundary remains:
+  `SVDQ-modified canonical BF16 hidden -> official hidden quantization/high-low packed INT4 -> official W4A8 GMM2`.
+- The BF16 low-rank producer path was not reopened.
+- No public `torch_npu.npu_grouped_matmul` path was modified, debugged, or used as progress.
+
+Repository state:
+
+- Repo: `/root/workspace/lza/vllm-ascend`
+- Branch: `codex/svdq-lowrank-l0-reuse-debug`
+- HEAD before this report update: `2f9cdace6891008302c5e8cbfb412f8f97e29e78`
+- Origin: `git@github.com:Zao-0/vllm-ascend-MoE-svdq.git`
+- Pre-existing dirty/untracked paths left untouched:
+  - `csrc/utils/inc/kernel/moe_distribute_base.h`
+  - `csrc/build_out/`
+  - `extra-info/`
+
+Stage 2.0 package/config install evidence:
+
+- Direct project metadata generator was run after the focused binary build:
+  - Command: `/usr/local/python3.12.13/bin/python3.12 csrc/cmake/scripts/util/ascendc_ops_config.py -p csrc/build/binary/ascend910b/bin -s ascend910b`
+  - Result: pass.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_direct_ascendc_ops_config.log`
+  - Generated build-tree config files:
+    - `csrc/build/binary/ascend910b/bin/binary_info_config.json`
+    - `csrc/build/binary/ascend910b/bin/relocatable_kernel_info_config.json`
+    - `csrc/build/binary/ascend910b/bin/svdq_mixed_epilogue_debug_readback.json`
+  - The generated config contains `hiddenInt4Packed` and hash `8f2440b95006b27937d5cc3437e43193`.
+- CMake install probe:
+  - Command: `cmake --install csrc/build --prefix /tmp/svdq_install_probe2`
+  - Result: pass.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_cmake_install_probe2.log`
+  - Installed package probe contained the seven-output dynamic Python file, kernel config, kernel JSON, and kernel object.
+- Repository custom-op mirror install:
+  - Command: `(cd /tmp/svdq_install_probe2 && ./install.sh --install-path=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom)`
+  - Result: pass, installer printed `SUCCESS`.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_install_probe2_to_repo_custom_ops.log`
+  - Installed dynamic file now advertises seven outputs:
+    `gateUpTotal`, `hiddenBf16`, `hiddenInt8`, `hiddenInt4Packed`, `hiddenScale`, `downTotal`, `outBf16`.
+  - Installed config files contain `hiddenInt4Packed` and hash `8f2440b95006b27937d5cc3437e43193`:
+    - `vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/config/ascend910b/svdq_mixed_epilogue_debug_readback.json`
+    - `vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/config/ascend910b/binary_info_config.json`
+  - Installed kernel artifacts exist:
+    - `vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend910b/svdq_mixed_epilogue_debug_readback/SVDQMixedEpilogueDebugReadback_8f2440b95006b27937d5cc3437e43193.json`
+    - `vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/ascend910b/svdq_mixed_epilogue_debug_readback/SVDQMixedEpilogueDebugReadback_8f2440b95006b27937d5cc3437e43193.o`
+  - `libcust_opapi.so` exports:
+    - `aclnnSVDQMixedEpilogueDebugReadback`
+    - `aclnnSVDQMixedEpilogueDebugReadbackGetWorkspaceSize`
+    - `aclnnInnerSVDQMixedEpilogueDebugReadback`
+    - `aclnnInnerSVDQMixedEpilogueDebugReadbackGetWorkspaceSize`
+
+Registration and launch evidence:
+
+- Focused source/adapter pytest:
+  - Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 pytest -q tests/ut/ops/test_svdq_moe_abi.py::test_svdq_mixed_epilogue_debug_torch_schema_meta_and_adapter_are_registered`
+  - Result: pass.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_pytest_mixed_epilogue_schema_meta_adapter.log`
+- First real-device launch attempt:
+  - Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_mixed_epilogue_device_probe.py --require-npu --summary-name phase_mixed_epilogue_packed_i4_summary.json`
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_mixed_epilogue_device_probe_packed_i4.log`
+  - Result: fail before kernel execution.
+  - The call reached `aclnnSVDQMixedEpilogueDebugReadback`, then ACL returned:
+    `AclNN_Inner_Error(EZ9999): The binary bin not found`.
+  - The failure occurred during `NnopbaseExecutorTilingAndUpdateBinInfo` / `NnopbaseExecutorMatchCache` / `NnopbaseRunForWorkspace`.
+- Second real-device launch attempt with custom OPP variables set before Python startup:
+  - Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH} python tools/svdq_mixed_epilogue_device_probe.py --require-npu --summary-name phase_mixed_epilogue_packed_i4_summary_envpreset.json`
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_mixed_epilogue_device_probe_packed_i4_envpreset.log`
+  - Result: same failure, `The binary bin not found`.
+
+Current interpretation:
+
+- Stage 2.0 source build, package generation, repository custom-op install, op API symbol availability, and focused schema/meta/adapter registration are validated.
+- Stage 2.0 is not complete because the real logical-NPU-0 launch still fails before kernel execution.
+- The remaining blocker is custom-op binary/config discovery or runtime descriptor-to-binary matching for `SVDQMixedEpilogueDebugReadback`, not W4A8 math, hidden packing correctness, or BF16 low-rank AIC behavior.
+- Stage 2.1 packed-hidden exact-match validation remains pending; no packed-hidden numerical evidence was produced in this environment because the launch did not reach kernel execution.
+- Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed.
+
+Recommended next action after environment rebuild:
+
+1. Recreate the focused generated build state for `ascend910b` using the supported generation/build flow.
+2. Reinstall the package through the supported installer and confirm the seven-output installed metadata.
+3. Before launching, verify which custom OPP vendor path ACL actually resolves when both the system vendor path and repository-local `ASCEND_CUSTOM_OPP_PATH` exist.
+4. Continue debugging the `The binary bin not found` launch failure from ACL custom-op binary discovery and descriptor matching.
+5. Do not proceed to Stage 2.1 or GMM2 integration until `svdq_mixed_epilogue_debug_readback` launches on logical NPU 0.
