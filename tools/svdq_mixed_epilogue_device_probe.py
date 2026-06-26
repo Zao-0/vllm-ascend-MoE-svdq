@@ -38,7 +38,10 @@ from svdq_loader_pre_kernel_validate import (  # noqa: E402
     _read_json,
 )
 
-from vllm_ascend.quantization.methods.svdq_post_load import build_svdq_mixed_epilogue_reference  # noqa: E402
+from vllm_ascend.quantization.methods.svdq_post_load import (  # noqa: E402
+    build_svdq_mixed_epilogue_reference,
+    pack_official_hidden_i4_reference,
+)
 from vllm_ascend.utils import bootstrap_custom_op_env, enable_custom_op  # noqa: E402
 
 DEFAULT_SUMMARY_NAME = "phase_k_mixed_epilogue_device_probe_summary.json"
@@ -226,6 +229,7 @@ def _run_npu_mixed_epilogue(
         gate_up_total,
         hidden_bf16,
         hidden_q,
+        hidden_q_packed,
         hidden_scale,
         down_total,
         out_bf16,
@@ -244,6 +248,7 @@ def _run_npu_mixed_epilogue(
         "up_mixed": up_mixed,
         "hidden_bf16": hidden_bf16.detach().cpu(),
         "hidden_q": hidden_q.detach().cpu(),
+        "hidden_q_packed": hidden_q_packed.detach().cpu(),
         "hidden_scale": hidden_scale.detach().cpu().float(),
         "down_mixed": down_total.detach().float().cpu(),
         "out_bf16": out_bf16.detach().cpu(),
@@ -312,6 +317,8 @@ def _run_probe_case(
         "out_bf16": _tensor_error(actual["out_bf16"], reference["stages"]["down_mixed"].to(torch.bfloat16)),
     }
     q_diff = (actual["hidden_q"].to(torch.int16) - reference["stages"]["hidden_q"].to(torch.int16)).abs()
+    expected_packed = pack_official_hidden_i4_reference(reference["stages"]["hidden_q"])
+    packed_diff = (actual["hidden_q_packed"].to(torch.int16) - expected_packed.to(torch.int16)).abs()
     stage_passed = {
         "gate_mixed": _stage_passed(stage_errors["gate_mixed"], max_abs_tol=max_abs_tol, mean_abs_tol=mean_abs_tol),
         "up_mixed": _stage_passed(stage_errors["up_mixed"], max_abs_tol=max_abs_tol, mean_abs_tol=mean_abs_tol),
@@ -323,6 +330,7 @@ def _run_probe_case(
             and float(stage_errors["hidden_scale"]["max_abs"]) <= scale_tol
         ),
         "hidden_q": bool(torch.equal(actual["hidden_q"], reference["stages"]["hidden_q"])),
+        "hidden_q_packed": bool(torch.equal(actual["hidden_q_packed"], expected_packed)),
         "down_mixed": _stage_passed(stage_errors["down_mixed"], max_abs_tol=max_abs_tol, mean_abs_tol=mean_abs_tol),
         "out_bf16": _stage_passed(stage_errors["out_bf16"], max_abs_tol=max_abs_tol, mean_abs_tol=mean_abs_tol),
     }
@@ -343,6 +351,9 @@ def _run_probe_case(
         "hidden_q_exact_match": stage_passed["hidden_q"],
         "hidden_q_mismatch_count": int((q_diff != 0).sum().item()),
         "hidden_q_max_abs_diff": int(q_diff.max().item()) if q_diff.numel() else 0,
+        "hidden_q_packed_exact_match": stage_passed["hidden_q_packed"],
+        "hidden_q_packed_mismatch_count": int((packed_diff != 0).sum().item()),
+        "hidden_q_packed_max_abs_diff": int(packed_diff.max().item()) if packed_diff.numel() else 0,
         "max_abs_tolerance": max_abs_tol,
         "mean_abs_tolerance": mean_abs_tol,
         "scale_tolerance": scale_tol,

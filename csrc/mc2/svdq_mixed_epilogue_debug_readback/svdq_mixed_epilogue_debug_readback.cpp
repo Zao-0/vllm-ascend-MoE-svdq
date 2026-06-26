@@ -15,12 +15,12 @@ using namespace DispatchFFNCombineW4A8SVDQImpl;
 
 extern "C" __global__ __aicore__ void svdq_mixed_epilogue_debug_readback(
     GM_ADDR residualGateUp, GM_ADDR gateUpLowRank, GM_ADDR residualDown, GM_ADDR downLowRank,
-    GM_ADDR gateUpTotal, GM_ADDR hiddenBf16, GM_ADDR hiddenInt8, GM_ADDR hiddenScale,
+    GM_ADDR gateUpTotal, GM_ADDR hiddenBf16, GM_ADDR hiddenInt8, GM_ADDR hiddenInt4Packed, GM_ADDR hiddenScale,
     GM_ADDR downTotal, GM_ADDR outBf16, GM_ADDR workspaceGM, GM_ADDR tilingGM)
 {
     (void)workspaceGM;
     SVDQMixedEpilogueDebugReadbackKernel op;
     op.Init(residualGateUp, gateUpLowRank, residualDown, downLowRank, gateUpTotal, hiddenBf16, hiddenInt8,
-        hiddenScale, downTotal, outBf16, tilingGM);
+        hiddenInt4Packed, hiddenScale, downTotal, outBf16, tilingGM);
     op.Process();
 }

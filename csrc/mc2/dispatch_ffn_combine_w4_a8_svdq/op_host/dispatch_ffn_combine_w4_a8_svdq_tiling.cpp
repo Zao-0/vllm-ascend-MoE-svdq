@@ -72,9 +72,10 @@ constexpr uint32_t MIXED_DEBUG_DOWN_LOWRANK_INDEX = 3;
 constexpr uint32_t MIXED_DEBUG_GATE_UP_TOTAL_INDEX = 0;
 constexpr uint32_t MIXED_DEBUG_HIDDEN_BF16_INDEX = 1;
 constexpr uint32_t MIXED_DEBUG_HIDDEN_INT8_INDEX = 2;
-constexpr uint32_t MIXED_DEBUG_HIDDEN_SCALE_INDEX = 3;
-constexpr uint32_t MIXED_DEBUG_DOWN_TOTAL_INDEX = 4;
-constexpr uint32_t MIXED_DEBUG_OUT_BF16_INDEX = 5;
+constexpr uint32_t MIXED_DEBUG_HIDDEN_INT4_PACKED_INDEX = 3;
+constexpr uint32_t MIXED_DEBUG_HIDDEN_SCALE_INDEX = 4;
+constexpr uint32_t MIXED_DEBUG_DOWN_TOTAL_INDEX = 5;
+constexpr uint32_t MIXED_DEBUG_OUT_BF16_INDEX = 6;
 
 constexpr uint64_t SVDQ_WORKSPACE_ALIGNMENT = 512;
 constexpr uint64_t SVDQ_SYSTEM_WORKSPACE = 16UL * 1024UL * 1024UL;
@@ -1065,6 +1066,9 @@ static ge::graphStatus SVDQMixedEpilogueDebugReadbackCheckDType(gert::TilingCont
     OP_TILING_CHECK(CheckOutputDType(context, MIXED_DEBUG_HIDDEN_INT8_INDEX,
         "mixed debug hiddenInt8", ge::DT_INT8) != ge::GRAPH_SUCCESS,
         OP_LOGE(K_INNER_DEBUG, "mixed debug hiddenInt8 dtype check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckOutputDType(context, MIXED_DEBUG_HIDDEN_INT4_PACKED_INDEX,
+        "mixed debug hiddenInt4Packed", ge::DT_INT8) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug hiddenInt4Packed dtype check failed."), return ge::GRAPH_FAILED);
     OP_TILING_CHECK(CheckOutputDType(context, MIXED_DEBUG_HIDDEN_SCALE_INDEX,
         "mixed debug hiddenScale", ge::DT_FLOAT) != ge::GRAPH_SUCCESS,
         OP_LOGE(K_INNER_DEBUG, "mixed debug hiddenScale dtype check failed."), return ge::GRAPH_FAILED);
@@ -1123,6 +1127,9 @@ static ge::graphStatus SVDQMixedEpilogueDebugReadbackCheckShapeAndSetTiling(
     OP_TILING_CHECK(CheckDebugOutputRank2Shape(context, MIXED_DEBUG_HIDDEN_INT8_INDEX, "mixed debug hiddenInt8",
         rows, intermediateSize) != ge::GRAPH_SUCCESS,
         OP_LOGE(K_INNER_DEBUG, "mixed debug hiddenInt8 shape check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(CheckDebugOutputRank2Shape(context, MIXED_DEBUG_HIDDEN_INT4_PACKED_INDEX,
+        "mixed debug hiddenInt4Packed", rows, intermediateSize) != ge::GRAPH_SUCCESS,
+        OP_LOGE(K_INNER_DEBUG, "mixed debug hiddenInt4Packed shape check failed."), return ge::GRAPH_FAILED);
     OP_TILING_CHECK(CheckDebugOutputRank2Shape(context, MIXED_DEBUG_DOWN_TOTAL_INDEX, "mixed debug downTotal",
         rows, hiddenSize) != ge::GRAPH_SUCCESS,
         OP_LOGE(K_INNER_DEBUG, "mixed debug downTotal shape check failed."), return ge::GRAPH_FAILED);

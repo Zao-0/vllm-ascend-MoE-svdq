@@ -239,6 +239,7 @@ def test_svdq_mixed_epilogue_debug_torch_schema_meta_and_adapter_are_registered(
         "gate_up_total",
         "hidden_bf16",
         "hidden_int8",
+        "hidden_int4_packed",
         "hidden_scale",
         "down_total",
         "out_bf16",

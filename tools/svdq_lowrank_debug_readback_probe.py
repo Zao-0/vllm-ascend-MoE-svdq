@@ -255,7 +255,7 @@ def _run_copy_only_consumer_gate(
     residual_gate_up = torch.zeros((rows, gate_up_columns), dtype=torch.float32)
     residual_down = torch.zeros((rows, hidden_size), dtype=torch.float32)
 
-    gate_up_total, _hidden_bf16, _hidden_int8, _hidden_scale, down_total, _out_bf16 = op(
+    gate_up_total, _hidden_bf16, _hidden_int8, _hidden_int4_packed, _hidden_scale, down_total, _out_bf16 = op(
         residual_gate_up.to(device=device).contiguous(),
         gate_up_lowrank.to(device=device).contiguous(),
         residual_down.to(device=device).contiguous(),

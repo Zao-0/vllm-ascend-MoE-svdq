@@ -33,7 +33,7 @@ inline void check_mixed_debug_rank2(const at::Tensor& tensor, const char* name)
 
 }  // namespace
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
 svdq_mixed_epilogue_debug_readback(
     const at::Tensor& residual_gate_up,
     const at::Tensor& gate_up_low_rank,
@@ -66,6 +66,7 @@ svdq_mixed_epilogue_debug_readback(
     auto gate_up_total = at::empty_like(residual_gate_up);
     auto hidden_bf16 = at::empty({rows, intermediate_size}, gate_up_low_rank.options());
     auto hidden_int8 = at::empty({rows, intermediate_size}, gate_up_low_rank.options().dtype(at::kChar));
+    auto hidden_int4_packed = at::empty({rows, intermediate_size}, gate_up_low_rank.options().dtype(at::kChar));
     auto hidden_scale = at::empty({rows}, residual_gate_up.options());
     auto down_total = at::empty_like(residual_down);
     auto out_bf16 = at::empty({rows, hidden_size}, down_low_rank.options());
@@ -80,10 +81,11 @@ svdq_mixed_epilogue_debug_readback(
         gate_up_total,
         hidden_bf16,
         hidden_int8,
+        hidden_int4_packed,
         hidden_scale,
         down_total,
         out_bf16);
-    return {gate_up_total, hidden_bf16, hidden_int8, hidden_scale, down_total, out_bf16};
+    return {gate_up_total, hidden_bf16, hidden_int8, hidden_int4_packed, hidden_scale, down_total, out_bf16};
 }
 
 }  // namespace vllm_ascend

@@ -28,6 +28,7 @@ struct SVDQMixedEpilogueDebugRuntimeGM {
     GM_ADDR gateUpTotal;
     GM_ADDR hiddenBf16;
     GM_ADDR hiddenInt8;
+    GM_ADDR hiddenInt4Packed;
     GM_ADDR hiddenScale;
     GM_ADDR downTotal;
     GM_ADDR outBf16;
@@ -38,8 +39,8 @@ public:
     __aicore__ inline SVDQMixedEpilogueDebugReadbackKernel() {}
 
     __aicore__ inline void Init(GM_ADDR residualGateUp, GM_ADDR gateUpLowRank, GM_ADDR residualDown,
-        GM_ADDR downLowRank, GM_ADDR gateUpTotal, GM_ADDR hiddenBf16, GM_ADDR hiddenInt8, GM_ADDR hiddenScale,
-        GM_ADDR downTotal, GM_ADDR outBf16, GM_ADDR tilingGM)
+        GM_ADDR downLowRank, GM_ADDR gateUpTotal, GM_ADDR hiddenBf16, GM_ADDR hiddenInt8,
+        GM_ADDR hiddenInt4Packed, GM_ADDR hiddenScale, GM_ADDR downTotal, GM_ADDR outBf16, GM_ADDR tilingGM)
     {
         REGISTER_TILING_DEFAULT(SVDQMixedEpilogueDebugTilingData);
         GET_TILING_DATA(tilingData, tilingGM);
@@ -51,6 +52,7 @@ public:
         runtime_.gateUpTotal = gateUpTotal;
         runtime_.hiddenBf16 = hiddenBf16;
         runtime_.hiddenInt8 = hiddenInt8;
+        runtime_.hiddenInt4Packed = hiddenInt4Packed;
         runtime_.hiddenScale = hiddenScale;
         runtime_.downTotal = downTotal;
         runtime_.outBf16 = outBf16;
@@ -63,6 +65,7 @@ public:
         gateUpTotalGm_.SetGlobalBuffer((__gm__ float*)runtime_.gateUpTotal);
         hiddenBf16Gm_.SetGlobalBuffer((__gm__ bfloat16_t*)runtime_.hiddenBf16);
         hiddenInt8Gm_.SetGlobalBuffer((__gm__ int8_t*)runtime_.hiddenInt8);
+        hiddenInt4PackedGm_.SetGlobalBuffer((__gm__ int8_t*)runtime_.hiddenInt4Packed);
         hiddenScaleGm_.SetGlobalBuffer((__gm__ float*)runtime_.hiddenScale);
         downTotalGm_.SetGlobalBuffer((__gm__ float*)runtime_.downTotal);
         outBf16Gm_.SetGlobalBuffer((__gm__ bfloat16_t*)runtime_.outBf16);
@@ -250,6 +253,11 @@ private:
         LocalTensor<int8_t> hiddenI8 = ub[tilingData_.vectorTile * 5].template ReinterpretCast<int8_t>();
         LocalTensor<int32_t> quantS32 = ub[tilingData_.vectorTile * 6].template ReinterpretCast<int32_t>();
         LocalTensor<half> quantHalf = ub[tilingData_.vectorTile * 7].template ReinterpretCast<half>();
+        LocalTensor<int4b_t> hiddenHighI4 = ub[tilingData_.vectorTile * 8].template ReinterpretCast<int4b_t>();
+        LocalTensor<int4b_t> hiddenLowI4 = ub[tilingData_.vectorTile * 9].template ReinterpretCast<int4b_t>();
+        LocalTensor<half> lowHalf = ub[tilingData_.vectorTile * 10].template ReinterpretCast<half>();
+        LocalTensor<half> lowHalf2 = ub[tilingData_.vectorTile * 11].template ReinterpretCast<half>();
+        LocalTensor<int16_t> lowMask = ub[tilingData_.vectorTile * 12].template ReinterpretCast<int16_t>();
 
         float maxAbs = 0.0f;
         for (uint32_t column = 0; column < tilingData_.intermediateSize; column += tilingData_.vectorTile) {
@@ -279,6 +287,8 @@ private:
         SyncVToMte3();
         CopyOutFloat(hiddenScaleGm_, row, scaleLocal, 1);
         SyncMte3ToV();
+        Duplicate(lowMask, static_cast<int16_t>(0x0F0F), 128);
+        PipeBarrier<PIPE_V>();
         if (scale == 0.0f) {
             for (uint32_t column = 0; column < tilingData_.intermediateSize; column += tilingData_.vectorTile) {
                 Duplicate<float>(hiddenFp32, 0.0f, tilingData_.vectorTile);
@@ -295,6 +305,8 @@ private:
                     tilingData_.vectorTile);
                 SyncMte3ToV();
                 SyncMte3ToMte2();
+                PackAndWriteOfficialHiddenI4(row, column, hiddenI8, quantHalf, hiddenHighI4, hiddenLowI4, lowHalf,
+                    lowHalf2, lowMask);
             }
             return;
         }
@@ -324,7 +336,50 @@ private:
                 tilingData_.vectorTile);
             SyncMte3ToV();
             SyncMte3ToMte2();
+            PackAndWriteOfficialHiddenI4(row, column, hiddenI8, quantHalf, hiddenHighI4, hiddenLowI4, lowHalf,
+                lowHalf2, lowMask);
         }
+    }
+
+    __aicore__ inline void PackAndWriteOfficialHiddenI4(uint32_t row, uint32_t column,
+        LocalTensor<int8_t> hiddenI8, LocalTensor<half> quantHalf, LocalTensor<int4b_t> hiddenHighI4,
+        LocalTensor<int4b_t> hiddenLowI4, LocalTensor<half> lowHalf, LocalTensor<half> lowHalf2,
+        LocalTensor<int16_t> lowMask)
+    {
+        constexpr half ONE_SIXTEENTH = static_cast<half>(0.0625f);
+        constexpr half MINUS_EIGHT = static_cast<half>(-8.0f);
+        const uint32_t vectorTile = tilingData_.vectorTile;
+        const uint32_t rowOffset = row * tilingData_.intermediateSize;
+        const uint32_t packedOffset = column / 2;
+        const uint32_t packedCount = vectorTile / 2;
+
+        Cast(quantHalf, hiddenI8, RoundMode::CAST_NONE, vectorTile);
+        PipeBarrier<PIPE_V>();
+        Muls(quantHalf, quantHalf, ONE_SIXTEENTH, vectorTile);
+        PipeBarrier<PIPE_V>();
+        Cast(hiddenHighI4, quantHalf, RoundMode::CAST_FLOOR, vectorTile);
+        PipeBarrier<PIPE_V>();
+        SyncVToMte3();
+        CopyOutInt8(hiddenInt4PackedGm_, rowOffset + packedOffset,
+            hiddenHighI4.template ReinterpretCast<int8_t>(), packedCount);
+        SyncMte3ToV();
+        SyncMte3ToMte2();
+
+        And(lowHalf.template ReinterpretCast<int16_t>(), hiddenI8.template ReinterpretCast<int16_t>(), lowMask,
+            packedCount, 1, {1, 1, 1, 8, 8, 0});
+        PipeBarrier<PIPE_V>();
+        Cast(lowHalf2.template ReinterpretCast<half>(), lowHalf.template ReinterpretCast<int8_t>(),
+            RoundMode::CAST_NONE, vectorTile);
+        PipeBarrier<PIPE_V>();
+        Adds(quantHalf, lowHalf2, MINUS_EIGHT, vectorTile);
+        PipeBarrier<PIPE_V>();
+        Cast(hiddenLowI4, quantHalf, RoundMode::CAST_NONE, vectorTile);
+        PipeBarrier<PIPE_V>();
+        SyncVToMte3();
+        CopyOutInt8(hiddenInt4PackedGm_, rowOffset + tilingData_.intermediateSize / 2 + packedOffset,
+            hiddenLowI4.template ReinterpretCast<int8_t>(), packedCount);
+        SyncMte3ToV();
+        SyncMte3ToMte2();
     }
 
     __aicore__ inline void ProcessDownRow(uint32_t row)
@@ -369,6 +424,7 @@ private:
     GlobalTensor<float> gateUpTotalGm_;
     GlobalTensor<bfloat16_t> hiddenBf16Gm_;
     GlobalTensor<int8_t> hiddenInt8Gm_;
+    GlobalTensor<int8_t> hiddenInt4PackedGm_;
     GlobalTensor<float> hiddenScaleGm_;
     GlobalTensor<float> downTotalGm_;
     GlobalTensor<bfloat16_t> outBf16Gm_;

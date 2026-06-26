@@ -353,6 +353,22 @@ def _cpu_dynamic_quant_reference(x: torch.Tensor) -> tuple[torch.Tensor, torch.T
     return q, scale
 
 
+def pack_official_hidden_i4_reference(hidden_q: torch.Tensor) -> torch.Tensor:
+    """Pack hidden INT8 quant values into the official W4A8 GMM2 INT4 layout."""
+    q = hidden_q.detach().cpu().contiguous().to(torch.int16)
+    if q.ndim != 2 or q.shape[1] % 2 != 0:
+        raise ValueError(f"hidden_q must have shape [rows, even_columns], got {tuple(q.shape)}.")
+    high = torch.floor(q.float() / 16.0).to(torch.int16).clamp(-8, 7)
+    low = ((q & 0x0F) - 8).to(torch.int16).clamp(-8, 7)
+
+    def pack_i4(values: torch.Tensor) -> torch.Tensor:
+        even = values[:, 0::2] & 0x0F
+        odd = values[:, 1::2] & 0x0F
+        return (even | (odd << 4)).to(torch.uint8).view(torch.int8)
+
+    return torch.cat((pack_i4(high), pack_i4(low)), dim=1).contiguous()
+
+
 def build_svdq_mixed_epilogue_reference(
     *,
     residual_gate_up: torch.Tensor,

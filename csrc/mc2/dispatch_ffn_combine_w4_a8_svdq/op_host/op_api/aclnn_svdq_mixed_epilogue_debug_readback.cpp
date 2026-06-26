@@ -17,7 +17,8 @@ extern "C" {
 extern aclnnStatus aclnnInnerSVDQMixedEpilogueDebugReadbackGetWorkspaceSize(
     const aclTensor* residualGateUp, const aclTensor* gateUpLowRank, const aclTensor* residualDown,
     const aclTensor* downLowRank, double swigluLimit, const aclTensor* gateUpTotal,
-    const aclTensor* hiddenBf16, const aclTensor* hiddenInt8, const aclTensor* hiddenScale,
+    const aclTensor* hiddenBf16, const aclTensor* hiddenInt8, const aclTensor* hiddenInt4Packed,
+    const aclTensor* hiddenScale,
     const aclTensor* downTotal, const aclTensor* outBf16, uint64_t* workspaceSize,
     aclOpExecutor** executor);
 
@@ -27,13 +28,14 @@ extern aclnnStatus aclnnInnerSVDQMixedEpilogueDebugReadback(
 aclnnStatus aclnnSVDQMixedEpilogueDebugReadbackGetWorkspaceSize(
     const aclTensor* residualGateUp, const aclTensor* gateUpLowRank, const aclTensor* residualDown,
     const aclTensor* downLowRank, double swigluLimit, const aclTensor* gateUpTotal,
-    const aclTensor* hiddenBf16, const aclTensor* hiddenInt8, const aclTensor* hiddenScale,
+    const aclTensor* hiddenBf16, const aclTensor* hiddenInt8, const aclTensor* hiddenInt4Packed,
+    const aclTensor* hiddenScale,
     const aclTensor* downTotal, const aclTensor* outBf16, uint64_t* workspaceSize,
     aclOpExecutor** executor)
 {
     return aclnnInnerSVDQMixedEpilogueDebugReadbackGetWorkspaceSize(residualGateUp, gateUpLowRank,
-        residualDown, downLowRank, swigluLimit, gateUpTotal, hiddenBf16, hiddenInt8, hiddenScale,
-        downTotal, outBf16, workspaceSize, executor);
+        residualDown, downLowRank, swigluLimit, gateUpTotal, hiddenBf16, hiddenInt8,
+        hiddenInt4Packed, hiddenScale, downTotal, outBf16, workspaceSize, executor);
 }
 
 aclnnStatus aclnnSVDQMixedEpilogueDebugReadback(

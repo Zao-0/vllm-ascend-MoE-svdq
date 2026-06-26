@@ -408,7 +408,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_low_rank_debug_r
     return {gate_up_output, down_output, gate_up_accumulator, down_accumulator};
 }
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
 svdq_mixed_epilogue_debug_readback_meta(
     const at::Tensor& residual_gate_up,
     const at::Tensor& gate_up_low_rank,
@@ -442,10 +442,12 @@ svdq_mixed_epilogue_debug_readback_meta(
     auto hidden_bf16 = at::empty({rows, intermediate_size}, gate_up_low_rank.options().device(at::kMeta));
     auto hidden_int8 = at::empty({rows, intermediate_size},
                                  gate_up_low_rank.options().device(at::kMeta).dtype(at::kChar));
+    auto hidden_int4_packed = at::empty({rows, intermediate_size},
+                                        gate_up_low_rank.options().device(at::kMeta).dtype(at::kChar));
     auto hidden_scale = at::empty({rows}, residual_gate_up.options().device(at::kMeta));
     auto down_total = at::empty_like(residual_down, residual_down.options().device(at::kMeta));
     auto out_bf16 = at::empty({rows, hidden_size}, down_low_rank.options().device(at::kMeta));
-    return {gate_up_total, hidden_bf16, hidden_int8, hidden_scale, down_total, out_bf16};
+    return {gate_up_total, hidden_bf16, hidden_int8, hidden_int4_packed, hidden_scale, down_total, out_bf16};
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>

@@ -2497,6 +2497,7 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         "                                   float swiglu_limit=0.0) -> (Tensor gate_up_total,"
         "                                                               Tensor hidden_bf16,"
         "                                                               Tensor hidden_int8,"
+        "                                                               Tensor hidden_int4_packed,"
         "                                                               Tensor hidden_scale,"
         "                                                               Tensor down_total,"
         "                                                               Tensor out_bf16)"
