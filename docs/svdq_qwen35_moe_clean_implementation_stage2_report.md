@@ -1,8 +1,98 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
-## Raw C2 Parity Diagnostic - 2026-06-26T17:44Z
+## Raw C2 Layout Variant Diagnostic - 2026-06-26T18:03Z
 
 This section is the latest Stage 2.2 status. Older sections are historical evidence unless explicitly referenced here.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Source packed hidden exact-match still reports mismatch count 0. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Full-lifecycle raw-C2 diagnostic is finite and nonzero, but the strict scaled Gate B comparator still fails. The new layout variant diagnostic rejects a simple high/low half-order or nibble-order host-reference mismatch as the primary explanation. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+Binding constraints remain unchanged:
+
+- Use only `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
+- Do not use or debug public `torch_npu.npu_grouped_matmul`.
+- Official `dispatch_ffn_combine_w4_a8` remains the only W4A8 source of truth.
+- Do not advance to SVDQ down, final combine, or production enablement while Stage 2.2 fails.
+
+Appendix `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` remains binding. The diagnostic below is a Python-side evidence extension only; it does not modify GMM2 behavior, C2V flags, AIC/AIV role ownership, public grouped matmul, or production host tiling.
+
+Files changed for this attempt:
+
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+  - Added `official_a2_c2_physical_layout_contract` to the raw-C2 JSON evidence.
+  - Added `raw_c2_layout_variant_diagnostics` for four host-reference interpretations: official high-half/low-half with low/high nibble unpacking, high-half/low-half with high/low nibble unpacking, swapped low/high halves with low/high nibble unpacking, and swapped low/high halves with high/low nibble unpacking.
+  - Each variant is explicitly marked diagnostic-only and is not a proposed repack, scale formula, or substitute GMM2 implementation.
+
+Official source locations recorded in the new diagnostic:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_swiglu.hpp:210-214`: `ChunkTileLen = blockN / 2`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_swiglu.hpp:234`: producer row starts at `gmD[loopIdx * ChunkTileLen]`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_swiglu.hpp:388` and `:412`: producer writes high-half bytes then low-half bytes.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h:309-314`: official `layoutA2{m,k2}` and `layoutD1{maxOutputSize,k2}`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:690-724`: GMM2 sets `n2=k`, `k2=n/2`, then doubles `currentM` for INT4.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:752-767`: GMM2 consumes `gmA2I4` and advances by `M*K` INT4 elements.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp:154-199`: `BlockEpilogue2` reads adjacent high/low C2 rows and computes `high * 16 + low`.
+
+Computed official A2/C2 layout for the top-1 expert-0/max64 probe:
+
+- Active rows: `64`.
+- Packed hidden row bytes: `512`.
+- Producer high-half bytes: `256`; low-half bytes: `256`.
+- GMM2 A2 logical rows after INT4 M doubling: `128`.
+- GMM2 A2 K columns: `512` INT4 values.
+- GMM2 A2 group size: `65536` INT4 elements, equal to `32768` physical bytes.
+- Producer D1 group size: `32768` physical bytes.
+- A2 physical bytes match producer D1 bytes: `true`.
+- GMM2 C2 output columns `n2`: `2048`.
+- C2 high/low row offset: `2048`.
+
+Raw-C2 layout variant diagnostic probe:
+
+- Command used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, repo-local `ASCEND_CUSTOM_OPP_PATH`, repo-local `libcust_opapi.so`, top-1 expert 0, 64 tokens, `max_output_size=64`, and `--swiglu-limit 454545`.
+- Preflight `npu-smi info` showed physical NPUs 0-3 as 910B4 with no running NPU processes.
+- Log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_layout_variants_top1_expert0_max64.log`
+- NPU preflight log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_layout_variants_npu_smi.log`
+- Summary: `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_raw_c2_layout_variants_top1_expert0_max64.json`
+- Top-level `passed: false`; Stage 2.2 remains failed.
+- Gate A source packed hidden remains exact: `hidden_packed_exact: true`, mismatch count zero.
+- Gate A post-override packed readback still fails in this run: `mismatch_count: 10180`.
+- Gate A post-override scale readback still fails in this run: `exact_mismatch_count: 8`.
+- Gate B raw C2 is finite and nonzero; C2V readback remains verified for this raw boundary.
+- Gate B scaled raw-C2 comparator still fails:
+  - `max_abs: 23.6250057220459`
+  - `mean_abs: 2.8533122539520264`
+  - failed elements: `131053` of `131072`
+  - NaN/Inf counts: all zero for actual, expected, and diff.
+
+Layout variant results:
+
+| Variant | Mean abs | Max abs | Failed elements | Best-row nonidentity | Mean best-row abs | Mean diagonal abs |
+|---|---:|---:|---:|---:|---:|---:|
+| official high/low halves, low/high nibble order | `2.8533122539520264` | `23.6250057220459` | `131053` | `63` | `2.4448091983795166` | `2.8533124923706055` |
+| high/low halves, high/low nibble order | `2.8925681114196777` | `24.40673065185547` | `131046` | `63` | `2.3918652534484863` | `2.8925676345825195` |
+| swapped low/high halves, low/high nibble order | `7.302852630615234` | `44.44057083129883` | `131069` | `63` | `6.605059623718262` | `7.302852630615234` |
+| swapped low/high halves, high/low nibble order | `7.267553329467773` | `44.067378997802734` | `131066` | `63` | `6.502103328704834` | `7.267553329467773` |
+
+Rejected root-cause hypothesis:
+
+- The remaining Gate B mismatch is not explained by a simple host-reference high/low half swap or nibble-order mismatch.
+- Evidence: the official expected interpretation is the best variant by mean absolute error, while both half-swapped variants are much worse.
+- However, all variants still fail almost every element and retain non-identity best-row alignment for 63 of 64 rows.
+- The next unresolved boundary remains official GMM2 physical tile/layout/row-state mapping for modified hidden and the post-override hidden/scale corruption symptom, not a simple packed-byte interpretation change.
+
+Validation before this report update:
+
+- `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
+- `git diff --check`: passed.
+
+## Raw C2 Parity Diagnostic - 2026-06-26T17:44Z
+
+This section is historical evidence. The `2026-06-26T18:03Z` section above supersedes it for current status.
 
 | Item | Status | Evidence / blocker |
 |---|---|---|

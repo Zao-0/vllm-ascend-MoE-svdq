@@ -47,7 +47,9 @@ from svdq_w4a8_debug_readback_probe import (  # noqa: E402
 )
 from svdq_w4a8_debug_readback_real_checkpoint_probe import (  # noqa: E402
     _float_stats,
+    _int64_float_bits_to_fp32,
     _load_real_residual_layer,
+    _unpack_postloaded_w4_columns,
     _official_gmm2_raw_c2_reference,
     _official_gmm2_unfused_reference,
     _postload_metadata,
@@ -326,6 +328,210 @@ def _row_pair_pattern_summary(actual: torch.Tensor, expected: torch.Tensor) -> d
         "actual_even_to_expected_odd_mean_abs_first32": adjacent_cross[:32].tolist(),
         "actual_row_norm_first32": actual_cpu.norm(dim=1)[:32].tolist() if actual_cpu.ndim == 2 else [],
         "expected_row_norm_first32": expected_cpu.norm(dim=1)[:32].tolist() if expected_cpu.ndim == 2 else [],
+    }
+
+
+def _clip_group_counts_for_limit(counts: torch.Tensor, row_limit: int) -> list[int]:
+    remaining = int(row_limit)
+    clipped: list[int] = []
+    for count in counts.detach().cpu().to(torch.int64).flatten().tolist():
+        take = min(int(count), remaining)
+        clipped.append(take)
+        remaining -= take
+        if remaining <= 0:
+            clipped.extend([0] * (int(counts.numel()) - len(clipped)))
+            break
+    return clipped
+
+
+def _unpack_i4_bytes_variant(
+    bytes_tensor: torch.Tensor,
+    *,
+    unpacked_columns: int,
+    nibble_order: str,
+) -> torch.Tensor:
+    unsigned = bytes_tensor.detach().cpu().contiguous().to(torch.int16) & 0xFF
+    low_nibble = unsigned & 0x0F
+    high_nibble = (unsigned >> 4) & 0x0F
+    if nibble_order == "low_high":
+        ordered = torch.stack((low_nibble, high_nibble), dim=-1)
+    elif nibble_order == "high_low":
+        ordered = torch.stack((high_nibble, low_nibble), dim=-1)
+    else:
+        raise ValueError(f"unsupported nibble_order: {nibble_order}")
+    unpacked = ordered.reshape(bytes_tensor.shape[0], unpacked_columns)
+    return torch.where(unpacked >= 8, unpacked - 16, unpacked).to(torch.int32)
+
+
+def _packed_i4_hidden_to_parts_variant(
+    hidden_x_int4_packed: torch.Tensor,
+    *,
+    half_order: str,
+    nibble_order: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    packed = hidden_x_int4_packed.detach().cpu().contiguous()
+    if packed.ndim != 2 or packed.shape[1] % 2 != 0:
+        raise ValueError("hidden packed INT4 debug tensor must have shape [rows, even_intermediate_size].")
+    packed_columns = int(packed.shape[1])
+    half_columns = packed_columns // 2
+    first = _unpack_i4_bytes_variant(
+        packed[:, :half_columns],
+        unpacked_columns=packed_columns,
+        nibble_order=nibble_order,
+    )
+    second = _unpack_i4_bytes_variant(
+        packed[:, half_columns:packed_columns],
+        unpacked_columns=packed_columns,
+        nibble_order=nibble_order,
+    )
+    if half_order == "high_low":
+        return first, second
+    if half_order == "low_high":
+        return second, first
+    raise ValueError(f"unsupported half_order: {half_order}")
+
+
+def _raw_c2_reference_from_parts(
+    *,
+    x_high: torch.Tensor,
+    x_low: torch.Tensor,
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    expert_token_nums: torch.Tensor,
+    output_columns: int,
+    max_rows: int,
+) -> torch.Tensor:
+    row_count = min(int(x_high.shape[0]), int(x_low.shape[0]), int(max_rows))
+    counts = _clip_group_counts_for_limit(expert_token_nums, row_count)
+    weight_scale_fp32 = _int64_float_bits_to_fp32(weight_scale)
+    unpacked_weight = _unpack_postloaded_w4_columns(weight, output_columns)
+
+    outputs: list[torch.Tensor] = []
+    row_start = 0
+    for expert_id, count in enumerate(counts):
+        count = int(count)
+        if count <= 0:
+            continue
+        row_end = row_start + count
+        weight_e = unpacked_weight[expert_id]
+        high_acc = x_high[row_start:row_end].matmul(weight_e)
+        low_acc = x_low[row_start:row_end].matmul(weight_e)
+        combined = (high_acc * 16 + low_acc).float()
+        outputs.append(combined * weight_scale_fp32[expert_id].reshape(1, -1))
+        row_start = row_end
+    if outputs:
+        return torch.cat(outputs, dim=0)
+    return torch.empty((0, output_columns), dtype=torch.float32)
+
+
+def _raw_c2_layout_variant_diagnostics(
+    *,
+    actual: torch.Tensor,
+    hidden_x_int4_packed: torch.Tensor,
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    expert_token_nums: torch.Tensor,
+    output_columns: int,
+    max_rows: int,
+    max_abs_tol: float,
+) -> dict[str, Any]:
+    variants = [
+        ("official_high_low_low_high_nibbles", "high_low", "low_high"),
+        ("high_low_high_low_nibbles", "high_low", "high_low"),
+        ("low_high_low_high_nibbles", "low_high", "low_high"),
+        ("low_high_high_low_nibbles", "low_high", "high_low"),
+    ]
+    reports: dict[str, Any] = {}
+    best_name = None
+    best_mean_abs = None
+    for name, half_order, nibble_order in variants:
+        x_high, x_low = _packed_i4_hidden_to_parts_variant(
+            hidden_x_int4_packed[:max_rows],
+            half_order=half_order,
+            nibble_order=nibble_order,
+        )
+        reference = _raw_c2_reference_from_parts(
+            x_high=x_high,
+            x_low=x_low,
+            weight=weight,
+            weight_scale=weight_scale,
+            expert_token_nums=expert_token_nums,
+            output_columns=output_columns,
+            max_rows=max_rows,
+        )
+        variant_actual = actual[: reference.shape[0], : reference.shape[1]]
+        error = _tensor_error(variant_actual, reference)
+        error.update(
+            _threshold_error_counts(
+                variant_actual,
+                reference,
+                max_abs_tol=max_abs_tol,
+            )
+        )
+        reports[name] = {
+            "half_order": half_order,
+            "nibble_order": nibble_order,
+            "error": error,
+            "row_alignment": _row_alignment_summary(variant_actual, reference),
+            "diagnostic_only": (
+                "Reference variant for isolating the official A2 physical-layout boundary; "
+                "not a proposed repack, scale formula, or substitute GMM2 implementation."
+            ),
+        }
+        mean_abs = float(error["mean_abs"])
+        if best_mean_abs is None or mean_abs < best_mean_abs:
+            best_name = name
+            best_mean_abs = mean_abs
+    return {
+        "enabled": True,
+        "source": (
+            "Official producer writes high-half bytes then low-half bytes; official GMM2 consumes "
+            "the same GM region as doubled-M int4 A2. Variants only test whether the host Gate B "
+            "reference is using the same physical interpretation as the official consumer."
+        ),
+        "official_expected_variant": "official_high_low_low_high_nibbles",
+        "best_by_mean_abs": best_name,
+        "variants": reports,
+    }
+
+
+def _official_gmm2_layout_contract(
+    *,
+    active_rows: int,
+    max_output_size: int,
+    packed_row_bytes: int,
+    output_columns: int,
+) -> dict[str, Any]:
+    return {
+        "source_locations": {
+            "producer_row_offset": (
+                "block_epilogue_w4a8post_pertoken_swiglu.hpp:210-214 and :234 "
+                "use ChunkTileLen=blockN/2 and gmTileD=gmD[loopIdx * ChunkTileLen]"
+            ),
+            "producer_high_low_writes": (
+                "block_epilogue_w4a8post_pertoken_swiglu.hpp:388 and :412 write "
+                "high-half bytes then low-half bytes"
+            ),
+            "layout_a2_d1": "dispatch_ffn_combine_w4_a8.h:309-314 creates layoutA2{m,k2} and layoutD1{maxOutputSize,k2}",
+            "gmm2_doubled_m": "dispatch_ffn_combine_w4_a8_kernel.hpp:690-724 sets n2=k, k2=n/2, then doubles currentM for int4",
+            "gmm2_a2_offset": "dispatch_ffn_combine_w4_a8_kernel.hpp:752-767 consumes gmA2I4 and advances by M*K int4 elements",
+            "c2_high_low_epilogue": "block_epilogue_w4a8post_pertoken_v2.hpp:154-199 reads adjacent high/low C2 rows and computes high*16+low",
+        },
+        "computed_layout": {
+            "active_rows": int(active_rows),
+            "max_output_size": int(max_output_size),
+            "packed_row_bytes": int(packed_row_bytes),
+            "producer_high_half_bytes": int(packed_row_bytes // 2),
+            "producer_low_half_bytes": int(packed_row_bytes // 2),
+            "gmm2_a2_logical_rows_after_int4_m_double": int(active_rows * 2),
+            "gmm2_a2_k2_int4_columns": int(packed_row_bytes),
+            "gmm2_a2_group_int4_elements": int(active_rows * 2 * packed_row_bytes),
+            "gmm2_a2_group_physical_bytes": int(active_rows * packed_row_bytes),
+            "producer_d1_group_physical_bytes": int(active_rows * packed_row_bytes),
+            "a2_physical_bytes_match_producer_d1_bytes": True,
+            "gmm2_c2_n2_output_columns": int(output_columns),
+            "gmm2_c2_high_low_row_offset": int(output_columns),
+        },
     }
 
 
@@ -676,6 +882,16 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             "source_hidden_row_alignment": _row_alignment_summary(raw_actual, raw_reference),
             "source_hidden_even_odd_pattern": _row_pair_pattern_summary(raw_actual, raw_reference),
         }
+        raw_c2_layout_variants = _raw_c2_layout_variant_diagnostics(
+            actual=raw_actual,
+            hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
+            weight=layer.w2_weight,
+            weight_scale=layer.w2_weight_scale,
+            expert_token_nums=external_expert_token_nums,
+            output_columns=spec.hidden_size,
+            max_rows=args.gmm2_reference_max_rows,
+            max_abs_tol=args.gmm2_raw_c2_reference_max_abs_tol,
+        )
         if hidden_row_exact_mask is not None:
             exact_count = int(hidden_row_exact_mask.sum().item())
             mismatch_count = int((~hidden_row_exact_mask).sum().item())
@@ -766,6 +982,12 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             },
             "gmm2": {
                 "raw_c2_high_low_decoded_active": raw_c2_stats,
+                "official_a2_c2_physical_layout_contract": _official_gmm2_layout_contract(
+                    active_rows=active_rows,
+                    max_output_size=args.max_output_size,
+                    packed_row_bytes=int(hidden_x_int4_packed.shape[1]),
+                    output_columns=spec.hidden_size,
+                ),
                 "raw_c2_contract": {
                     "source_boundary": (
                         "BlockEpilogue2 reads official gmC2 after GMM2/C2V, casts high/low "
@@ -793,6 +1015,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                 },
                 "raw_c2_readback_hidden_reference": hidden_readback_raw_reference_report,
                 "raw_c2_row_diagnostics": raw_c2_row_diagnostics,
+                "raw_c2_layout_variant_diagnostics": raw_c2_layout_variants,
                 "unfused_reference": {
                     "enabled": True,
                     "contract": reference_contract,
