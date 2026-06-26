@@ -793,7 +793,7 @@ private:
 
         AscendC::GlobalTensor<float> debugGm;
         debugGm.SetGlobalBuffer(reinterpret_cast<__gm__ float *>(params.ptrDebugGMM2));
-        for (uint32_t i = 0; i < 256; ++i) {
+        for (uint32_t i = 0; i < 512; ++i) {
             debugGm.SetValue(i, 0.0f);
         }
 
@@ -812,6 +812,28 @@ private:
         debugGm.SetValue(8, static_cast<float>(static_cast<int32_t>(n2)));
         debugGm.SetValue(9, static_cast<float>(static_cast<int32_t>(k2)));
         debugGm.SetValue(10, static_cast<float>(static_cast<int32_t>(coreNum)));
+        int64_t cumsumBase = static_cast<int64_t>(params.rank) * static_cast<int64_t>(params.expertPerRank);
+        int64_t layoutBase = tokenPerExpertLayout(params.rank, 0, 0);
+        debugGm.SetValue(256, 434344.0f);
+        debugGm.SetValue(257, static_cast<float>(static_cast<int32_t>(params.EP)));
+        debugGm.SetValue(258, static_cast<float>(static_cast<int32_t>(params.rank)));
+        debugGm.SetValue(259, static_cast<float>(static_cast<int32_t>(cumsumBase)));
+        debugGm.SetValue(260, static_cast<float>(static_cast<int32_t>(layoutBase)));
+        debugGm.SetValue(261, static_cast<float>(layoutBase == cumsumBase ? 1.0f : 0.0f));
+
+        AscendC::GlobalTensor<int32_t> externalExpertTokenNums;
+        externalExpertTokenNums.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(params.ptrExternalExpertTokenNums));
+        uint32_t stateProbeCount = params.expertPerRank < 32 ? params.expertPerRank : 32;
+        for (uint32_t groupIdx = 0; groupIdx < stateProbeCount; ++groupIdx) {
+            debugGm.SetValue(272 + groupIdx,
+                             static_cast<float>(externalExpertTokenNums(groupIdx)));
+            debugGm.SetValue(304 + groupIdx,
+                             static_cast<float>(tokenPerExpert(cumsumBase + groupIdx)));
+            debugGm.SetValue(336 + groupIdx,
+                             static_cast<float>(tokenPerExpert(layoutBase + groupIdx)));
+            debugGm.SetValue(368 + groupIdx,
+                             static_cast<float>(cumsumMM((params.EP - 1) * params.expertPerRank + groupIdx)));
+        }
 
         for (uint32_t groupIdx = 0; groupIdx < params.expertPerRank && groupIdx < 48; ++groupIdx) {
             uint32_t rawCurrentM = cumsumMM((params.EP - 1) * params.expertPerRank + groupIdx);
@@ -880,9 +902,17 @@ private:
     {
         AscendC::GlobalTensor<int32_t> externalExpertTokenNums;
         externalExpertTokenNums.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(params.ptrExternalExpertTokenNums));
-        CopyGMToGM(tokenPerExpert[tokenPerExpertLayout(params.rank, 0, 0)], externalExpertTokenNums,
-                   params.expertPerRank, params.ubMoveNum);
-        GetCumsumForMMAIV(tokenPerExpert, cumsumMM, params.expertPerRank, params.rank, params.EP);
+        int64_t cumsumBase = static_cast<int64_t>(params.rank) * static_cast<int64_t>(params.expertPerRank);
+        int64_t layoutBase = tokenPerExpertLayout(params.rank, 0, 0);
+        CopyGMToGM(tokenPerExpert[cumsumBase], externalExpertTokenNums, params.expertPerRank, params.ubMoveNum);
+        if (layoutBase != cumsumBase) {
+            CopyGMToGM(tokenPerExpert[layoutBase], externalExpertTokenNums, params.expertPerRank, params.ubMoveNum);
+        }
+        if (params.EP == 1) {
+            CopyGMToGM(cumsumMM, externalExpertTokenNums, params.expertPerRank, params.ubMoveNum);
+        } else {
+            GetCumsumForMMAIV(tokenPerExpert, cumsumMM, params.expertPerRank, params.rank, params.EP);
+        }
         ZeroGMM2OnlyPreSumBeforeRank(params);
     }
 

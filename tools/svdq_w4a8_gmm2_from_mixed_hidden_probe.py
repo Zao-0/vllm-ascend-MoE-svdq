@@ -175,7 +175,7 @@ def _is_gmm2_loop_stats_debug(swiglu_limit: float) -> bool:
 
 
 def _parse_gmm2_loop_stats(tensor: torch.Tensor, *, expert_per_rank: int) -> dict[str, Any]:
-    values = tensor.detach().cpu().flatten()[:256].tolist()
+    values = tensor.detach().cpu().flatten()[:512].tolist()
     group_count = min(int(values[1]) if len(values) > 1 else 0, int(expert_per_rank), 48)
     groups = []
     for group_idx in range(group_count):
@@ -190,6 +190,20 @@ def _parse_gmm2_loop_stats(tensor: torch.Tensor, *, expert_per_rank: int) -> dic
                 "pre_current_m_sum": int(values[base + 4]),
             }
         )
+    state_count = min(int(expert_per_rank), 32)
+    state_probe = {
+        "magic": float(values[256]) if len(values) > 256 else 0.0,
+        "valid_magic": bool(len(values) > 256 and abs(float(values[256]) - 434344.0) < 0.5),
+        "ep": int(values[257]) if len(values) > 257 else 0,
+        "rank": int(values[258]) if len(values) > 258 else 0,
+        "cumsum_base": int(values[259]) if len(values) > 259 else 0,
+        "layout_base": int(values[260]) if len(values) > 260 else 0,
+        "layout_base_equals_cumsum_base": bool(len(values) > 261 and int(values[261]) != 0),
+        "external_expert_token_nums_first32": [int(values[272 + idx]) for idx in range(state_count)],
+        "token_per_expert_cumsum_base_first32": [int(values[304 + idx]) for idx in range(state_count)],
+        "token_per_expert_layout_base_first32": [int(values[336 + idx]) for idx in range(state_count)],
+        "cumsum_mm_last_rank_first32": [int(values[368 + idx]) for idx in range(state_count)],
+    }
     return {
         "enabled": True,
         "magic": float(values[0]) if values else 0.0,
@@ -204,6 +218,7 @@ def _parse_gmm2_loop_stats(tensor: torch.Tensor, *, expert_per_rank: int) -> dic
         "k2": int(values[9]) if len(values) > 9 else 0,
         "core_num": int(values[10]) if len(values) > 10 else 0,
         "groups": groups,
+        "state_probe": state_probe,
         "valid_magic": bool(values and abs(float(values[0]) - 434343.0) < 0.5),
         "active_tile_count_nonzero": bool(len(values) > 5 and int(values[5]) > 0),
     }

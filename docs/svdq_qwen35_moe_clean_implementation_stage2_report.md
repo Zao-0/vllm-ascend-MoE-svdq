@@ -8,11 +8,11 @@ This table supersedes ambiguous status statements in older handoff sections. Old
 |---|---|---|
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Built, installed, registered, and launched on logical NPU 0 in prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden exact-match gate passed with mismatch count 0. |
-| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Rebuilt loop-stats diagnostic proves the official GMM2-only entry path executes, but `cumsumMM` is zero at scheduling time, so official GMM2 schedules zero active tiles. Gate B/Gate C remain blocked. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Rebuilt loop-stats and state-probe diagnostics prove the official GMM2-only entry path executes and can read nonzero external counts, but `tokenPerExpert` and `cumsumMM` remain zero at scheduling readback, so official GMM2 schedules zero active tiles. Gate B/Gate C remain blocked. |
 | Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 Gate B/Gate C. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Host tiling must remain fail-closed until Stage 2.2+ production gates pass. |
 
-## Current State - 2026-06-26T12:28Z
+## Current State - 2026-06-26T13:45Z
 
 Status: Stage 2.2 remains FAIL / IN PROGRESS.
 
@@ -23,6 +23,67 @@ Binding prompt and appendix state:
 - The public `torch_npu.npu_grouped_matmul` path was not modified, debugged, or used as progress.
 - The official `dispatch_ffn_combine_w4_a8` producer/dequant path remains the only source of truth for W4A8 GMM2.
 - Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed.
+
+### Official vs Debug GMM2 State Table - 2026-06-26T12:39Z
+
+This table is the required pre-patch state comparison from `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md`. It documents the official full-W4A8 state lifecycle before any further isolated GMM2-only behavior change.
+
+| State boundary | Official full-W4A8 path | Current isolated GMM2-only debug path | Status / required action |
+|---|---|---|---|
+| Source of token counts | `moe_init_routing_quant_v2` writes the local rank's count matrix into peer memory at `localTokenPerExpert = shmem() + offsetPeerTokenPerExpert + tokenPerExpertLayout(rank, 0, 0) * sizeof(int32_t)`. | Host probe passes deterministic rank-2 INT32 `external_expert_token_nums` with shape `[1, experts]` and nonzero routed expert counts. | Host boundary is valid; no public grouped-matmul or alternative count path is involved. |
+| Peer token matrix layout | `Layout3D(dim0, dim1, dim2) = dim0 * paddedExpertNumAligned + dim1 * expertPerRank + dim2`. Official peer exchange materializes the padded `EP x EP x expertPerRank` token matrix under `tokenPerExpert`. | `SeedGMM2OnlyTokenState` currently copies external counts only to `tokenPerExpert[tokenPerExpertLayout(rank, 0, 0)]`. | This is compatible with official layout addressing for `tokenPerExpert(dstEpIdx, rank, groupIdx)` but is not sufficient by itself for the current cumsum reader. |
+| Cumsum producer | After peer sync, official AIV core 0 calls `GetCumsumForMMAIV(tokenPerExpert, cumsumMM, expertPerRank, rank, EP)`. That helper reads from `tokenPerExpert[rank * expertPerRank]` with padded row stride. | GMM2-only AIC and AIV both call `SeedGMM2OnlyTokenState`; loop-stats proves `cumsumMM[(EP - 1) * expertPerRank + groupIdx]` is zero for every group. | Confirmed deviation: external nonzero counts are not visible at the exact contiguous base consumed by `GetCumsumForMMAIV`. |
+| Expert totals output | Official core 0 copies `cumsumMM[(EP - 1) * expertPerRank]` to `ExpertTokenNums`, giving per-expert totals used as public debug metadata. | Debug output reports `expert_token_total` from host input, but kernel loop-stats sees `total_active_rows: 0`. | Kernel-side cumsum must be fixed before treating any GMM2 numerical output as meaningful. |
+| GMM2 AIC scheduling | Official `GMM2` reads `currentM = cumsumMM((EP - 1) * expertPerRank + groupIdx)`, clips to `maxOutputSize`, doubles rows for INT4, then schedules MMAD tiles. | Loop-stats sentinel reaches the official GMM2-only entry but records `total_core_loops: 0` and `groups_with_work: 0`. | Gate B is blocked by scheduling state, not by raw C2, dequant, or checkpoint weights. |
+| AIC to AIV synchronization | Official SwiGLU/hidden-quant phase signals `SYNCFLAGV2C`; isolated debug mode synthesizes the same flags through `SignalGMM2OnlyReady` before `CombineV2`. | Signal path exists and is reached only after seed/copy; it cannot schedule or dequant rows while cumsum is zero. | Do not further debug flag timing until cumsum schedules nonzero GMM2 tiles. |
+| AIV dequant/readback routing | Official `CombineV2` reads the same `cumsumMM`; `BlockEpilogue2` also reads `tokenPerExpert(tokenPerExpertLayout(dstEpIdx, rank, groupIdx))` and `preSumBeforeRank`. | Debug mode zeroes `preSumBeforeRank` for the single-rank case and uses the official `BlockEpilogue2` path, including the raw-C2 sentinel branch. | Gate C remains blocked until Gate B produces nonzero raw AIC tiles. |
+| Production SVDQ operator | Not applicable; official W4A8 production/debug path remains the source of truth. | `DispatchFFNCombineW4A8SVDQ` host tiling remains fail-closed. | No production SVDQ behavior change is allowed from this table alone. |
+
+### Latest State Probe - 2026-06-26T13:45Z
+
+Two debug-only token-state behavior attempts were built, installed, and tested after the required official-vs-debug table:
+
+- Cumsum seed attempt: copy external counts to both the contiguous `rank * expertPerRank` base and the official `tokenPerExpertLayout(rank, 0, 0)` base, then call the official `GetCumsumForMMAIV`.
+- EP=1 direct cumsum attempt: for the current single-rank probe, additionally copy external counts directly to `cumsumMM` because official cumulative counts should equal the external per-expert counts when `EP == 1`.
+
+Both attempts compiled and installed, but neither moved GMM2 scheduling:
+
+- Seed attempt summary: `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_loop_stats_probe_after_cumsum_seed_fix.json`
+- EP=1 cumsum summary: `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_loop_stats_probe_after_ep1_cumsum.json`
+- Both showed `total_active_rows: 0`, `total_core_loops: 0`, `groups_with_work: 0`.
+
+Per the appendix requirement, the current code now adds a diagnostic-only scalar state probe to the loop-stats buffer. It records `EP`, `rank`, contiguous base, layout base, external counts, `tokenPerExpert` at both bases, and `cumsumMM` at the last-rank scheduling base. This does not change production SVDQ behavior and does not use public grouped matmul.
+
+Build/install/validation evidence for the state probe:
+
+- Build: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_state_probe_build_kernel.log`
+- `ascendc_ops_config.py`: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_state_probe_ops_config.log`
+- `cmake --install`: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_state_probe_cmake_install.log`
+- Repo-local install: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_state_probe_install_repo_root_cwd.log`, result `SUCCESS`.
+- System OPP install: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_state_probe_install_system_opp_root_cwd.log`, result `SUCCESS`.
+- ABI: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_state_probe_abi.log`, result `1 passed, 16 warnings`.
+- Probe log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_loop_stats_state_probe.log`
+- Probe summary: `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_loop_stats_state_probe.json`
+
+State-probe result:
+
+- `state_probe.valid_magic: true`
+- `state_probe.ep: 1`
+- `state_probe.rank: 0`
+- `state_probe.cumsum_base: 0`
+- `state_probe.layout_base: 0`
+- `state_probe.layout_base_equals_cumsum_base: true`
+- `external_expert_token_nums_first32: [16, 16, 16, 16, 16, 16, 16, 16]`
+- `token_per_expert_cumsum_base_first32: [0, 0, 0, 0, 0, 0, 0, 0]`
+- `token_per_expert_layout_base_first32: [0, 0, 0, 0, 0, 0, 0, 0]`
+- `cumsum_mm_last_rank_first32: [0, 0, 0, 0, 0, 0, 0, 0]`
+- Scheduling remains zero: `total_active_rows: 0`, `total_core_loops: 0`, `groups_with_work: 0`.
+
+Interpretation:
+
+- The external expert-count GM pointer is valid and nonzero inside the kernel.
+- The debug-only `CopyGMToGM` seeding path does not make those counts visible in `tokenPerExpert` or `cumsumMM` at the loop-stats scheduling readback.
+- Stage 2.2 Gate B and Gate C remain failed. The next correction must reconcile the isolated GMM2-only debug state lifecycle with the successful official W4A8 path's producer/synchronization ownership before any raw-C2, dequant, or SVDQ epilogue work is meaningful.
 
 New debug change:
 
