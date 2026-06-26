@@ -222,7 +222,7 @@ __aicore__ inline void DispatchFFNCombineW4A8<TemplateMMA2ACFunc>::InitGMM2OnlyF
     externalHiddenXGM_ = externalHiddenXGM;
     externalHiddenScaleGM_ = externalHiddenScaleGM;
     externalExpertTokenNumsGM_ = externalExpertTokenNumsGM;
-    gmm2OnlyFromPacked_ = true;
+    gmm2OnlyFromPacked_ = false;
 }
 
 template <TemplateMMA2AClass>

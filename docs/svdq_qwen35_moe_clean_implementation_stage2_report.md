@@ -85,6 +85,23 @@ Interpretation:
 - The debug-only `CopyGMToGM` seeding path does not make those counts visible in `tokenPerExpert` or `cumsumMM` at the loop-stats scheduling readback.
 - Stage 2.2 Gate B and Gate C remain failed. The next correction must reconcile the isolated GMM2-only debug state lifecycle with the successful official W4A8 path's producer/synchronization ownership before any raw-C2, dequant, or SVDQ epilogue work is meaningful.
 
+### Extended Official GMM2 Lifecycle Table - 2026-06-26T14:08Z
+
+This is the required pre-patch lifecycle table from `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md`. It supersedes the narrower 12:39Z state table for deciding the next behavioral patch.
+
+| State or region | Official producer | Official consumer | Official initialization point | Physical GM/workspace address and offset | Row/tile stride | Flag or event | Signal timing | Wait timing | Final drain | Current debug behavior |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Packed hidden `gmA2I4_I8` | AIV `BlockEpilogue1` inside `DispatchAndCombine`, after GMM1 C2V wait. | AIC `GMM2(params)` reads `gmA2I4` by expert-contiguous group offsets. | `initBuffer`: `gmA2I4_I8.SetGlobalBuffer(workspaceInfo.ptrA2Int4)`. | `workspaceInfo.ptrA2Int4 = ptrWorkspace + offset after C/C2/A1 regions`; row base uses `params.layoutD1.GetOffset(rowStart, 0)`. | Row-major packed INT4 bytes, row width `problemShape.n() / 2`. | `SYNCFLAGV2C` releases GMM2 after hidden for each sync chunk is ready. | Official AIV sets `SYNCFLAGV2C` after `BlockEpilogue1` and `SyncAll`. | Official AIC waits `SYNCFLAGV2C` at group 0 and after sync-task groups. | `blockEpilogue1.Finalize()` before final debug taps and `CombineV2`. | GMM2-only debug directly copies external hidden into `gmA2I4_I8` before official lifecycle exists; state probe shows token state still zero. Next patch will replace this with full-lifecycle hidden override at this official boundary. |
+| Hidden scale `gmPerTokenScale2` | AIV `BlockEpilogue1` writes per-token hidden scale with the packed hidden rows. | AIC GMM2 dequant path via `gmPerTokenScale2`, and AIV debug/readback. | `initBuffer`: `gmPerTokenScale2.SetGlobalBuffer(workspaceInfo.ptrPerTokenScale2)`. | `workspaceInfo.ptrPerTokenScale2 = ptrWorkspace + offset after ptrPerTokenScale`; row base is `rowStartThisCore`. | Vector length `maxOutputSize`; one FP32 scale per hidden row. | Same `SYNCFLAGV2C` as packed hidden. | Scale is ready before AIV releases GMM2 for the chunk. | GMM2 consumes after `SYNCFLAGV2C`. | Debug tap copies full scale after `blockEpilogue1.Finalize()`. | GMM2-only debug copies external scale once, but the path lacks official token/cumsum lifecycle. Next patch will copy external scale at the same per-chunk boundary as packed hidden. |
+| `tokenPerExpert` | AIV `moe_init_routing_quant_v2` writes local rank counts into peer memory, then cross-rank gather materializes the peer matrix. | AIV cumsum helper, AIV hidden packing, AIV `BlockEpilogue2`, and official reset. | `initBuffer`: `tokenPerExpert.SetGlobalBuffer(shmem() + peermemInfo.offsetPeerTokenPerExpert)`. | `peermemInfo.offsetPeerTokenPerExpert = shmem.SegmentSize() - 2 * MB_SIZE`; official local base is `offset + tokenPerExpertLayout(rank, 0, 0) * sizeof(int32_t)`. | `Layout3D`: `dim0 * paddedExpertNumAligned + dim1 * expertPerRank + dim2`; padded row stride `paddedExpertNumAligned`. | Cross-rank sync/gather in `CrossRankSyncAndlocalTokenPerExpertAllGatherAndGetSumPreRankV2`. | After `moe_init_routing_quant_v2` and `SyncAll`. | Cumsum and row routing read after cross-rank gather. | `ResetTokenPerExpert(params.EP * paddedExpertNumAligned)` after `CombineV2`. | Standalone debug tried to seed `tokenPerExpert` with `CopyGMToGM`; state probe reads external counts as nonzero but both token bases stay zero. This proves the standalone lifecycle is not a valid official replacement. |
+| `cumsumMM` | AIV core 0 calls `GetCumsumForMMAIV(tokenPerExpert, cumsumMM, expertPerRank, rank, EP)`. | AIC `GMM1`, AIC `GMM2`, AIV hidden packing, AIV `CombineV2`, expert-token output copy. | `initBuffer`: `cumsumMM.SetGlobalBuffer(workspaceInfo.ptrcumsumMM)`. | `workspaceInfo.ptrcumsumMM = ptrWorkspace + AlignUp(M, 256) * topK * sizeof(int32_t)`. | Shape `EP * expertPerRank`, contiguous row width `expertPerRank`. | AIV releases GMM1 through cross-core flag sequence after cumsum. | Official AIV sets first GMM1 flag after copying `ExpertTokenNums`. | Official AIC `GMM1` waits initial cross-core flag before reading cumsum; GMM2 reads after GMM1. | No reset before op end; workspace is per-launch scratch. | Standalone debug wrote direct EP=1 cumsum, but state probe still read zeros. Full-lifecycle mode will keep the official producer. |
+| `preSumBeforeRank` | Official cross-rank gather helper computes prefix before current rank. | AIV hidden source row selection and `BlockEpilogue2`. | `initBuffer`: `preSumBeforeRank.SetGlobalBuffer(workspaceInfo.ptrSumBeforeRank)`. | `workspaceInfo.ptrSumBeforeRank = ptrWorkspace + offset after debug/raw regions`. | Shape `EP * expertPerRank`. | Same gather lifecycle as token matrix. | Produced before AIV hidden packing. | Read before and during hidden packing and final combine. | Workspace scratch. | GMM2-only debug zeros it for EP=1. Full-lifecycle mode will use the official computed value. |
+| GMM2 AIC input tile state | AIC `GMM2` builds tile shapes from `cumsumMM`, `gmA2I4`, `ptrB2`, and `ptrScale2`. | `BlockMmad` W4A8 MMAD implementation. | `GMM2(params)` after official AIC `GMM1(params)`. | A input `workspaceInfo.ptrA2Int4`, B input `params.ptrB2` via `GetTensorAddr`, scale `params.ptrScale2`, C output `workspaceInfo.ptrC2`. | L1 tile `[128, 256, 1024]`, L0 tile `[128, 256, 256]`; INT4 doubles M internally. | `SYNCFLAGV2C`. | AIV releases after each hidden chunk. | AIC waits before scheduling group 0 and sync-task group boundaries. | `blockMmad.Finalize(syncLoopIdx, SYNCFLAGC2V)` at sync-task boundaries and final async drain. | Standalone debug never schedules because cumsum is zero. Full-lifecycle override preserves official scheduling. |
+| GMM2 accumulator / D2 region | AIC `BlockMmad` writes GMM2 output to `gmC2`. | AIV `BlockEpilogue2` reads `gmC2` through `CombineV2`. | `initBuffer`: `gmC2.SetGlobalBuffer(workspaceInfo.ptrC2)`. | `workspaceInfo.ptrC2 = ptrWorkspace + offset after GMM1 C region`; debug raw FP32 tap may use `workspaceInfo.ptrCGMM2` when `W4A8_DEBUG`. | Row-major C tiles, active shape from cumsum, output columns `problemShape.k()`. | `SYNCFLAGC2V` from `blockMmad.Finalize`. | AIC signals when sync task group output is finalized. | AIV `CombineV2` waits through `BlockEpilogue2` protocol. | `BlockMmad::Finalize` and `BlockEpilogue2::Finalize`. | Not reached meaningfully in standalone debug because no active GMM2 tiles are scheduled. |
+| C2V handoff state | AIC `GMM2` finalizes blocks with `SYNCFLAGC2V`. | AIV `CombineV2` / `BlockEpilogue2`. | `GMM2(params)` sync task boundaries. | Cross-core flag state, not ordinary GM. | Sync-task grouping via `IsSyncTask`. | `SYNCFLAGC2V`. | After GMM2 block finalize for a sync group. | AIV waits before consuming group output. | Finalize drains pending async MMAD. | Standalone debug synthesized `SYNCFLAGV2C` and relied on official `CombineV2`; because GMM2 did no work, C2V evidence was not meaningful. |
+| `BlockEpilogue2` input state | AIC GMM2 writes `gmC2`; AIV passes token matrix, layoutD2, shmem, offsetD. | `BlockEpilogue2` dequantizes and routes final output. | Constructed in `DispatchAndCombine` before hidden epilogue loop. | Token matrix base `shmem() + offsetPeerTokenPerExpert`; output route peer D offset `peermemInfo.offsetD`. | Output row layout `layoutD2(m * topK, problemShape.k())`; tile N `L1TileShape::N`. | C2V wait inside official epilogue/Combine path. | After GMM2 finalizes. | During `CombineV2`. | `blockEpilogue.Finalize()`. | Standalone debug constructs the same epilogue but without valid upstream C2/GMM2 data. |
+| FP32 post-dequant debug tap | `BlockEpilogue2` W4A8_DEBUG helper writes FP32 GMM2/debug data. | Python probe reads `gmm2PostDequant`. | `WorkspaceInfo`: `ptrCGMM2 = params.ptrDebugGMM2` when debug pointer is provided. | External output/debug tensor passed as `ptrDebugGMM2`. | Shape `maxOutputSize x problemShape.k()`. | Follows official C2V/dequant lifecycle. | During `CombineV2`. | After AIC GMM2 output is ready. | `BlockEpilogue2::Finalize`. | Current final tap is all zero because upstream GMM2 schedules zero tiles. Full-lifecycle override should make this a valid Gate C signal once Gate B is nonzero. |
+
 New debug change:
 
 - Added a debug-only GMM2 loop-stats sentinel to `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp`.
@@ -664,6 +681,92 @@ Git/worktree state for this handoff:
 - Repo: `/root/workspace/lza/vllm-ascend`
 - Branch: `codex/svdq-lowrank-l0-reuse-debug`
 - Origin: `git@github.com:Zao-0/vllm-ascend-MoE-svdq.git`
+- Pre-existing dirty/untracked paths still intentionally left out:
+  - `csrc/utils/inc/kernel/moe_distribute_base.h`
+  - `csrc/build_out/`
+  - `extra-info/`
+
+## Current Handoff State - 2026-06-26T14:09:56Z
+
+Status: IN PROGRESS. Stage 2.2 remains open, but the failure boundary changed.
+
+This section supersedes the earlier raw-C2 and standalone GMM2-only handoff notes. The new binding constraint from `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` was read and applied: preserve the official `dispatch_ffn_combine_w4_a8` GMM1/GMM2/AIV lifecycle and replace only the hidden packed input and hidden scale at the official post-`BlockEpilogue1`, pre-`SYNCFLAGV2C` hidden boundary.
+
+Source change made in this handoff:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h`
+  - `InitGMM2OnlyFromPacked` now sets `gmm2OnlyFromPacked_ = false` for the debug op, so `svdq_w4a8_gmm2_debug_readback` enters the full official lifecycle instead of the standalone GMM2-only path.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp`
+  - Added `HasExternalGMM2HiddenOverride`.
+  - In `DispatchAndCombine`, after official `BlockEpilogue1` produces hidden rows and before `SyncAll` plus `SYNCFLAGV2C`, core 0 copies external Stage 2.1 validated packed hidden bytes into `gmA2I4_I8` and external hidden scales into `gmPerTokenScale2`.
+  - This preserves official routing, token matrix, cumsum, GMM1 scheduling, V2C release, GMM2 AIC scheduling, C2V handoff, and AIV dequant/readback.
+
+Validation performed after rebuilding and installing the custom op:
+
+- Build:
+  - Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 cmake --build csrc/build --target svdqw4_a8_gmm2_debug_readback_ascend910b -- -B -j1`
+  - Result: pass.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_official_lifecycle_override_build_kernel.log`
+- Ops metadata:
+  - Result: pass.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_official_lifecycle_override_ops_config.log`
+- Staged install:
+  - Result: pass.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_official_lifecycle_override_cmake_install.log`
+- Repo-local custom OPP install:
+  - Result: pass.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_official_lifecycle_override_install_repo_root_cwd.log`
+- System OPP install:
+  - Result: pass.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_official_lifecycle_override_install_system_opp_root_cwd.log`
+- ABI/schema check:
+  - Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 pytest -q tests/ut/ops/test_svdq_moe_abi.py::test_svdq_w4a8_gmm2_debug_torch_schema_meta_and_adapter_are_registered`
+  - Result: pass, `1 passed, 16 warnings`.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_official_lifecycle_override_abi.log`
+- Real-device GMM2 probe:
+  - Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH} python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py --require-npu --summary-name phase_stage2_gmm2_official_lifecycle_override_probe.json`
+  - Result: fail, but no longer all-zero.
+  - Evidence:
+    - Log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_official_lifecycle_override_probe.log`
+    - Summary: `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_official_lifecycle_override_probe.json`
+
+Key numerical result from the official-lifecycle override probe:
+
+- `passed: false`
+- `official_gmm2_kernel_launched: true`
+- `hidden_q_packed_exact_match: true`
+- `hidden_q_packed_mismatch_count: 0`
+- `hidden_scale_finite: true`
+- `hidden_scale_nonzero: true`
+- `canonical_hidden_finite: true`
+- `canonical_hidden_nonzero: true`
+- `gmm2.post_dequant_active.nonzero: true`
+- `gmm2.post_dequant_active.finite: true`
+- `gmm2.post_dequant_active.max_abs: 0.6201786994934082`
+- `gmm2.post_dequant_active.mean_abs: 0.0555962398648262`
+- `gmm2.unfused_reference.passed: false`
+- Reference comparison over 64 rows:
+  - `max_abs: 0.725216269493103`
+  - `mean_abs: 0.08050119131803513`
+  - tolerance remains `max_abs <= 0.0002`, `mean_abs <= 0.00002`
+
+Interpretation:
+
+- The standalone GMM2-only zero-scheduling issue is bypassed by preserving the full official lifecycle. This is the first Stage 2.2 probe in this sequence with finite nonzero official GMM2 post-dequant output from the Stage 2.1 packed hidden boundary.
+- Stage 2.2 Gate C still fails because the official output does not match the unfused reference.
+- The packed hidden boundary is still exact and should not be reopened as a public grouped-matmul, scale guessing, or repacking task.
+- The next debugging target is the remaining numerical mismatch under the official lifecycle: row/order mapping, active-row comparison window, expert group count interpretation, or the unfused reference's reconstruction of the official GMM2 dequant contract.
+- Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed. Do not add SVDQ BF16 projections, mixed AIV epilogues, SwiGLU integration, or hidden quantization to the production op until this official-lifecycle GMM2 numerical gate passes.
+
+Git/worktree state for this handoff:
+
+- Repo: `/root/workspace/lza/vllm-ascend`
+- Branch: `codex/svdq-lowrank-l0-reuse-debug`
+- Origin: `git@github.com:Zao-0/vllm-ascend-MoE-svdq.git`
+- Intended committed files for this handoff:
+  - `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h`
+  - `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp`
+  - `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
 - Pre-existing dirty/untracked paths still intentionally left out:
   - `csrc/utils/inc/kernel/moe_distribute_base.h`
   - `csrc/build_out/`

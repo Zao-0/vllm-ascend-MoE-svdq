@@ -785,6 +785,13 @@ private:
     }
 
     CATLASS_DEVICE
+    bool HasExternalGMM2HiddenOverride(Params const &params)
+    {
+        return params.ptrExternalHiddenX != nullptr && params.ptrExternalHiddenScale != nullptr &&
+               !params.gmm2OnlyFromPacked;
+    }
+
+    CATLASS_DEVICE
     void WriteGMM2OnlyLoopStats(Params const &params)
     {
         if (coreIdx != 0 || params.ptrDebugGMM2 == nullptr) {
@@ -1314,6 +1321,18 @@ private:
                                     params.expertPerRank, params.EP, gmCGMM1[gmOffsetC],
                                     gmCGMM1Hidden[gmOffsetD], params.rank, params.listLen, resource,
                                     params.epilogueCoreNum, params.swigluLimit);
+                }
+                if (HasExternalGMM2HiddenOverride(params) && coreIdx == 0) {
+                    AscendC::GlobalTensor<int8_t> externalHiddenX;
+                    externalHiddenX.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t *>(params.ptrExternalHiddenX));
+                    CopyGMToGM(gmA2I4_I8[gmOffsetD], externalHiddenX[gmOffsetD], curRowNum * (params.problemShape.n() / 2),
+                               params.ubMoveNum);
+
+                    AscendC::GlobalTensor<ElementPerTokenScale> externalHiddenScale;
+                    externalHiddenScale.SetGlobalBuffer(
+                        reinterpret_cast<__gm__ ElementPerTokenScale *>(params.ptrExternalHiddenScale));
+                    CopyGMToGM(gmPerTokenScale2[rowStartThisCore], externalHiddenScale[rowStartThisCore], curRowNum,
+                               params.ubMoveNum);
                 }
             }
             AscendC::SyncAll<true>();
