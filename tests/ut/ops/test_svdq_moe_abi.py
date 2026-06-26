@@ -278,6 +278,7 @@ def test_svdq_w4a8_gmm2_debug_torch_schema_meta_and_adapter_are_registered():
         "gmm2_post_dequant",
         "hidden_x_readback",
         "hidden_scale_readback",
+        "gmm2_accumulator_int32",
     ):
         assert name in binding
         assert name in meta
@@ -288,9 +289,11 @@ def test_svdq_w4a8_gmm2_debug_torch_schema_meta_and_adapter_are_registered():
     assert "OP_ADD(SVDQW4A8GMM2DebugReadback)" in op_def
     assert 'this->Output("hiddenXReadback")' in op_def
     assert 'this->Output("hiddenScaleReadback")' in op_def
+    assert 'this->Output("gmm2AccumulatorInt32")' in op_def
     assert "InitGMM2OnlyFromPacked" in kernel
     assert "hiddenXReadback" in kernel
     assert "hiddenScaleReadback" in kernel
+    assert "gmm2AccumulatorInt32" in kernel
     assert "GMM2OnlyFromPacked" in official
     assert "GMM2(params)" in official
 

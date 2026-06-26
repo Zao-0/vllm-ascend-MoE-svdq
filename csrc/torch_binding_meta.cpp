@@ -527,7 +527,7 @@ svdq_w4a8_debug_readback_meta(
             hidden_x_int4_packed, hidden_x_scale, gmm2_post_dequant};
 }
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor> svdq_w4a8_gmm2_debug_readback_meta(
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> svdq_w4a8_gmm2_debug_readback_meta(
     const at::Tensor& x,
     const at::TensorList& weight1,
     const at::TensorList& weight2,
@@ -609,7 +609,9 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> svdq_w4a8_gmm2_debug_readback_met
         at::empty({max_output_size, intermediate_size}, hidden_x_int4_packed.options().device(at::kMeta));
     at::Tensor hidden_scale_readback =
         at::empty({max_output_size}, hidden_x_scale.options().device(at::kMeta));
-    return {gmm2_post_dequant, hidden_x_readback, hidden_scale_readback};
+    at::Tensor gmm2_accumulator_int32 =
+        at::empty({max_output_size * 2, hidden_size}, expert_idx.options().device(at::kMeta));
+    return {gmm2_post_dequant, hidden_x_readback, hidden_scale_readback, gmm2_accumulator_int32};
 }
 
 at::Tensor npu_lightning_indexer_meta(

@@ -181,6 +181,43 @@ def _tensor_int_exact(actual: torch.Tensor, expected: torch.Tensor) -> dict[str,
     }
 
 
+def _tensor_int32_exact(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, Any]:
+    actual_cpu = actual.detach().cpu().to(torch.int64)
+    expected_cpu = expected.detach().cpu().to(torch.int64)
+    diff = (actual_cpu - expected_cpu).abs()
+    mismatch = diff != 0
+    first_mismatch_coords = mismatch.nonzero()[:16]
+    first_mismatches: list[dict[str, Any]] = []
+    for coord in first_mismatch_coords:
+        index = tuple(int(v) for v in coord.tolist())
+        first_mismatches.append(
+            {
+                "index": list(index),
+                "actual": int(actual_cpu[index].item()),
+                "expected": int(expected_cpu[index].item()),
+                "abs_diff": int(diff[index].item()),
+            }
+        )
+    mismatch_rows = mismatch.any(dim=1) if mismatch.dim() >= 2 else torch.empty((0,), dtype=torch.bool)
+    mismatch_cols = mismatch.any(dim=0) if mismatch.dim() >= 2 else torch.empty((0,), dtype=torch.bool)
+    return {
+        "actual_shape": list(actual_cpu.shape),
+        "expected_shape": list(expected_cpu.shape),
+        "actual_dtype": str(actual.dtype),
+        "expected_dtype": str(expected.dtype),
+        "exact_match": bool(torch.equal(actual_cpu, expected_cpu)),
+        "mismatch_count": int(mismatch.sum().item()) if mismatch.numel() else 0,
+        "max_abs_diff": int(diff.max().item()) if diff.numel() else 0,
+        "mismatch_row_count": int(mismatch_rows.sum().item()) if mismatch.dim() >= 2 else None,
+        "mismatch_col_count": int(mismatch_cols.sum().item()) if mismatch.dim() >= 2 else None,
+        "mismatch_rows_first32": mismatch_rows.nonzero().flatten()[:32].tolist() if mismatch.dim() >= 2 else [],
+        "mismatch_cols_first32": mismatch_cols.nonzero().flatten()[:32].tolist() if mismatch.dim() >= 2 else [],
+        "first_mismatches": first_mismatches,
+        "actual_sample": actual_cpu.flatten()[:16].tolist(),
+        "expected_sample": expected_cpu.flatten()[:16].tolist(),
+    }
+
+
 def _tensor_float_exact_locations(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, Any]:
     actual_cpu = actual.detach().cpu().float()
     expected_cpu = expected.detach().cpu().float()
@@ -886,6 +923,58 @@ def _official_gmm2_d2_half_reference(
         "diagnostic_only": (
             "Per-half D2 boundary comparator for isolating the official Fixpipe/FP16 rounding contract; "
             "not a substitute GMM2 implementation."
+        ),
+    }
+
+
+def _official_gmm2_int32_accumulator_reference(
+    *,
+    hidden_x_int4_packed: torch.Tensor,
+    weight: torch.Tensor,
+    expert_token_nums: torch.Tensor,
+    output_columns: int,
+    max_rows: int,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    x_high, x_low = _packed_i4_hidden_to_parts_variant(
+        hidden_x_int4_packed[:max_rows],
+        half_order="high_low",
+        nibble_order="low_high",
+    )
+    row_count = min(int(x_high.shape[0]), int(x_low.shape[0]), int(max_rows))
+    counts = _clip_group_counts_for_limit(expert_token_nums, row_count)
+    unpacked_weight = _unpack_postloaded_w4_columns_zN(weight, output_columns)
+
+    outputs: list[torch.Tensor] = []
+    row_start = 0
+    for expert_id, count in enumerate(counts):
+        count = int(count)
+        if count <= 0:
+            continue
+        row_end = row_start + count
+        weight_e = unpacked_weight[expert_id]
+        high_acc = x_high[row_start:row_end].matmul(weight_e)
+        low_acc = x_low[row_start:row_end].matmul(weight_e)
+        interleaved = torch.empty((count * 2, output_columns), dtype=torch.int32)
+        interleaved[0::2] = high_acc.to(torch.int32)
+        interleaved[1::2] = low_acc.to(torch.int32)
+        outputs.append(interleaved)
+        row_start = row_end
+    reference = torch.cat(outputs, dim=0) if outputs else torch.empty((0, output_columns), dtype=torch.int32)
+    return reference, {
+        "enabled": True,
+        "source_boundary": (
+            "Official GMM2 L0C int32 accumulator copied through the AtlasA2 int32->int32 no-quant "
+            "CopyL0CToGm path before per-channel VDEQF16 Fixpipe, FP16 D2 storage, AIV dequant, aux, "
+            "hidden-scale multiplication, BF16 cast, or peer-output routing."
+        ),
+        "row_mapping": "doubled C rows: even rows are high accumulator, odd rows are low accumulator",
+        "weight_layout": "official postloaded W2 Catlass layout::zN::MakeLayout<int4b_t>",
+        "hidden_layout": "Stage 2.1 high/low packed INT4 with low/high nibble unpacking",
+        "group_counts": counts,
+        "max_rows": int(max_rows),
+        "diagnostic_only": (
+            "This host-side integer reference is only a comparator for the official accumulator readback; "
+            "it is not an alternative GMM2 implementation path."
         ),
     }
 
@@ -1617,13 +1706,20 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         args.swiglu_limit,
     )
     if isinstance(debug_outputs, tuple):
-        gmm2_post_dequant, hidden_x_readback, hidden_scale_readback = debug_outputs
+        if len(debug_outputs) == 4:
+            gmm2_post_dequant, hidden_x_readback, hidden_scale_readback, gmm2_accumulator_int32 = debug_outputs
+        elif len(debug_outputs) == 3:
+            gmm2_post_dequant, hidden_x_readback, hidden_scale_readback = debug_outputs
+            gmm2_accumulator_int32 = None
+        else:
+            raise RuntimeError(f"unexpected svdq_w4a8_gmm2_debug_readback tuple length: {len(debug_outputs)}")
     else:
         # Backward-compatible fallback for stale installs; the ABI test requires
         # the tuple-returning debug op after this diagnostic patch is installed.
         gmm2_post_dequant = debug_outputs
         hidden_x_readback = None
         hidden_scale_readback = None
+        gmm2_accumulator_int32 = None
     torch.npu.synchronize()
     hidden_x_readback_exact = (
         _tensor_int_exact(hidden_x_readback[:active_rows], hidden_x_int4_packed[:active_rows])
@@ -1806,6 +1902,37 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             and raw_c2_error["max_abs"] <= args.gmm2_raw_c2_reference_max_abs_tol
             and raw_c2_error["mean_abs"] <= args.gmm2_raw_c2_reference_mean_abs_tol
         )
+        accumulator_int32_reference_passed = False
+        accumulator_int32_report: dict[str, Any] = {
+            "enabled": False,
+            "reason": "debug op did not return gmm2_accumulator_int32",
+        }
+        if gmm2_accumulator_int32 is not None:
+            accumulator_reference, accumulator_contract = _official_gmm2_int32_accumulator_reference(
+                hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
+                weight=layer.w2_weight,
+                expert_token_nums=external_expert_token_nums,
+                output_columns=spec.hidden_size,
+                max_rows=args.gmm2_reference_max_rows,
+            )
+            accumulator_actual = gmm2_accumulator_int32.detach().cpu()[
+                : accumulator_reference.shape[0], : accumulator_reference.shape[1]
+            ]
+            accumulator_int32_exact = _tensor_int32_exact(accumulator_actual, accumulator_reference)
+            accumulator_int32_reference_passed = bool(accumulator_int32_exact["exact_match"])
+            accumulator_int32_report = {
+                "enabled": True,
+                "passed": accumulator_int32_reference_passed,
+                "contract": accumulator_contract,
+                "exact_reference": accumulator_int32_exact,
+                "actual_nonzero": bool(torch.any(accumulator_actual != 0).item()),
+                "actual_shape": list(accumulator_actual.shape),
+                "actual_dtype": str(accumulator_actual.dtype),
+                "diagnostic_only": (
+                    "Pre-Fixpipe accumulator readback from the official GMM2 producer. This does not "
+                    "enable production SVDQ host tiling or bypass the existing D2 Gate B comparator."
+                ),
+            }
         if raw_debug_mode in {"d2_high_half", "d2_low_half"}:
             raw_c2_d2_half_variant_diagnostics = _official_gmm2_d2_half_variant_diagnostics(
                 actual=raw_actual,
@@ -2048,6 +2175,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                     ),
                 },
                 "raw_c2_readback_hidden_reference": hidden_readback_raw_reference_report,
+                "int32_accumulator_readback_reference": accumulator_int32_report,
                 "raw_c2_row_diagnostics": raw_c2_row_diagnostics,
                 "raw_c2_layout_variant_diagnostics": raw_c2_layout_variants,
                 "raw_c2_weight_layout_variant_diagnostics": raw_c2_weight_layout_variants,
@@ -2067,6 +2195,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                 "official_gmm2_aic_raw_output_finite": raw_c2_finite,
                 "official_gmm2_aic_raw_output_nonzero": raw_c2_nonzero,
                 "official_gmm2_aic_reference_passed": bool(raw_c2_reference_passed),
+                "official_gmm2_accumulator_int32_reference_passed": bool(accumulator_int32_reference_passed),
                 "official_gmm2_c2v_handoff_verified": bool(raw_c2_finite and raw_c2_nonzero),
                 "official_gmm2_post_dequant_finite": False,
                 "official_gmm2_post_dequant_nonzero": False,

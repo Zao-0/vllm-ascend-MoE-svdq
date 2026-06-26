@@ -54,6 +54,9 @@ public:
     using CopyL1ToFP = typename TileCopy_::CopyL1ToFP;
     using ElementAccumulator =
         typename Gemm::helper::ElementAccumulatorSelector<ElementA, ElementB>::ElementAccumulator;
+    using DebugCopyL0CToGmInt32 =
+        Gemm::Tile::CopyL0CToGm<ArchTag, ElementAccumulator, Gemm::GemmType<int32_t, layout::RowMajor>,
+                                Gemm::Tile::ScaleGranularity::NO_QUANT, false>;
     using LayoutAInL1 = typename CopyL1ToL0A::LayoutSrc;
     using LayoutBInL1 = typename CopyL1ToL0B::LayoutSrc;
     using LayoutAInL0 = typename CopyL1ToL0A::LayoutDst;
@@ -142,7 +145,8 @@ public:
                     AscendC::GlobalTensor<ElementB> const &gmBlockB, LayoutB const &layoutB,
                     AscendC::GlobalTensor<ElementC> const &gmBlockC, LayoutC const &layoutC,
                     GemmCoord const &actualShape, Callback const &callbackBeforeFixpipe,
-                    Callback const &callbackAfterFixpipe, int32_t syncLoopIdx = -1, int32_t flag = 0)
+                    Callback const &callbackAfterFixpipe, int32_t syncLoopIdx = -1, int32_t flag = 0,
+                    GM_ADDR debugAccumulatorGM = nullptr)
     {
         uint32_t kTileCount = CeilDiv<L1TileShape::K>(actualShape.k());
 
@@ -208,6 +212,7 @@ public:
                 l1TileMmadParams.syncLoopIdx = syncLoopIdx;
                 l1TileMmadParams.callbackBeforeFixpipe = callbackBeforeFixpipe;
                 l1TileMmadParams.callbackAfterFixpipe = callbackAfterFixpipe;
+                l1TileMmadParams.debugAccumulatorGM = debugAccumulatorGM;
             }
 
             if (preloadCount < PRELOAD_STAGES) {
@@ -264,6 +269,7 @@ private:
         LayoutC layoutCInGm;
         int32_t syncLoopIdx;
         int32_t flag;
+        GM_ADDR debugAccumulatorGM;
         Callback callbackBeforeFixpipe;
         Callback callbackAfterFixpipe;
 
@@ -445,6 +451,13 @@ private:
 
                 AscendC::PipeBarrier<PIPE_FIX>();
 
+                if (params.debugAccumulatorGM != nullptr) {
+                    AscendC::GlobalTensor<int32_t> gmDebugAccumulator;
+                    gmDebugAccumulator.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(params.debugAccumulatorGM));
+                    debugCopyL0CToGmInt32(gmDebugAccumulator, l0CTensor, layoutCInGm, layoutCInL0);
+                    AscendC::PipeBarrier<PIPE_FIX>();
+                }
+
                 copyL0CToGm(params.gmBlockC, l0CTensor, fixpipeBuf, layoutCInGm, layoutCInL0);
                 AscendC::SetFlag<AscendC::HardEvent::FIX_M>(l0CEventList[l0CListId]);
             } else {
@@ -455,6 +468,13 @@ private:
                 AscendC::SetFlag<AscendC::HardEvent::FIX_MTE2>(params.l1ScaleListId);
 
                 AscendC::PipeBarrier<PIPE_FIX>();
+
+                if (params.debugAccumulatorGM != nullptr) {
+                    AscendC::GlobalTensor<int32_t> gmDebugAccumulator;
+                    gmDebugAccumulator.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t *>(params.debugAccumulatorGM));
+                    debugCopyL0CToGmInt32(gmDebugAccumulator, l0CTensor, layoutCInGm, layoutCInL0);
+                    AscendC::PipeBarrier<PIPE_FIX>();
+                }
 
                 copyL0CToGm(params.gmBlockC, l0CTensor, fixpipeBuf, layoutCInGm, layoutCInL0, 0b11);
             }
@@ -501,6 +521,7 @@ private:
     CopyL1ToL0A copyL1ToL0A;
     CopyL1ToL0B copyL1ToL0B;
     CopyL0CToGm copyL0CToGm;
+    DebugCopyL0CToGmInt32 debugCopyL0CToGmInt32;
     CopyGmToL1Scale copyGmToL1Scale;
     CopyL1ToFP copyL1ToFP;
 

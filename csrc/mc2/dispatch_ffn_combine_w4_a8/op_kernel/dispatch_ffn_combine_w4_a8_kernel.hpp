@@ -109,6 +109,7 @@ public:
         GM_ADDR ptrDebugHiddenX;
         GM_ADDR ptrDebugHiddenScale;
         GM_ADDR ptrDebugGMM2;
+        GM_ADDR ptrDebugGMM2Accumulator;
         GM_ADDR ptrExternalHiddenX;
         GM_ADDR ptrExternalHiddenScale;
         GM_ADDR ptrExternalExpertTokenNums;
@@ -151,6 +152,7 @@ public:
                GM_ADDR ptrDebugRoutedScale_ = nullptr, GM_ADDR ptrDebugGMM1_ = nullptr,
                GM_ADDR ptrDebugGMM1Hidden_ = nullptr, GM_ADDR ptrDebugHiddenX_ = nullptr,
                GM_ADDR ptrDebugHiddenScale_ = nullptr, GM_ADDR ptrDebugGMM2_ = nullptr,
+               GM_ADDR ptrDebugGMM2Accumulator_ = nullptr,
                GM_ADDR ptrExternalHiddenX_ = nullptr, GM_ADDR ptrExternalHiddenScale_ = nullptr,
                GM_ADDR ptrExternalExpertTokenNums_ = nullptr, bool gmm2OnlyFromPacked_ = false)
             : problemShape(problemShape_),
@@ -195,6 +197,7 @@ public:
               ptrDebugHiddenX(ptrDebugHiddenX_),
               ptrDebugHiddenScale(ptrDebugHiddenScale_),
               ptrDebugGMM2(ptrDebugGMM2_),
+              ptrDebugGMM2Accumulator(ptrDebugGMM2Accumulator_),
               ptrExternalHiddenX(ptrExternalHiddenX_),
               ptrExternalHiddenScale(ptrExternalHiddenScale_),
               ptrExternalExpertTokenNums(ptrExternalExpertTokenNums_),
@@ -762,9 +765,15 @@ private:
                 if (currentM > 0) {
                     if constexpr (std::is_same_v<ElementB, AscendC::int4b_t>) {
                         if constexpr (BlockMmad::DispatchPolicy::ASYNC) {
+                            GM_ADDR debugAccumulatorGM = nullptr;
+                            if (params.ptrDebugGMM2Accumulator != nullptr) {
+                                debugAccumulatorGM = params.ptrDebugGMM2Accumulator +
+                                    (gmGroupOffsetC + gmOffsetC) * sizeof(int32_t);
+                            }
                             blockMmad(gmS2[gmOffsetS], layoutScale, gmA2I4[gmGroupOffsetA + gmOffsetA], layoutA,
                                       gmB2[gmGroupOffsetB + gmOffsetB], layoutB2, gmC2[gmGroupOffsetC + gmOffsetC],
-                                      layoutC, actualBlockShape, Callback{}, Callback{}, syncLoopIdx, 0);
+                                      layoutC, actualBlockShape, Callback{}, Callback{}, syncLoopIdx, 0,
+                                      debugAccumulatorGM);
                         } 
                     }
                 }

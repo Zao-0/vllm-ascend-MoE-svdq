@@ -1,5 +1,69 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Stage 2.2 GMM2 Int32 Accumulator Readback ABI - 2026-06-26T23:45Z
+
+This section is the latest rebuild handoff. It records the current source state after adding a debug-only GMM2
+int32 accumulator readback path that reuses the official W4A8 GMM2 AIC producer. This is not a numerical gate
+pass and it does not enable production SVDQ.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Accepted prior Stage 2 evidence; unchanged by this patch. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Source is wired for an official-producer int32 accumulator readback, but the Ascend binary build is blocked before a real-device probe because OPC still consumes stale 5-output `_param.json` files while the op store is 6-output. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 Gate B and Gate C. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+Source changes in this attempt:
+
+- Added a debug-only `CopyL0CToGm<int32_t -> int32_t, NO_QUANT>` tap inside the official W4A8 `BlockMmad` path.
+- Threaded an optional `debugGMM2AccumulatorGM` pointer through `DispatchFFNCombineW4A8`, `MatmulKernel::Params`,
+  the GMM2 AIC call site, the debug kernel ABI, ACLNN wrapper, torch adapter, torch schema, and meta registration.
+- Added a fourth debug-op return tensor named `gmm2_accumulator_int32` with shape
+  `[max_output_size * 2, hidden_size]`.
+- Extended `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py` with a diagnostic-only int32 accumulator reference
+  comparator. This host comparator is only for readback validation; it is not an alternate GMM2 execution path.
+- Updated the ABI unit test to require `gmm2AccumulatorInt32` wiring.
+
+Validation commands and results:
+
+- `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
+- `git diff --check`: passed.
+- `pytest -q tests/ut/ops/test_svdq_moe_abi.py::test_svdq_w4a8_gmm2_debug_torch_schema_meta_and_adapter_are_registered -q`: passed.
+- `pytest -q tests/ut/ops/test_svdq_moe_abi.py -q`: failed in three pre-existing low-rank BF16 ABI tests unrelated to the GMM2 debug ABI:
+  `test_svdq_lowrank_debug_mmad_synchronizes_l0_reuse`,
+  `test_svdq_cann_lowrank_down_up_component_contract_is_wired`, and
+  `test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map`.
+- `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 cmake --build csrc/build --target generate_transformer_adapt_py -- -B -j1`: passed and regenerated the dynamic Python wrapper with the 6-output ABI.
+- `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 cmake --build csrc/build --target svdqw4_a8_gmm2_debug_readback_ascend910b -- -B -j1`: reported target success but OPC emitted errors for every generated binary variant, so this is treated as failed for the Stage 2.2 diagnostic gate.
+
+Evidence logs:
+
+- Initial build attempt:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_int32_accumulator_build.log`
+- Regenerated wrapper / rerun build:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_int32_accumulator_build_rerun.log`
+- Relevant OPC failure from the rerun:
+  `Op[type=SVDQW4A8GMM2DebugReadback] invalid output nums[5], which should be equal to output nums[6] in op store.`
+
+Current diagnosis:
+
+- The regenerated op store, ACLNN inner autogen, proto, op-info JSON, and dynamic Python wrapper all include
+  `gmm2AccumulatorInt32`.
+- The OPC input files under `csrc/build/binary/ascend910b/gen/SVDQW4A8GMM2DebugReadback_*_param.json` still list
+  only five outputs through `hiddenScaleReadback`.
+- Because the binary `_param.json` files remain stale/incomplete, no real-device accumulator probe was run and no
+  Gate B or Gate C progress is claimed.
+
+Next rebuild action:
+
+1. Regenerate or invalidate the Ascend binary param JSON/scripts for `SVDQW4A8GMM2DebugReadback` so the OPC
+   input param files include `gmm2AccumulatorInt32` as output index 5.
+2. Rebuild `svdqw4_a8_gmm2_debug_readback_ascend910b` with `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3` and require zero
+   `invalid output nums` / `Opc tool compile failed` lines in the saved log.
+3. Only after the binary build is clean, install/register the updated custom op and run the real-device Stage 2.2
+   accumulator probe. Do not run public `torch_npu.npu_grouped_matmul`; do not enable production host tiling.
+
 ## Stage 2.2 Official-Path Appendix Rebaseline - 2026-06-26T22:52:59Z
 
 This section is the latest authoritative Stage 2.2 handoff. It records that

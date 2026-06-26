@@ -61,13 +61,15 @@ public:
                                 GM_ADDR workspaceGM, GM_ADDR tilingGM, GM_ADDR debugRoutedXGM = nullptr,
                                 GM_ADDR debugRoutedScaleGM = nullptr, GM_ADDR debugGMM1GM = nullptr,
                                 GM_ADDR debugGMM1HiddenGM = nullptr, GM_ADDR debugHiddenXGM = nullptr,
-                                GM_ADDR debugHiddenScaleGM = nullptr, GM_ADDR debugGMM2GM = nullptr);
+                                GM_ADDR debugHiddenScaleGM = nullptr, GM_ADDR debugGMM2GM = nullptr,
+                                GM_ADDR debugGMM2AccumulatorGM = nullptr);
     __aicore__ inline void InitGMM2OnlyFromPacked(
         GM_ADDR xGM, GM_ADDR weight1GM, GM_ADDR weight2GM, GM_ADDR expertIdGM, GM_ADDR scale1GM, GM_ADDR scale2GM,
         GM_ADDR bias1GM, GM_ADDR bias2GM, GM_ADDR probs, GM_ADDR xActiveMaskGM, GM_ADDR outGM,
         GM_ADDR expertTokenNums, GM_ADDR workspaceGM, GM_ADDR tilingGM, GM_ADDR externalHiddenXGM,
         GM_ADDR externalHiddenScaleGM, GM_ADDR externalExpertTokenNumsGM, GM_ADDR debugGMM2GM,
-        GM_ADDR debugHiddenXGM = nullptr, GM_ADDR debugHiddenScaleGM = nullptr);
+        GM_ADDR debugHiddenXGM = nullptr, GM_ADDR debugHiddenScaleGM = nullptr,
+        GM_ADDR debugGMM2AccumulatorGM = nullptr);
     __aicore__ inline void Process();
 
 
@@ -92,6 +94,7 @@ private:
     GM_ADDR debugHiddenXGM_;
     GM_ADDR debugHiddenScaleGM_;
     GM_ADDR debugGMM2GM_;
+    GM_ADDR debugGMM2AccumulatorGM_;
     GM_ADDR externalHiddenXGM_;
     GM_ADDR externalHiddenScaleGM_;
     GM_ADDR externalExpertTokenNumsGM_;
@@ -145,7 +148,8 @@ __aicore__ inline void DispatchFFNCombineW4A8<TemplateMMA2ACFunc>::Init(GM_ADDR 
                                                                     GM_ADDR workspaceGM, GM_ADDR tilingGM, GM_ADDR debugRoutedXGM,
                                                                     GM_ADDR debugRoutedScaleGM, GM_ADDR debugGMM1GM,
                                                                     GM_ADDR debugGMM1HiddenGM, GM_ADDR debugHiddenXGM,
-                                                                    GM_ADDR debugHiddenScaleGM, GM_ADDR debugGMM2GM)
+                                                                    GM_ADDR debugHiddenScaleGM, GM_ADDR debugGMM2GM,
+                                                                    GM_ADDR debugGMM2AccumulatorGM)
 {
     REGISTER_TILING_DEFAULT(DispatchFFNCombineW4A8TilingData);
     auto tiling = (__gm__ DispatchFFNCombineW4A8TilingData*)tilingGM;
@@ -173,6 +177,7 @@ __aicore__ inline void DispatchFFNCombineW4A8<TemplateMMA2ACFunc>::Init(GM_ADDR 
     debugHiddenXGM_ = debugHiddenXGM;
     debugHiddenScaleGM_ = debugHiddenScaleGM;
     debugGMM2GM_ = debugGMM2GM;
+    debugGMM2AccumulatorGM_ = debugGMM2AccumulatorGM;
     externalHiddenXGM_ = nullptr;
     externalHiddenScaleGM_ = nullptr;
     externalExpertTokenNumsGM_ = nullptr;
@@ -216,11 +221,12 @@ __aicore__ inline void DispatchFFNCombineW4A8<TemplateMMA2ACFunc>::InitGMM2OnlyF
     GM_ADDR xGM, GM_ADDR weight1GM, GM_ADDR weight2GM, GM_ADDR expertIdGM, GM_ADDR scale1GM, GM_ADDR scale2GM,
     GM_ADDR bias1GM, GM_ADDR bias2GM, GM_ADDR probs, GM_ADDR xActiveMaskGM, GM_ADDR outGM, GM_ADDR expertTokenNums,
     GM_ADDR workspaceGM, GM_ADDR tilingGM, GM_ADDR externalHiddenXGM, GM_ADDR externalHiddenScaleGM,
-    GM_ADDR externalExpertTokenNumsGM, GM_ADDR debugGMM2GM, GM_ADDR debugHiddenXGM, GM_ADDR debugHiddenScaleGM)
+    GM_ADDR externalExpertTokenNumsGM, GM_ADDR debugGMM2GM, GM_ADDR debugHiddenXGM, GM_ADDR debugHiddenScaleGM,
+    GM_ADDR debugGMM2AccumulatorGM)
 {
     Init(xGM, weight1GM, weight2GM, expertIdGM, scale1GM, scale2GM, bias1GM, bias2GM, probs, xActiveMaskGM, outGM,
          expertTokenNums, workspaceGM, tilingGM, nullptr, nullptr, nullptr, nullptr, debugHiddenXGM, debugHiddenScaleGM,
-         debugGMM2GM);
+         debugGMM2GM, debugGMM2AccumulatorGM);
     externalHiddenXGM_ = externalHiddenXGM;
     externalHiddenScaleGM_ = externalHiddenScaleGM;
     externalExpertTokenNumsGM_ = externalExpertTokenNumsGM;
@@ -334,8 +340,8 @@ __aicore__ inline void DispatchFFNCombineW4A8<TemplateMMA2ACFunc>::Process()
         expertTokensBeforeCapacity, probs_,
         workspaceGM_, gmExpertTokenNums_, ubMoveNum, xActiveMaskGM_, moeInitRoutingQuantV2TilingData, swigluLimit,
         nullptr, debugRoutedXGM_, debugRoutedScaleGM_, debugGMM1GM_, debugGMM1HiddenGM_, debugHiddenXGM_,
-        debugHiddenScaleGM_, debugGMM2GM_, externalHiddenXGM_, externalHiddenScaleGM_, externalExpertTokenNumsGM_,
-        gmm2OnlyFromPacked_};
+        debugHiddenScaleGM_, debugGMM2GM_, debugGMM2AccumulatorGM_, externalHiddenXGM_, externalHiddenScaleGM_,
+        externalExpertTokenNumsGM_, gmm2OnlyFromPacked_};
     //Call kernel
     MatmulKernel kernel(params);
     kernel(params);
