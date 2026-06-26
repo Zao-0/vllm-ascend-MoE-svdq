@@ -266,7 +266,7 @@ public:
     CATLASS_DEVICE void operator()<AscendC::AIV>(Params const &params)
     {
         if (params.gmm2OnlyFromPacked) {
-            SignalGMM2OnlyReady(params);
+            GMM2OnlyDequantReadback(params);
             return;
         }
         DispatchAndCombine(params);
@@ -789,6 +789,17 @@ private:
     }
 
     CATLASS_DEVICE
+    void ZeroGMM2OnlyPreSumBeforeRank(Params const &params)
+    {
+        int32_t elemNum = params.EP * params.expertPerRank;
+        AscendC::LocalTensor<int32_t> tmpBuffer = resource.ubBuf.template GetBufferByByte<int32_t>(0);
+        tmpBuffer.SetSize(AlignUp(elemNum, ALIGN_128));
+        AscendC::Duplicate(tmpBuffer, static_cast<int32_t>(0), AlignUp(elemNum, 8));
+        AscendC::DataCopyPad(preSumBeforeRank, tmpBuffer,
+                             {1, static_cast<uint16_t>(elemNum * sizeof(int32_t)), 0, 0});
+    }
+
+    CATLASS_DEVICE
     void GMM2OnlyFromPacked(Params const &params)
     {
         if (coreIdx == 0) {
@@ -808,9 +819,30 @@ private:
             CopyGMToGM(tokenPerExpert[tokenPerExpertLayout(params.rank, 0, 0)], externalExpertTokenNums,
                        params.expertPerRank, params.ubMoveNum);
             GetCumsumForMMAIV(tokenPerExpert, cumsumMM, params.expertPerRank, params.rank, params.EP);
+            ZeroGMM2OnlyPreSumBeforeRank(params);
         }
         AscendC::SyncAll<true>();
         GMM2(params);
+    }
+
+    CATLASS_DEVICE
+    void GMM2OnlyDequantReadback(Params const &params)
+    {
+        uint32_t n2 = params.problemShape.k();
+        typename BlockEpilogue2::Params epilogueParams{
+            static_cast<int32_t>(params.EP),
+            static_cast<int32_t>(params.expertPerRank),
+            static_cast<int32_t>(params.rank),
+            reinterpret_cast<__gm__ int32_t *>(shmem() + peermemInfo.offsetPeerTokenPerExpert),
+            params.layoutD2,
+            static_cast<int32_t>(n2),
+            static_cast<int32_t>(L1TileShape::N),
+            shmem,
+            static_cast<int32_t>(peermemInfo.offsetD)};
+
+        BlockEpilogue2 blockEpilogue2(resource, epilogueParams);
+        SignalGMM2OnlyReady(params);
+        CombineV2(params, blockEpilogue2);
     }
 
     CATLASS_DEVICE
