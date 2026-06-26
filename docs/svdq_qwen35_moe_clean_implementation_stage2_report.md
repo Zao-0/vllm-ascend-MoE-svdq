@@ -1,8 +1,149 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
-## Stage 2.2 Residual Distribution Diagnostic - 2026-06-26T20:31Z
+## Stage 2.2 D2 Half Boundary Diagnostic - 2026-06-26T21:10Z
 
 This section is the latest Stage 2.2 status. Older sections are historical evidence unless explicitly
+referenced here. It incorporates the binding requirements from
+`svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md`.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Current Stage 2.2 top-1 runs still use the validated packed hidden INT4 and hidden-scale boundary. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Gate B D2 high and low half readbacks are finite and nonzero, but both fail the strict official-contract half-reference comparator. Gate C remains blocked by the still-failing Gate B numerical contract. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 modified-hidden official W4A8 GMM2 numerical gates. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+This attempt is diagnostic-only. It does not use public `torch_npu.npu_grouped_matmul`, does not repack
+weights, does not guess scale formulas, does not relax tolerances, and does not enable the production
+SVDQ fused operator. The only device-code deviation is an isolated debug tap inside the official
+`BlockEpilogue2` path to copy either the high or low FP16 D2 half after the official GM load and FP32 cast,
+before `high * 16 + low`, aux add, hidden-scale multiply, BF16 cast, or final output routing.
+
+Official source locations inspected for this attempt:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:794` keeps the
+  full-lifecycle raw-debug sentinel range at `450000 < swigluLimit < 460000`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:800` maps in-range
+  sentinels to debug modes: high D2 half, low D2 half, or combined `high * 16 + low`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:987` and
+  `:1316` pass the debug mode into `BlockEpilogue2` for the GMM2-only and full-lifecycle dequant paths.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp:157`
+  computes the official high/low D2 GM offsets.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp:196`
+  casts the high FP16 D2 half to FP32; `:198` casts the low FP16 D2 half to FP32.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp:200`
+  and `:212` are the new debug-only high/low D2 copy taps.
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py:695` implements the host-side official-contract
+  D2 half comparator for this diagnostic; `:1177` maps the same sentinels on the probe side.
+
+Official-vs-debug state table for the current D2-half attempt:
+
+| State or region | Official producer | Official consumer | Official initialization point | Physical GM/workspace address and offset | Row/tile stride | Flag or event | Signal timing | Wait timing | Final drain | Current debug behavior |
+|---|---|---|---|---|---|---|---|---|---|---|
+| packed hidden `gmA2I4_I8` | Official mixed hidden producer, replaced at the debug boundary by Stage 2.1 packed INT4 bytes | Official GMM2 AIC reads A2 | Stage 2.1 host probe builds canonical hidden, INT8, packed INT4, then debug kernel copies it through `SeedGMM2OnlyPackedHidden` / full-lifecycle override | `gmA2I4_I8`, active rows by `problemShape.n()/2`; debug source tensor `hiddenXInt4Packed` | Expert-contiguous rows, 1024 packed bytes per row for hidden 2048 | Normal official lifecycle plus debug override | Before official GMM2 consumes A2 | GMM2 reads after override sync | Official GMM2 finalization unchanged | Gate A top-1 and top-k evidence remains exact for source and post-override packed bytes; no new hidden packing logic in this attempt |
+| hidden scale `gmPerTokenScale2` | Official mixed hidden-scale producer, replaced at the debug boundary by Stage 2.1 per-token scale | `BlockEpilogue2` multiplies post-C2 FP32 by scale in normal post-dequant mode | Same debug boundary as packed hidden | `gmPerTokenScale2`, one FP32 scale per active row | Active rows | Normal official lifecycle plus debug override | Before normal AIV post-dequant | AIV reads after C2V wait | Official epilogue finalization unchanged | D2 half modes return before scale; scale is still recorded as Gate A metadata, not used in this half comparator |
+| `tokenPerExpert` | Official routing/count path; debug top-1 supplies external counts | GMM2 scheduler and `BlockEpilogue2` row bounds | `SeedGMM2OnlyTokenState` / full-lifecycle token state | `tokenPerExpert` and peer token region through official layouts | Expert count vector, top-1 `[64,0,0,0,0,0,0,0]` | Official V2C/C2V lifecycle | Before GMM2 loop | GMM2 and CombineV2 consume counts | Official final drain unchanged | Gate A counts match active rows for these runs |
+| `cumsumMM` | Official cumulative count helper | GMM2 scheduler | `GetCumsumForMMAIV` or single-EP copy path | Workspace `cumsumMM` | Expert prefix/cumulative counts | Official lifecycle | Before scheduling | GMM2 loop reads it | Official final drain unchanged | No new patch in this attempt |
+| `preSumBeforeRank` | Official rank-prefix state | `BlockEpilogue2` / CombineV2 output offset logic | Official path initialization; debug single-rank zeroing in existing GMM2-only path | Workspace prefix state | Expert/rank prefix rows | Official lifecycle | Before CombineV2 | AIV consumes during epilogue | Official final drain unchanged | No new patch in this attempt |
+| GMM2 AIC input tile state | Official `GMM2(params)` and `blockMmad` | Official MMAD/Fixpipe | GMM2 loop from official `DispatchFFNCombineW4A8` state | A2 packed hidden and W2 postloaded packed W4 | Official tiling | Official blockMmad flags | During GMM2 loop | AIC internal waits | `blockMmad.SynchronizeBlock` / `Finalize` | Unchanged; public grouped matmul is not used |
+| GMM2 accumulator / D2 region | Official AIC MMAD/Fixpipe writes FP16 D2 high/low halves | `BlockEpilogue2` reads high and low halves | Workspace C2 binding from official kernel params | `gmCOffsetH = preSrcExpertSum*n2 + blockCoord.m()*n2 + blockCoord.n()` and `gmCOffsetL = gmCOffsetH + n2` | `LayoutC(actualBlockShape.m()/2, actualBlockShape.n(), params.n2 * 2)` for GM source | C2V handoff | After GMM2 tile completion | `CombineV2` waits C2V before `BlockEpilogue2` | Official finalization unchanged | New debug modes copy high or low FP32-cast half to `gmm2PostDequant` before combine math |
+| C2V handoff state | Official GMM2 producer flags | Official AIV `CombineV2` / `BlockEpilogue2` | Official GMM2 loop | Official C2 workspace and sync flags | Tile order from official scheduler | C2V flag | After GMM2 tile output ready | `CombineV2` wait before epilogue tile | Official drain unchanged | D2 half taps occur after this wait, so finite/nonzero readback is Gate B boundary evidence |
+| `BlockEpilogue2` input state | Official `CombineV2` passes `gmC2`, scale, aux, tile coord, group, and prefix state | `BlockEpilogue2` performs high/low decode, aux, scale, debug copy, and output | Epilogue params at kernel `:987` / `:1316` | Official `gmC2`, `gmPerTokenScale2`, `ptrMAux2`, debug output pointer | Active tile shape by `n0` and `n2` | UB events plus `EVENT_ID7` under `W4A8_DEBUG` | After C2V wait | UB MTE/V waits in `BlockEpilogue2` | `BlockEpilogue2::Finalize` | Only diagnostic branch changes return early for mode 2 or 3 |
+| FP32 post-dequant debug tap | Official W4A8 debug output path | Host probe reads `gmm2PostDequant` | `W4A8_DEBUG` output pointer | `gmGMM2` offset `(preSrcExpertSum*n2 + blockCoord.m()*n2)/2 + blockCoord.n()` | Active rows by hidden size | `EVENT_ID7` | Copy around V/MTE3 event | Host reads after stream completion | Event wait in finalize | Mode 2 high-half and mode 3 low-half reuse this output; mode 1 remains combined raw C2; normal mode remains post-dequant |
+
+Files changed in this attempt:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp`
+  - Added `rawDebugMode` and debug-only D2 high/low half copy branches.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp`
+  - Added `GMM2RawDebugMode(...)` and passed the mode to `BlockEpilogue2`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/svdqw4_a8_gmm2_debug_readback.cpp`
+  - Touched the debug entry source so the CANN source-copy target can be forced to track the D2-tap rebuild.
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+  - Added the high/low D2 half reference and sentinel mapping.
+
+Build and install evidence:
+
+- Initial build command:
+  `cmake --build csrc/build --target svdqw4_a8_gmm2_debug_readback_ascend910b -j 8`
+- Initial build log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_d2_half_debug_build_kernel_forced_source_touch.log`
+- Finding: initial rebuild did not refresh the generated source copy or `.o` files; object timestamps stayed at
+  `2026-06-26T19:21Z` through `19:27Z`.
+- Forced source-copy/generation refresh:
+  removed the debug op source-copy stamp and per-shape generation stamps, then rebuilt the same target.
+- Forced rebuild log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_d2_half_debug_build_kernel_forced_stamp_refresh.log`
+- Result: generated source copy timestamps refreshed to `2026-06-26T20:58Z`; all eight kernel object
+  timestamps refreshed to `2026-06-26T21:00Z`.
+- Install command copied `csrc/build/binary/ascend910b/bin/svdqw4_a8_gmm2_debug_readback/*` into the
+  repo-local custom OPP tree.
+- Source/installed SHA256 log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_d2_half_debug_manual_kernel_refresh_forced_sha256.log`
+- Result: source and installed hashes match.
+
+Real-device commands preserved `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, used repo-local
+`ASCEND_CUSTOM_OPP_PATH`, and used repo-local `op_api/lib` in `LD_LIBRARY_PATH`.
+
+High D2 half probe:
+
+- Sentinel: `--swiglu-limit 451111`
+- NPU preflight log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_d2_high_half_forced_npu_smi.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_d2_high_half_forced_top1_expert0_max64.log`
+- Summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_d2_high_half_forced_top1_expert0_max64.json`
+- Probe exit: `1`, expected because strict comparator failed.
+- Gate B status: finite `true`, nonzero `true`, NaN count `0`, Inf count `0`.
+- Comparator: `passed: false`, `max_abs: 0.0009765625`, `mean_abs: 0.00004492711741477251`,
+  failed elements over strict abs tolerance `9010`, max relative error `0.001700680237263441`,
+  mean relative error `0.0003222145023755729`.
+- Absolute-error quantiles: q0.5 `0.0`, q0.9 `0.0001220703125`, q0.95 `0.000244140625`,
+  q0.99 `0.000244140625`, q0.999 `0.00048828125`, q1 `0.0009765625`.
+
+Low D2 half probe:
+
+- Sentinel: `--swiglu-limit 453333`
+- NPU preflight log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_d2_low_half_forced_npu_smi.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_d2_low_half_forced_top1_expert0_max64.log`
+- Summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_d2_low_half_forced_top1_expert0_max64.json`
+- Probe exit: `1`, expected because strict comparator failed.
+- Gate B status: finite `true`, nonzero `true`, NaN count `0`, Inf count `0`.
+- Comparator: `passed: false`, `max_abs: 0.001953125`, `mean_abs: 0.00014362166984938085`,
+  failed elements over strict abs tolerance `38381`, max relative error `0.0017152659129351377`,
+  mean relative error `0.00032288453076034784`.
+- Absolute-error quantiles: q0.5 `0.0`, q0.9 `0.00048828125`, q0.95 `0.00048828125`,
+  q0.99 `0.0009765625`, q0.999 `0.001953125`, q1 `0.001953125`.
+
+Current conclusion:
+
+- Gate B is no longer an all-zero boundary: both official D2 halves are finite and nonzero after the official
+  C2V wait and `BlockEpilogue2` GM load/cast boundary.
+- Stage 2.2 still fails because neither D2 half passes the strict official-contract reference. Gate C must
+  remain blocked until Gate B passes.
+- The rejected hypothesis is "the residual is only caused by high*16+low recombination or hidden-scale
+  post-dequant math"; the mismatch is already visible at each separate D2 half boundary.
+- The next unresolved boundary is the exact official Fixpipe/FP16 rounding and packed-W4 D2 storage contract,
+  while preserving the same official lifecycle and without using public grouped matmul or a substitute GEMM.
+
+Validation before this report update:
+
+- `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
+- `git diff --check`: passed.
+- Forced CANN debug target rebuild completed and refreshed the generated source and object files.
+- Source/installed custom OPP debug kernel hashes match.
+- Four-visible-NPU high-half and low-half probes completed and wrote summaries, both with expected nonzero
+  exits because `passed: false`.
+
+## Stage 2.2 Residual Distribution Diagnostic - 2026-06-26T20:31Z
+
+This section is historical evidence. The `2026-06-26T21:10Z` section above supersedes it for current
+status. Older sections are historical evidence unless explicitly
 referenced here.
 
 | Item | Status | Evidence / blocker |

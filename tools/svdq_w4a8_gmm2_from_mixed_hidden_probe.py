@@ -52,6 +52,7 @@ from svdq_w4a8_debug_readback_real_checkpoint_probe import (  # noqa: E402
     _load_real_residual_layer,
     _official_w4a8_scaled_half_c2,
     _unpack_postloaded_w4_columns,
+    _unpack_postloaded_w4_columns_zN,
     _official_gmm2_raw_c2_reference,
     _official_gmm2_unfused_reference,
     _postload_metadata,
@@ -691,6 +692,61 @@ def _raw_c2_reference_from_parts(
     return torch.empty((0, output_columns), dtype=torch.float32)
 
 
+def _official_gmm2_d2_half_reference(
+    *,
+    hidden_x_int4_packed: torch.Tensor,
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    expert_token_nums: torch.Tensor,
+    output_columns: int,
+    max_rows: int,
+    half: str,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    x_high, x_low = _packed_i4_hidden_to_parts_variant(
+        hidden_x_int4_packed[:max_rows],
+        half_order="high_low",
+        nibble_order="low_high",
+    )
+    row_count = min(int(x_high.shape[0]), int(x_low.shape[0]), int(max_rows))
+    counts = _clip_group_counts_for_limit(expert_token_nums, row_count)
+    weight_scale_fp32 = _int64_float_bits_to_fp32(weight_scale)
+    unpacked_weight = _unpack_postloaded_w4_columns_zN(weight, output_columns)
+    if half not in {"high", "low"}:
+        raise ValueError(f"unsupported D2 half reference: {half}")
+
+    outputs: list[torch.Tensor] = []
+    row_start = 0
+    for expert_id, count in enumerate(counts):
+        count = int(count)
+        if count <= 0:
+            continue
+        row_end = row_start + count
+        weight_e = unpacked_weight[expert_id]
+        if half == "high":
+            acc = x_high[row_start:row_end].matmul(weight_e)
+        else:
+            acc = x_low[row_start:row_end].matmul(weight_e)
+        outputs.append((acc * weight_scale_fp32[expert_id]).to(torch.float16).float())
+        row_start = row_end
+    reference = torch.cat(outputs, dim=0) if outputs else torch.empty((0, output_columns), dtype=torch.float32)
+    return reference, {
+        "enabled": True,
+        "half": half,
+        "source_boundary": (
+            "BlockEpilogue2 reads FP16 gmC2 high/low rows, casts the selected half to FP32, "
+            "and the debug tap copies it before high*16+low, aux bias, hidden scale, BF16 cast, "
+            "or peer-output routing."
+        ),
+        "weight_layout": "official postloaded W2 Catlass layout::zN::MakeLayout<int4b_t>",
+        "d2_storage": "float16_t per-channel Fixpipe output, compared after FP16 storage rounding and FP32 cast",
+        "group_counts": counts,
+        "diagnostic_only": (
+            "Per-half D2 boundary comparator for isolating the official Fixpipe/FP16 rounding contract; "
+            "not a substitute GMM2 implementation."
+        ),
+    }
+
+
 def _round_up(value: int, align: int) -> int:
     return ((int(value) + int(align) - 1) // int(align)) * int(align)
 
@@ -1118,6 +1174,17 @@ def _is_gmm2_raw_c2_debug(swiglu_limit: float) -> bool:
     return 450000.0 < float(swiglu_limit) < 460000.0
 
 
+def _gmm2_raw_debug_mode(swiglu_limit: float) -> str | None:
+    value = float(swiglu_limit)
+    if 450000.0 < value < 452000.0:
+        return "d2_high_half"
+    if 452000.0 < value < 454000.0:
+        return "d2_low_half"
+    if 454000.0 < value < 460000.0:
+        return "combined_high16_plus_low"
+    return None
+
+
 def _parse_gmm2_loop_stats(tensor: torch.Tensor, *, expert_per_rank: int) -> dict[str, Any]:
     values = tensor.detach().cpu().flatten()[:512].tolist()
     group_count = min(int(values[1]) if len(values) > 1 else 0, int(expert_per_rank), 48)
@@ -1366,19 +1433,41 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         }
 
     if raw_c2_debug:
+        raw_debug_mode = _gmm2_raw_debug_mode(args.swiglu_limit)
         hidden_scale_active = hidden_x_scale[:active_rows].detach().cpu()
         raw_c2_active = gmm2_post_dequant[:active_rows].detach().cpu()
         raw_c2_stats = _float_stats(raw_c2_active)
         raw_c2_finite = bool(torch.isfinite(raw_c2_active).all().item())
         raw_c2_nonzero = bool(torch.any(raw_c2_active.abs() > 0).item())
-        raw_reference, raw_reference_contract = _official_gmm2_raw_c2_reference(
-            hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
-            weight=layer.w2_weight,
-            weight_scale=layer.w2_weight_scale,
-            expert_token_nums=external_expert_token_nums,
-            output_columns=spec.hidden_size,
-            max_rows=args.gmm2_reference_max_rows,
-        )
+        if raw_debug_mode == "d2_high_half":
+            raw_reference, raw_reference_contract = _official_gmm2_d2_half_reference(
+                hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
+                weight=layer.w2_weight,
+                weight_scale=layer.w2_weight_scale,
+                expert_token_nums=external_expert_token_nums,
+                output_columns=spec.hidden_size,
+                max_rows=args.gmm2_reference_max_rows,
+                half="high",
+            )
+        elif raw_debug_mode == "d2_low_half":
+            raw_reference, raw_reference_contract = _official_gmm2_d2_half_reference(
+                hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
+                weight=layer.w2_weight,
+                weight_scale=layer.w2_weight_scale,
+                expert_token_nums=external_expert_token_nums,
+                output_columns=spec.hidden_size,
+                max_rows=args.gmm2_reference_max_rows,
+                half="low",
+            )
+        else:
+            raw_reference, raw_reference_contract = _official_gmm2_raw_c2_reference(
+                hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
+                weight=layer.w2_weight,
+                weight_scale=layer.w2_weight_scale,
+                expert_token_nums=external_expert_token_nums,
+                output_columns=spec.hidden_size,
+                max_rows=args.gmm2_reference_max_rows,
+            )
         raw_actual = raw_c2_active[: raw_reference.shape[0], : raw_reference.shape[1]]
         raw_c2_error = _tensor_error(raw_actual, raw_reference)
         raw_c2_error.update(
@@ -1406,14 +1495,35 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             hidden_readback_active = hidden_x_readback[:active_rows].detach().cpu()
             source_hidden_active = hidden_x_int4_packed[:active_rows].detach().cpu()
             hidden_row_exact_mask = (hidden_readback_active == source_hidden_active).all(dim=1)
-            hidden_readback_raw_reference, hidden_readback_raw_contract = _official_gmm2_raw_c2_reference(
-                hidden_x_int4_packed=hidden_x_readback[:active_rows],
-                weight=layer.w2_weight,
-                weight_scale=layer.w2_weight_scale,
-                expert_token_nums=external_expert_token_nums,
-                output_columns=spec.hidden_size,
-                max_rows=args.gmm2_reference_max_rows,
-            )
+            if raw_debug_mode == "d2_high_half":
+                hidden_readback_raw_reference, hidden_readback_raw_contract = _official_gmm2_d2_half_reference(
+                    hidden_x_int4_packed=hidden_x_readback[:active_rows],
+                    weight=layer.w2_weight,
+                    weight_scale=layer.w2_weight_scale,
+                    expert_token_nums=external_expert_token_nums,
+                    output_columns=spec.hidden_size,
+                    max_rows=args.gmm2_reference_max_rows,
+                    half="high",
+                )
+            elif raw_debug_mode == "d2_low_half":
+                hidden_readback_raw_reference, hidden_readback_raw_contract = _official_gmm2_d2_half_reference(
+                    hidden_x_int4_packed=hidden_x_readback[:active_rows],
+                    weight=layer.w2_weight,
+                    weight_scale=layer.w2_weight_scale,
+                    expert_token_nums=external_expert_token_nums,
+                    output_columns=spec.hidden_size,
+                    max_rows=args.gmm2_reference_max_rows,
+                    half="low",
+                )
+            else:
+                hidden_readback_raw_reference, hidden_readback_raw_contract = _official_gmm2_raw_c2_reference(
+                    hidden_x_int4_packed=hidden_x_readback[:active_rows],
+                    weight=layer.w2_weight,
+                    weight_scale=layer.w2_weight_scale,
+                    expert_token_nums=external_expert_token_nums,
+                    output_columns=spec.hidden_size,
+                    max_rows=args.gmm2_reference_max_rows,
+                )
             hidden_readback_raw_actual = raw_c2_active[
                 : hidden_readback_raw_reference.shape[0], : hidden_readback_raw_reference.shape[1]
             ]
@@ -1445,26 +1555,36 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             "source_hidden_row_alignment": _row_alignment_summary(raw_actual, raw_reference),
             "source_hidden_even_odd_pattern": _row_pair_pattern_summary(raw_actual, raw_reference),
         }
-        raw_c2_layout_variants = _raw_c2_layout_variant_diagnostics(
-            actual=raw_actual,
-            hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
-            weight=layer.w2_weight,
-            weight_scale=layer.w2_weight_scale,
-            expert_token_nums=external_expert_token_nums,
-            output_columns=spec.hidden_size,
-            max_rows=args.gmm2_reference_max_rows,
-            max_abs_tol=args.gmm2_raw_c2_reference_max_abs_tol,
-        )
-        raw_c2_weight_layout_variants = _raw_c2_weight_layout_variant_diagnostics(
-            actual=raw_actual,
-            hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
-            weight=layer.w2_weight,
-            weight_scale=layer.w2_weight_scale,
-            expert_token_nums=external_expert_token_nums,
-            output_columns=spec.hidden_size,
-            max_rows=args.gmm2_reference_max_rows,
-            max_abs_tol=args.gmm2_raw_c2_reference_max_abs_tol,
-        )
+        if raw_debug_mode == "combined_high16_plus_low":
+            raw_c2_layout_variants = _raw_c2_layout_variant_diagnostics(
+                actual=raw_actual,
+                hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
+                weight=layer.w2_weight,
+                weight_scale=layer.w2_weight_scale,
+                expert_token_nums=external_expert_token_nums,
+                output_columns=spec.hidden_size,
+                max_rows=args.gmm2_reference_max_rows,
+                max_abs_tol=args.gmm2_raw_c2_reference_max_abs_tol,
+            )
+            raw_c2_weight_layout_variants = _raw_c2_weight_layout_variant_diagnostics(
+                actual=raw_actual,
+                hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
+                weight=layer.w2_weight,
+                weight_scale=layer.w2_weight_scale,
+                expert_token_nums=external_expert_token_nums,
+                output_columns=spec.hidden_size,
+                max_rows=args.gmm2_reference_max_rows,
+                max_abs_tol=args.gmm2_raw_c2_reference_max_abs_tol,
+            )
+        else:
+            raw_c2_layout_variants = {
+                "enabled": False,
+                "reason": "layout variants compare the combined high*16+low boundary, not a single D2 half",
+            }
+            raw_c2_weight_layout_variants = {
+                "enabled": False,
+                "reason": "weight-layout variants compare the combined high*16+low boundary, not a single D2 half",
+            }
         if hidden_row_exact_mask is not None:
             exact_count = int(hidden_row_exact_mask.sum().item())
             mismatch_count = int((~hidden_row_exact_mask).sum().item())
@@ -1512,7 +1632,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             "public_grouped_matmul_used": False,
             "real_checkpoint_validation": True,
             "production_svdq_host_tiling_fail_closed": True,
-            "diagnostic_mode": "full_lifecycle_gmm2_raw_c2_readback",
+            "diagnostic_mode": f"full_lifecycle_gmm2_{raw_debug_mode}_readback",
             "diagnostic_swiglu_limit": args.swiglu_limit,
             "layer_index": args.layer,
             "layer_name": spec.prefix,
@@ -1556,16 +1676,18 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                 ),
                 "raw_c2_contract": {
                     "source_boundary": (
-                        "BlockEpilogue2 reads official gmC2 after GMM2/C2V, casts high/low "
-                        "FP16 halves to FP32, computes high * 16 + low, and writes the "
+                        "BlockEpilogue2 reads official gmC2 after GMM2/C2V and writes the "
                         "existing W4A8_DEBUG gmGMM2 tap before aux bias, hidden scale, "
-                        "BF16 cast, or peer-output routing."
+                        "BF16 cast, or peer-output routing. Mode 1 writes high*16+low; "
+                        "mode 2 writes the high FP16 D2 half after FP32 cast; mode 3 writes "
+                        "the low FP16 D2 half after FP32 cast."
                     ),
                     "source_file": (
                         "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/"
                         "block_epilogue_w4a8post_pertoken_v2.hpp"
                     ),
                     "enabled_by_swiglu_limit_range": [450000.0, 460000.0],
+                    "debug_mode": raw_debug_mode,
                 },
                 "raw_c2_unfused_reference": {
                     "enabled": True,

@@ -24,6 +24,7 @@ extern "C" __global__ __aicore__ void svdqw4_a8_gmm2_debug_readback(
         KERNEL_TASK_TYPE(1000010, KERNEL_TYPE_MIX_AIC_1_2);
         GET_TILING_DATA_WITH_STRUCT(DispatchFFNCombineW4A8TilingData, tilingData, tilingGM);
         DispatchFFNCombineW4A8<DTYPE_A, DTYPE_W1, DTYPE_OUT, false, true> op;
+        // Keep this entry tied to the debug BlockEpilogue2 D2 tap modes.
         op.InitGMM2OnlyFromPacked(x, w1, w2, expertId, scale1, scale2, bias1, bias2, probs, xActiveMask, c,
             expertTokenNums, workspaceGM, tilingGM, hiddenXInt4Packed, hiddenXScale, externalExpertTokenNums,
             gmm2PostDequant, hiddenXReadback, hiddenScaleReadback);
