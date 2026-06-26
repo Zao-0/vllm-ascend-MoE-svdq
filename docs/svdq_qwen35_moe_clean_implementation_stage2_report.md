@@ -1,5 +1,61 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Stage 2.2 Official-Path Appendix Rebaseline - 2026-06-26T22:52:59Z
+
+This section is the latest authoritative Stage 2.2 handoff. It records that
+`svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` was reread and is binding for
+all remaining Stage 2.2 work. Older sections below are historical evidence unless explicitly referenced here.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | The latest Gate A manifest rerun proves the modified-hidden input boundary is deterministic, finite/nonzero, packed correctly, and post-override readback exact for the true top-1 expert-0 probe. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Gate A is explicit in the summary JSON; Gate B raw D2 high-half is finite/nonzero but still fails the strict comparator (`max_abs: 0.0009765625`, `mean_abs: 0.00004444917431101203`, failed elements `2227`). |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 Gate B and Gate C. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+Binding constraints confirmed from the appendix:
+
+- Do not modify, reinterpret, or debug the public `torch_npu.npu_grouped_matmul` path.
+- Do not reopen the solved BF16 producer work or Stage 2.1 packed-hidden work.
+- Use the official `dispatch_ffn_combine_w4_a8` lifecycle as the only behavioral source of truth for GMM2
+  AIC, C2V handoff, `BlockEpilogue2`, `CombineV2`, packed W2 access, tiling, accumulator/Fixpipe, and AIV
+  dequantization.
+- Do not make speculative changes to V2C/C2V flags, token state, cumsum state, core ownership, workspace
+  offsets, or synchronization unless the exact official counterpart is cited in the state table.
+- Keep Stage 2.3+, SVDQ down composition, final combine, and production host tiling blocked until Stage 2.2
+  Gate B and Gate C pass on real Ascend hardware.
+
+Current accepted evidence:
+
+- Gate A manifest summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_gate_a_manifest_high_half_true_top1_expert0.json`
+- Real-device probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_gate_a_manifest_high_half_true_top1_expert0.log`
+- NPU preflight log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_gate_a_manifest_npu_smi.log`
+- The probe used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3` and exited `1` as expected because the strict Gate B
+  comparator remains failed.
+
+Next permitted work:
+
+1. Preserve the full official lifecycle path where `gmm2OnlyFromPacked_` remains false and only the GMM2 hidden
+   packed input plus hidden-scale boundary is overridden.
+2. If adding a new diagnostic, expose a real official Gate B boundary only: accumulator, Fixpipe output, D2
+   source region, or C2V-fed `BlockEpilogue2` input. The tap must reuse the official AIC producer and official
+   lifecycle; it must not introduce an alternative GEMM or host-side substitute path.
+3. Record the exact official-vs-debug state-table deviation corrected before any behavioral patch, then run the
+   device probe with `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
+
+Files changed in this attempt:
+
+- `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+- `/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+
+Validation:
+
+- This is a report-only rebaseline; no source behavior changed and no numerical gate progress is claimed.
+
 ## Stage 2.2 Gate A Manifest Plumbing and Rerun - 2026-06-26T22:43:36Z
 
 This section is the latest Stage 2.2 status for the environment rebuild. It adds explicit Gate A input-boundary
