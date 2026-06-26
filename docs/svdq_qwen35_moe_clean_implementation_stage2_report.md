@@ -1,8 +1,87 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Stage 2.2 Official Fixpipe Contract Handoff
+
+This section is the latest Stage 2.2 status for the environment rebuild. Older sections are historical
+evidence unless explicitly referenced here.
+
+Logged during the current session with local UTC clock reading `2026-06-26T21:29:08Z`. The immediately
+following `2026-06-26T21:35Z` section is retained as historical evidence from the prior handoff context.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Current Stage 2.2 top-1 runs still use the validated packed hidden INT4 and hidden-scale boundary. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | D2 high/low halves are finite and nonzero but still fail strict Gate B. Official Fixpipe contract has now been recorded for the next comparator boundary. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 modified-hidden official W4A8 GMM2 numerical gates. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+This handoff update does not claim numerical gate progress. It records the concrete official
+accumulator-to-Fixpipe contract that must be matched next, and keeps the failed public
+`torch_npu.npu_grouped_matmul` path out of scope.
+
+Files changed:
+
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+  - Added `official_fixpipe_contract` under the Stage 2.2 raw-C2 `gmm2` summary.
+  - The helper is diagnostic/reporting-only and does not change raw-C2 references, strict tolerances, or
+    pass/fail behavior.
+- `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+  - Added this rebuild handoff section.
+
+Official GMM2 Fixpipe contract now recorded in probe JSON:
+
+- Accumulator type: `AscendC::int4b_t x AscendC::int4b_t -> int32_t`
+  (`csrc/third_party/catlass/include/catlass/gemm/helper.hpp:137-140`).
+- Tile-copy selection: `QuantTileCopy` chooses `CopyL0CToGm<AtlasA2, ElementAccumulator, CType,
+  ScaleGranularity::PER_CHANNEL, false>` and copies scale as a `uint64_t` vector through GM -> A1 ->
+  Fixpipe scale buffer (`csrc/third_party/catlass/include/catlass/gemm/tile/tile_copy.hpp:218-230`).
+- Quant mode: `int32_t -> half` with `ScaleGranularity::PER_CHANNEL` selects
+  `QuantMode_t::VDEQF16`
+  (`csrc/third_party/catlass/include/catlass/gemm/tile/atlasa2/copy_l0c_to_gm.hpp:144-150`).
+- Row-major per-channel Fixpipe specialization:
+  `AscendC::FixpipeParamsV220` sets `nSize = dstLayout.shape(1)`,
+  `mSize = dstLayout.shape(0)`, `srcStride = srcLayout.stride(3) / srcLayout.stride(0)`,
+  `dstStride = dstLayout.stride(0)`, `quantPre = VDEQF16`, `reluEn = false`, and forwarded
+  `unitFlag`; then calls `AscendC::SetFixPipeConfig<uint64_t, false>(scale, false)`,
+  `AscendC::PipeBarrier<PIPE_FIX>()`, and
+  `AscendC::Fixpipe<half, int32_t, AscendC::CFG_ROW_MAJOR>(...)`
+  (`copy_l0c_to_gm.hpp:344-364`).
+- This specialization does not explicitly set `isChannelSplit`; do not assume that flag explains the
+  current residuals.
+
+Current numerical evidence carried forward:
+
+- High D2 half readback (`--swiglu-limit 451111`):
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_d2_high_half_rounding_variants_top1_expert0_max64.json`
+  - Strict Gate B failed: `max_abs: 0.0009765625`, `mean_abs: 0.00004492711741477251`,
+    failed elements `9010`.
+  - Best tested mean-error variant remains `scale_low32_fp16_toward_zero`, but it still fails.
+- Low D2 half readback (`--swiglu-limit 453333`):
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_d2_low_half_rounding_variants_top1_expert0_max64.json`
+  - Strict Gate B failed: `max_abs: 0.001953125`, `mean_abs: 0.00014362166984938085`,
+    failed elements `38381`.
+  - Best tested variant remains `scale_low32_fp16_toward_zero`, but it still fails.
+
+Next valid work after rebuild:
+
+1. Rebuild/install the current custom op surface and verify
+   `torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback` registration.
+2. Re-run one raw-C2 D2 half probe and confirm the new JSON contains
+   `gmm2.official_fixpipe_contract`.
+3. Continue below the current D2 half host approximation boundary by exposing or proving the official
+   hardware `VDEQF16` accumulator-to-FP16 behavior, without changing the official GMM2 lifecycle.
+4. Do not enable production `DispatchFFNCombineW4A8SVDQ` host tiling until the isolated real-device
+   Stage 2.2 numerical gates pass.
+
+Validation before this report update:
+
+- `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
+- `git diff --check -- tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`: passed.
+
 ## Stage 2.2 D2 Half Rounding/Scale Variant Diagnostic - 2026-06-26T21:35Z
 
-This section is the latest Stage 2.2 status. Older sections are historical evidence unless explicitly
+This section is historical evidence. Older sections are historical evidence unless explicitly
 referenced here.
 
 | Item | Status | Evidence / blocker |

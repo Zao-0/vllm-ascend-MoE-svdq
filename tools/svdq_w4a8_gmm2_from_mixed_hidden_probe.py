@@ -1272,6 +1272,49 @@ def _official_gmm2_layout_contract(
     }
 
 
+def _official_gmm2_fixpipe_contract() -> dict[str, Any]:
+    return {
+        "diagnostic_only": True,
+        "gate_progress": False,
+        "source_locations": {
+            "accumulator_type": "catlass/gemm/helper.hpp:137-140 maps int4b_t x int4b_t to int32_t accumulator",
+            "quant_tile_copy": "catlass/gemm/tile/tile_copy.hpp:218-230 selects PER_CHANNEL CopyL0CToGm and uint64 scale copy paths",
+            "vdeqf16_mode": "catlass/gemm/tile/atlasa2/copy_l0c_to_gm.hpp:144-150 maps int32_t -> half PER_CHANNEL to QuantMode_t::VDEQF16",
+            "fixpipe_call": "catlass/gemm/tile/atlasa2/copy_l0c_to_gm.hpp:344-364 sets FixpipeParamsV220, SetFixPipeConfig<uint64_t,false>, then Fixpipe<half,int32_t,CFG_ROW_MAJOR>",
+            "cann_vector_prequant": "/usr/local/Ascend/cann-9.0.0/aarch64-linux/include/pto/npu/a5/common.hpp maps int32_t -> half vector pre-quant to VDEQF16",
+        },
+        "contract": {
+            "arch": "Catlass::Arch::AtlasA2",
+            "a_type": "GemmType<AscendC::int4b_t, layout::RowMajor>",
+            "b_type": "GemmType<AscendC::int4b_t, layout::zN>",
+            "c_type": "GemmType<half, layout::RowMajor>",
+            "element_accumulator": "int32_t",
+            "scale_granularity": "ScaleGranularity::PER_CHANNEL",
+            "copy_l0c_to_gm_quant_pre": "QuantMode_t::VDEQF16",
+            "fixpipe_params_type": "AscendC::FixpipeParamsV220",
+            "fixpipe_template": "AscendC::Fixpipe<half, int32_t, AscendC::CFG_ROW_MAJOR>",
+            "scale_tensor_type": "AscendC::LocalTensor<uint64_t>",
+            "scale_path": "GM uint64 vector -> A1 uint64 vector -> C2PIPE2GM Fixpipe scale buffer",
+            "set_fixpipe_config": "AscendC::SetFixPipeConfig<uint64_t, false>(scale, false)",
+            "pipe_barrier": "AscendC::PipeBarrier<PIPE_FIX>()",
+            "relu_enable": False,
+            "unit_flag_source": "forwarded from copyL0CToGm caller; official DispatchFFNCombineW4A8 uses enableUnitFlag=false",
+            "is_channel_split_explicitly_set": False,
+        },
+        "layout_params": {
+            "nSize": "dstLayout.shape(1)",
+            "mSize": "dstLayout.shape(0)",
+            "srcStride": "srcLayout.stride(3) / srcLayout.stride(0)",
+            "dstStride": "dstLayout.stride(0)",
+        },
+        "interpretation": (
+            "The next valid Stage 2.2 comparator boundary is the official hardware "
+            "VDEQF16 Fixpipe dequantization from int32 L0C to FP16 row-major GM. "
+            "Host-side scale-bit and rounding variants remain diagnostic only."
+        ),
+    }
+
+
 def _pad_hidden_boundary(
     *,
     hidden_x_int4_packed: torch.Tensor,
@@ -1815,6 +1858,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                     packed_row_bytes=int(hidden_x_int4_packed.shape[1]),
                     output_columns=spec.hidden_size,
                 ),
+                "official_fixpipe_contract": _official_gmm2_fixpipe_contract(),
                 "raw_c2_contract": {
                     "source_boundary": (
                         "BlockEpilogue2 reads official gmC2 after GMM2/C2V and writes the "
