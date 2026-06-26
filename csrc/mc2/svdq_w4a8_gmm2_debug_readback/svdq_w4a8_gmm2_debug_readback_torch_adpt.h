@@ -39,7 +39,7 @@ inline void check_svdq_w4a8_gmm2_debug_rank(const at::Tensor& tensor, int64_t ra
 
 }  // namespace
 
-at::Tensor svdq_w4a8_gmm2_debug_readback(
+std::tuple<at::Tensor, at::Tensor, at::Tensor> svdq_w4a8_gmm2_debug_readback(
     const at::Tensor& x,
     const at::TensorList& weight1,
     const at::TensorList& weight2,
@@ -119,6 +119,8 @@ at::Tensor svdq_w4a8_gmm2_debug_readback(
     auto out = at::empty({x.size(0), hidden_size}, x.options());
     auto expert_token_nums = at::empty({1, num_experts}, expert_idx.options());
     auto gmm2_post_dequant = at::zeros({max_output_size, hidden_size}, x.options().dtype(at::kFloat));
+    auto hidden_x_readback = at::zeros({max_output_size, intermediate_size}, hidden_x_int4_packed.options());
+    auto hidden_scale_readback = at::zeros({max_output_size}, hidden_x_scale.options());
 
     char* group_ep_ptr = group_string.data();
     EXEC_NPU_CMD(
@@ -141,8 +143,10 @@ at::Tensor svdq_w4a8_gmm2_debug_readback(
         swiglu_limit,
         out,
         expert_token_nums,
-        gmm2_post_dequant);
-    return gmm2_post_dequant;
+        gmm2_post_dequant,
+        hidden_x_readback,
+        hidden_scale_readback);
+    return {gmm2_post_dequant, hidden_x_readback, hidden_scale_readback};
 }
 
 }  // namespace vllm_ascend

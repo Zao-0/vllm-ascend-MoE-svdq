@@ -24,7 +24,8 @@ extern aclnnStatus aclnnInnerSVDQW4A8GMM2DebugReadbackGetWorkspaceSize(
     const aclTensor* xActiveMask, const aclTensor* hiddenXInt4Packed, const aclTensor* hiddenXScale,
     const aclTensor* externalExpertTokenNums, const char* group, int64_t maxOutputSize, bool transB,
     bool weightNz, double swigluLimit, const aclTensor* out, const aclTensor* expertTokenNums,
-    const aclTensor* gmm2PostDequant, uint64_t* workspaceSize, aclOpExecutor** executor);
+    const aclTensor* gmm2PostDequant, const aclTensor* hiddenXReadback, const aclTensor* hiddenScaleReadback,
+    uint64_t* workspaceSize, aclOpExecutor** executor);
 
 extern aclnnStatus aclnnInnerSVDQW4A8GMM2DebugReadback(
     void* workspace, uint64_t workspaceSize, aclOpExecutor* executor, aclrtStream stream);
@@ -37,14 +38,16 @@ aclnnStatus aclnnSVDQW4A8GMM2DebugReadbackGetWorkspaceSize(
     const aclTensor* xActiveMask, const aclTensor* hiddenXInt4Packed, const aclTensor* hiddenXScale,
     const aclTensor* externalExpertTokenNums, const char* group, int64_t maxOutputSize, double swigluLimit,
     const aclTensor* out, const aclTensor* expertTokenNums, const aclTensor* gmm2PostDequant,
-    uint64_t* workspaceSize, aclOpExecutor** executor)
+    const aclTensor* hiddenXReadback, const aclTensor* hiddenScaleReadback, uint64_t* workspaceSize,
+    aclOpExecutor** executor)
 {
     bool transB = false;
     bool weightNz = true;
     return aclnnInnerSVDQW4A8GMM2DebugReadbackGetWorkspaceSize(
         x, weight1, weight2, expertId, scale1, scale2, bias1, bias2, probs, xActiveMask,
         hiddenXInt4Packed, hiddenXScale, externalExpertTokenNums, group, maxOutputSize, transB, weightNz,
-        swigluLimit, out, expertTokenNums, gmm2PostDequant, workspaceSize, executor);
+        swigluLimit, out, expertTokenNums, gmm2PostDequant, hiddenXReadback, hiddenScaleReadback, workspaceSize,
+        executor);
 }
 
 aclnnStatus aclnnSVDQW4A8GMM2DebugReadback(

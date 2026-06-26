@@ -527,7 +527,7 @@ svdq_w4a8_debug_readback_meta(
             hidden_x_int4_packed, hidden_x_scale, gmm2_post_dequant};
 }
 
-at::Tensor svdq_w4a8_gmm2_debug_readback_meta(
+std::tuple<at::Tensor, at::Tensor, at::Tensor> svdq_w4a8_gmm2_debug_readback_meta(
     const at::Tensor& x,
     const at::TensorList& weight1,
     const at::TensorList& weight2,
@@ -603,7 +603,13 @@ at::Tensor svdq_w4a8_gmm2_debug_readback_meta(
     TORCH_CHECK(external_expert_token_nums.size(1) == num_experts,
                 "external_expert_token_nums expert count must match weights.");
 
-    return at::empty({max_output_size, hidden_size}, x.options().dtype(at::kFloat).device(at::kMeta));
+    at::Tensor gmm2_post_dequant =
+        at::empty({max_output_size, hidden_size}, x.options().dtype(at::kFloat).device(at::kMeta));
+    at::Tensor hidden_x_readback =
+        at::empty({max_output_size, intermediate_size}, hidden_x_int4_packed.options().device(at::kMeta));
+    at::Tensor hidden_scale_readback =
+        at::empty({max_output_size}, hidden_x_scale.options().device(at::kMeta));
+    return {gmm2_post_dequant, hidden_x_readback, hidden_scale_readback};
 }
 
 at::Tensor npu_lightning_indexer_meta(

@@ -17,7 +17,7 @@ extern "C" __global__ __aicore__ void svdqw4_a8_gmm2_debug_readback(
     GM_ADDR x, GM_ADDR w1, GM_ADDR w2, GM_ADDR expertId, GM_ADDR scale1, GM_ADDR scale2,
     GM_ADDR bias1, GM_ADDR bias2, GM_ADDR probs, GM_ADDR xActiveMask, GM_ADDR hiddenXInt4Packed,
     GM_ADDR hiddenXScale, GM_ADDR externalExpertTokenNums, GM_ADDR c, GM_ADDR expertTokenNums,
-    GM_ADDR gmm2PostDequant, GM_ADDR workspaceGM, GM_ADDR tilingGM)
+    GM_ADDR gmm2PostDequant, GM_ADDR hiddenXReadback, GM_ADDR hiddenScaleReadback, GM_ADDR workspaceGM, GM_ADDR tilingGM)
 {
     REGISTER_TILING_DEFAULT(DispatchFFNCombineW4A8TilingData);
     if (TILING_KEY_IS(1000010)) {
@@ -26,7 +26,7 @@ extern "C" __global__ __aicore__ void svdqw4_a8_gmm2_debug_readback(
         DispatchFFNCombineW4A8<DTYPE_A, DTYPE_W1, DTYPE_OUT, false, true> op;
         op.InitGMM2OnlyFromPacked(x, w1, w2, expertId, scale1, scale2, bias1, bias2, probs, xActiveMask, c,
             expertTokenNums, workspaceGM, tilingGM, hiddenXInt4Packed, hiddenXScale, externalExpertTokenNums,
-            gmm2PostDequant);
+            gmm2PostDequant, hiddenXReadback, hiddenScaleReadback);
         op.Process();
     }
 }

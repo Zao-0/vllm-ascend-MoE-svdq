@@ -277,7 +277,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
     if op is None:
         raise RuntimeError("torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback is not registered.")
 
-    gmm2_post_dequant = op(
+    debug_outputs = op(
         x,
         [layer.w13_weight],
         [layer.w2_weight],
@@ -295,7 +295,32 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         x_active_mask,
         args.swiglu_limit,
     )
+    if isinstance(debug_outputs, tuple):
+        gmm2_post_dequant, hidden_x_readback, hidden_scale_readback = debug_outputs
+    else:
+        # Backward-compatible fallback for stale installs; the ABI test requires
+        # the tuple-returning debug op after this diagnostic patch is installed.
+        gmm2_post_dequant = debug_outputs
+        hidden_x_readback = None
+        hidden_scale_readback = None
     torch.npu.synchronize()
+    hidden_x_readback_exact = (
+        _tensor_int_exact(hidden_x_readback[:active_rows], hidden_x_int4_packed[:active_rows])
+        if hidden_x_readback is not None
+        else None
+    )
+    hidden_scale_readback_error = (
+        _tensor_error(hidden_scale_readback[:active_rows], hidden_x_scale[:active_rows])
+        if hidden_scale_readback is not None
+        else None
+    )
+    hidden_scale_readback_exact = (
+        hidden_scale_readback_error is not None
+        and hidden_scale_readback_error["actual_finite"]
+        and hidden_scale_readback_error["expected_finite"]
+        and hidden_scale_readback_error["diff_finite"]
+        and hidden_scale_readback_error["max_abs"] == 0.0
+    )
 
     loop_stats_debug = _is_gmm2_loop_stats_debug(args.swiglu_limit)
     reference, reference_contract = _official_gmm2_unfused_reference(
@@ -353,6 +378,9 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                 "hidden_int4_packed": _float_stats(hidden_x_int4_packed[:active_rows]),
                 "hidden_scale": _float_stats(hidden_scale_active),
                 "hidden_q_packed_exact_reference": packed_exact,
+                "hidden_q_post_override_readback_exact_reference": hidden_x_readback_exact,
+                "hidden_scale_post_override_readback_error": hidden_scale_readback_error,
+                "hidden_scale_post_override_exact_match": hidden_scale_readback_exact,
                 "hidden_q_exact_match_from_stage2_1_probe": None,
                 "hidden_q_packed_exact_match": packed_exact["exact_match"],
                 "hidden_q_packed_mismatch_count": packed_exact["mismatch_count"],
@@ -433,6 +461,9 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             "hidden_int4_packed": _float_stats(hidden_x_int4_packed[:active_rows]),
             "hidden_scale": _float_stats(hidden_scale_active),
             "hidden_q_packed_exact_reference": packed_exact,
+            "hidden_q_post_override_readback_exact_reference": hidden_x_readback_exact,
+            "hidden_scale_post_override_readback_error": hidden_scale_readback_error,
+            "hidden_scale_post_override_exact_match": hidden_scale_readback_exact,
             "hidden_q_exact_match_from_stage2_1_probe": None,
             "hidden_q_packed_exact_match": packed_exact["exact_match"],
             "hidden_q_packed_mismatch_count": packed_exact["mismatch_count"],
@@ -452,6 +483,10 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             "official_gmm2_kernel_launched": True,
             "hidden_packed_exact": packed_exact["exact_match"],
             "hidden_packed_mismatch_count_zero": packed_exact["mismatch_count"] == 0,
+            "hidden_post_override_readback_exact": (
+                hidden_x_readback_exact is not None and hidden_x_readback_exact["exact_match"]
+            ),
+            "hidden_scale_post_override_readback_exact": bool(hidden_scale_readback_exact),
             "hidden_scale_finite": bool(torch.isfinite(hidden_scale_active).all().item()),
             "hidden_scale_nonzero": bool(torch.any(hidden_scale_active.abs() > 0).item()),
             "canonical_hidden_finite": bool(torch.isfinite(mixed["hidden_bf16"].float()).all().item()),
@@ -461,6 +496,9 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         "passed": bool(
             packed_exact["exact_match"]
             and packed_exact["mismatch_count"] == 0
+            and hidden_x_readback_exact is not None
+            and hidden_x_readback_exact["exact_match"]
+            and hidden_scale_readback_exact
             and torch.isfinite(hidden_scale_active).all().item()
             and torch.any(hidden_scale_active.abs() > 0).item()
             and torch.isfinite(mixed["hidden_bf16"].float()).all().item()

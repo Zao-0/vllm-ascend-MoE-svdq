@@ -8,9 +8,148 @@ This table supersedes ambiguous status statements in older handoff sections. Old
 |---|---|---|
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Built, installed, registered, and launched on logical NPU 0 in prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden exact-match gate passed with mismatch count 0. |
-| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Rebuilt loop-stats and state-probe diagnostics prove the official GMM2-only entry path executes and can read nonzero external counts, but `tokenPerExpert` and `cumsumMM` remain zero at scheduling readback, so official GMM2 schedules zero active tiles. Gate B/Gate C remain blocked. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | The latest hidden-boundary readback ABI rebuild installed cleanly and the source/meta ABI test passed, but the real-device probe still returned no post-override hidden readback evidence and GMM2 post-dequant remained finite all-zero against a nonzero unfused official-contract reference. Gate B/Gate C remain blocked. |
 | Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 Gate B/Gate C. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Host tiling must remain fail-closed until Stage 2.2+ production gates pass. |
+
+## Current State - 2026-06-26T15:30Z
+
+Status: Stage 2.2 remains FAIL / IN PROGRESS.
+
+Binding constraints for the next environment:
+
+- `svdq_qwen35_moe_clean_implementation_stage2_prompt.md` remains the active working prompt.
+- `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` was read and is binding.
+- `svdq_moe_clean_rewrite_reference.md` and all Stage 2 appendices remain background requirements.
+- Do not modify, reinterpret, further debug, or use public `torch_npu.npu_grouped_matmul`.
+- The official `dispatch_ffn_combine_w4_a8` implementation remains the only W4A8 GMM2 source of truth.
+- Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed.
+- Real-device commands must keep `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
+
+### Latest Hidden-Boundary Readback Attempt - 2026-06-26T15:30Z
+
+Purpose:
+
+- Add explicit Gate A readbacks for the post-override packed hidden INT4 and hidden scale boundary.
+- Keep this diagnostic isolated to `SVDQW4A8GMM2DebugReadback`.
+- Do not change production SVDQ host tiling.
+- Do not use public grouped matmul or any scalar substitute as progress.
+
+Files changed:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h`
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/svdqw4_a8_gmm2_debug_readback.cpp`
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/svdqw4_a8_gmm2_debug_readback_def.cpp`
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/op_api/aclnn_svdq_w4a8_gmm2_debug_readback.h`
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/op_api/aclnn_svdq_w4a8_gmm2_debug_readback.cpp`
+- `csrc/mc2/svdq_w4a8_gmm2_debug_readback/svdq_w4a8_gmm2_debug_readback_torch_adpt.h`
+- `csrc/torch_binding.cpp`
+- `csrc/torch_binding_meta.cpp`
+- `tests/ut/ops/test_svdq_moe_abi.py`
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+
+Official-vs-debug table update:
+
+| State or region | Official producer / consumer | Current debug behavior after this attempt | Status |
+|---|---|---|---|
+| Packed hidden `gmA2I4_I8` | Official AIV `BlockEpilogue1` produces the packed hidden rows, then official AIC `GMM2(params)` consumes the same GM boundary. | `InitGMM2OnlyFromPacked` now passes `debugHiddenXGM` into the official debug `Init(...)` path so the existing W4A8 debug tap can copy the post-override hidden boundary after `blockEpilogue1.Finalize()`. | Source/descriptor ABI is updated, but the device probe did not yet return non-null readback evidence. |
+| Hidden scale `gmPerTokenScale2` | Official AIV `BlockEpilogue1` writes one FP32 scale per hidden row, then GMM2/dequant consume it. | `InitGMM2OnlyFromPacked` now passes `debugHiddenScaleGM` into the same official debug init path for post-override scale readback. | Source/descriptor ABI is updated, but the device probe did not yet return non-null readback evidence. |
+| FP32 post-dequant debug tap | Official `BlockEpilogue2` / `CombineV2` writes the W4A8_DEBUG FP32 GMM2 post-dequant tap. | Existing `gmm2PostDequant` output is unchanged. | Still finite all-zero in the latest probe; not a Gate C pass. |
+
+Implementation details:
+
+- The debug op now declares two additional required outputs: `hiddenXReadback` INT8 ND and `hiddenScaleReadback` FLOAT ND.
+- The Torch adapter now returns `(gmm2_post_dequant, hidden_x_readback, hidden_scale_readback)`.
+- The Torch schema and meta registration were updated to the same three-output tuple.
+- The probe records `hidden_q_post_override_readback_exact_reference`, `hidden_scale_post_override_readback_error`, `hidden_scale_post_override_exact_match`, `hidden_post_override_readback_exact`, and `hidden_scale_post_override_readback_exact`.
+
+Build/install evidence:
+
+- Descriptor regeneration was required. Before regeneration, OPC emitted `invalid output nums[3], should be equal to output nums[5]`, proving stale generated dynamic metadata.
+- Regenerated targets:
+  - `cmake --build csrc/build --target opbuild_gen_inner -- -j1`
+  - `cmake --build csrc/build --target generate_ops_info_ascend910b -- -j1`
+  - `cmake --build csrc/build --target generate_transformer_adapt_py -- -j1`
+- Verified generated descriptor: `csrc/build/impl/dynamic/svdqw4_a8_gmm2_debug_readback.py` contains `output_names = ['out', 'expert_token_nums', 'gmm2PostDequant', 'hiddenXReadback', 'hiddenScaleReadback']`.
+- Debug-op kernel rebuild required compile-command regeneration after generated scripts were cleaned:
+  - Failed retry log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_hidden_readback_build_kernel_retry.log`
+  - Compile-command regeneration log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_hidden_readback_generate_compile_cmd_retry.log`
+  - Successful forced rebuild log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_hidden_readback_build_kernel_retry2.log`
+- Install evidence:
+  - `ascendc_ops_config.py`: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_hidden_readback_ops_config.log`
+  - `cmake --install`: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_hidden_readback_cmake_install.log`
+  - Repo-local install: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_hidden_readback_install_repo_root_cwd.log`, result `SUCCESS`
+  - System OPP install: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_hidden_readback_install_system_opp_root_cwd.log`, result `SUCCESS`
+
+Validation evidence:
+
+- `git diff --check`: passed.
+- Probe syntax cleanup: `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`, passed.
+- ABI/source registration test:
+  - Command: `pytest -q tests/ut/ops/test_svdq_moe_abi.py::test_svdq_w4a8_gmm2_debug_torch_schema_meta_and_adapter_are_registered`
+  - Log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_hidden_readback_abi_test.log`
+  - Result: `1 passed, 16 warnings`.
+- Device probe:
+  - Command used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3` and logical device 0.
+  - Log: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_hidden_readback_top1_expert0_probe.log`
+  - Summary: `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_hidden_readback_top1_expert0_probe.json`
+  - Environment: `npu_device_count: 4`, `selected_device: 0`, `runtime_soc_version: Ascend910B4`.
+
+Latest probe result:
+
+- Top-level `passed: false`
+- `preflight_failed: false`
+- `torch_op_registered: true`
+- `production_svdq_host_tiling_fail_closed: true`
+- Shape: `num_tokens: 64`, `top_k: 1`, `active_rows: 64`, `hidden_size: 2048`, `intermediate_size: 512`, `local_num_experts: 8`
+- Routing: `expert_token_nums: [[64, 0, 0, 0, 0, 0, 0, 0]]`, `expert_token_total: 64`, `expert_contiguous_rows: true`
+- Gate A source boundary:
+  - `canonical_hidden_bf16`: finite and nonzero
+  - `hidden_int8`: finite and nonzero
+  - `hidden_int4_packed`: finite and nonzero
+  - `hidden_scale`: finite and nonzero
+  - `hidden_q_packed_exact_reference.exact_match: true`
+  - `hidden_q_packed_mismatch_count: 0`
+- New post-override readback fields:
+  - `hidden_q_post_override_readback_exact_reference: null`
+  - `hidden_scale_post_override_readback_error: null`
+  - `hidden_scale_post_override_exact_match: false`
+  - `hidden_post_override_readback_exact: false`
+  - `hidden_scale_post_override_readback_exact: false`
+- Gate B status:
+  - Raw AIC GMM2 / D2 accumulator readback has not yet been exposed by this patch.
+  - `official_gmm2_loop_count`, `official_gmm2_active_tile_count`, `official_gmm2_aic_raw_output_finite`, `official_gmm2_aic_raw_output_nonzero`, and `official_gmm2_aic_reference_passed` remain unproven.
+- Gate C status:
+  - `gmm2.post_dequant_active.finite: true`
+  - `gmm2.post_dequant_active.nonzero: false`
+  - `gmm2.post_dequant_active.max_abs: 0.0`
+  - `gmm2.post_dequant_active.mean_abs: 0.0`
+  - `gmm2.unfused_reference.passed: false`
+  - Reference error: `max_abs: 0.3137211799621582`, `mean_abs: 0.0513690821826458`
+  - Actual sample is all zeros; expected sample begins `[0.051994405686855316, -0.0029550495091825724, 0.02753283828496933, 0.03887496888637543]`.
+- Required status fields:
+  - `official_gmm2_entry_reached`: not sufficient as progress in this run; earlier loop-stats proved entry only.
+  - `official_gmm2_loop_count`: not measured in this readback run.
+  - `official_gmm2_active_tile_count`: not measured in this readback run.
+  - `official_gmm2_aic_raw_output_finite`: unproven.
+  - `official_gmm2_aic_raw_output_nonzero`: unproven.
+  - `official_gmm2_aic_reference_passed`: false / unproven.
+  - `official_gmm2_c2v_handoff_verified`: unproven.
+  - `official_gmm2_post_dequant_finite`: true.
+  - `official_gmm2_post_dequant_nonzero`: false.
+  - `official_gmm2_post_dequant_reference_passed`: false.
+  - `official_gmm2_numerical_gate_passed`: false.
+
+Interpretation:
+
+- The source ABI now has the required hidden packed/scale readback outputs, but the latest real-device probe did not produce non-null readback evidence.
+- A standalone import of `vllm_ascend` without the probe's `_enable_custom_ops()` helper did not register `_C_ascend::svdq_w4a8_gmm2_debug_readback`; this is loader evidence only, not a numerical result.
+- Before another official lifecycle patch, the next session should first confirm the rebuilt `_C_ascend` extension and the runtime torch schema actually expose the three-output debug op in the same environment used by the device probe.
+- Do not proceed to Stage 2.3, SVDQ down composition, final combine, or production host tiling.
+
+## Historical State - 2026-06-26T13:45Z
+
+This section is superseded by the `2026-06-26T15:30Z` current state above. It is retained as failed-experiment evidence.
 
 ## Current State - 2026-06-26T13:45Z
 

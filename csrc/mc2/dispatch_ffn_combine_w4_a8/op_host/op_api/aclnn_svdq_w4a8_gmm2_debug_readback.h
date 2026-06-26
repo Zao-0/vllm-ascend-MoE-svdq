@@ -23,7 +23,8 @@ __attribute__((visibility("default"))) aclnnStatus aclnnSVDQW4A8GMM2DebugReadbac
     const aclTensor* xActiveMask, const aclTensor* hiddenXInt4Packed, const aclTensor* hiddenXScale,
     const aclTensor* externalExpertTokenNums, const char* group, int64_t maxOutputSize, double swigluLimit,
     const aclTensor* out, const aclTensor* expertTokenNums, const aclTensor* gmm2PostDequant,
-    uint64_t* workspaceSize, aclOpExecutor** executor);
+    const aclTensor* hiddenXReadback, const aclTensor* hiddenScaleReadback, uint64_t* workspaceSize,
+    aclOpExecutor** executor);
 
 __attribute__((visibility("default"))) aclnnStatus aclnnSVDQW4A8GMM2DebugReadback(
     void* workspace, uint64_t workspaceSize, aclOpExecutor* executor, aclrtStream stream);
