@@ -1,8 +1,100 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
-## Stage 2.2 Gate A Routing Manifest Probe - 2026-06-26T20:15Z
+## Stage 2.2 Multi-Expert Gate A Boundary Manifest - 2026-06-26T20:22Z
 
 This section is the latest Stage 2.2 status. Older sections are historical evidence unless explicitly
+referenced here.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Source packed hidden exact-match and post-override readback both report mismatch count 0. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Top-k 2 / experts 0 and 1 now records a multi-expert Gate A boundary manifest. It proves expert-contiguous GMM2 input ordering and post-override byte equality for the synthetic debug boundary, but it does not prove same source-token payload duplication across top-k slots. Gate B numerical parity still fails. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 modified-hidden official W4A8 GMM2 numerical gates. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+This attempt is still host-side probe/report work only. It does not modify device kernel code, synchronization,
+GMM2 lifecycle, packed-weight access, scale math, public grouped matmul, or production SVDQ host tiling.
+
+Files changed:
+
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+  - Added `routing_identity.manifest_scope` so top-k greater than 1 summaries distinguish GMM2 boundary row
+    identity from full upstream router token-duplication identity.
+
+Multi-expert raw-C2 Gate A probe:
+
+- Command used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, repo-local `ASCEND_CUSTOM_OPP_PATH`,
+  repo-local `libcust_opapi.so`, `--top-k 2`, `--route-experts 0 1`, 32 source tokens, 64 active rows,
+  `max_output_size=64`, and `--swiglu-limit 454545`.
+- NPU preflight log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_gate_a_manifest_top2_npu_smi.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_gate_a_manifest_top2_expert0_1_max64.log`
+- Summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_raw_c2_gate_a_manifest_top2_expert0_1_max64.json`
+- Top-level stage `passed: false`; this remains expected because the strict Gate B numerical reference still
+  fails.
+
+Multi-expert Gate A evidence:
+
+- `active_expert_ids: [0,1]`
+- `expert_token_nums: [[32,32,0,0,0,0,0,0]]`
+- expert prefix sums first 8: `[0,32,64,64,64,64,64,64]`
+- route slot mapping: slot 0 -> expert 0, slot 1 -> expert 1
+- `expert_token_total_matches_active_rows: true`
+- `reference_group_counts_match_expert_token_nums: true`
+- source packed-hidden active SHA256:
+  `a29851821d694cc55a182d5082fa535f5171acc5c7f3cda1fabfa7888ebd64de`
+- post-override readback packed-hidden active SHA256:
+  `a29851821d694cc55a182d5082fa535f5171acc5c7f3cda1fabfa7888ebd64de`
+- padded rows: `padded_row_count: 0`, hidden INT4 padded nonzero count `0`, hidden-scale padded nonzero count `0`
+
+Representative routed-row map:
+
+- rows 0-31 map to expert 0, top-k slot 0, expert-local offsets 0-31.
+- row 30 maps to source token 30, slot 0, expert 0, local offset 30.
+- row 31 maps to source token 31, slot 0, expert 0, local offset 31.
+- row 32 maps to source token 0, slot 1, expert 1, local offset 0.
+- row 33 maps to source token 1, slot 1, expert 1, local offset 1.
+
+Important limitation:
+
+- `same_source_token_payload_across_topk_slots_proven: false`
+- `token_major_order_matches_expert_contiguous_order: false`
+- Interpretation: this synthetic Stage 2.2 probe now proves the external hidden boundary rows are consumed by
+  official GMM2 in the declared expert-contiguous order and that post-override readback matches those bytes.
+  It does not prove that the upstream router duplicated the same original token payload into every top-k slot.
+  That remains a separate same-routing composition gate before production enablement.
+
+Multi-expert raw-C2 numerical status:
+
+- `official_gmm2_aic_raw_output_finite: true`
+- `official_gmm2_aic_raw_output_nonzero: true`
+- `official_gmm2_aic_reference_passed: false`
+- raw-C2 error: `max_abs: 16.85986328125`, `mean_abs: 1.1582927703857422`,
+  failed elements over strict abs tolerance: `100825`
+
+Current conclusion:
+
+- Gate A boundary evidence now covers both top-1 single-expert and top-k 2 multi-expert expert-contiguous
+  GMM2 input ordering for the isolated debug boundary.
+- Stage 2.2 remains failed. The multi-expert run reinforces that row-order evidence is not enough; Gate B
+  numerical parity still requires resolving the official D2/Fixpipe/reference residual without changing the
+  official lifecycle.
+- The same-source-token, same-routing full composition gate remains open and must be validated with a router
+  path that carries duplicated token identity through top-k expansion.
+
+Validation before this report update:
+
+- `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
+- Four-visible-NPU top-k 2 raw-C2 probe completed and wrote the new manifest summary, with expected nonzero
+  exit because `passed: false`.
+
+## Stage 2.2 Gate A Routing Manifest Probe - 2026-06-26T20:15Z
+
+This section is historical evidence. The `2026-06-26T20:22Z` section above supersedes it for current
+status. Older sections are historical evidence unless explicitly
 referenced here.
 
 | Item | Status | Evidence / blocker |

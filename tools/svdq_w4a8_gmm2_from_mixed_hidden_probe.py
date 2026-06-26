@@ -444,6 +444,19 @@ def _routing_identity_manifest(
         source_counts_match_reference = list(reference_group_counts) == counts[: len(reference_group_counts)]
 
     return {
+        "manifest_scope": {
+            "validates": (
+                "The external hidden tensor supplied to the official GMM2 boundary is ordered "
+                "expert-contiguously according to expert_token_nums, and the same bytes/scales are "
+                "read back from the post-override boundary."
+            ),
+            "does_not_validate": (
+                "For top_k > 1, this synthetic probe does not prove that multiple routed rows sharing "
+                "the same source_token_id carry identical pre-routing token payloads. It validates the "
+                "GMM2 input boundary row identity, not the full upstream router's token duplication."
+            ),
+            "same_source_token_payload_across_topk_slots_proven": bool(top_k == 1),
+        },
         "expert_token_nums_shape": list(expert_token_nums.shape),
         "expert_token_nums": [counts],
         "expert_token_total": int(sum(counts)),
