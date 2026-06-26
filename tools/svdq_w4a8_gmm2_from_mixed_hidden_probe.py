@@ -48,6 +48,7 @@ from svdq_w4a8_debug_readback_probe import (  # noqa: E402
 from svdq_w4a8_debug_readback_real_checkpoint_probe import (  # noqa: E402
     _float_stats,
     _load_real_residual_layer,
+    _official_gmm2_raw_c2_reference,
     _official_gmm2_unfused_reference,
     _postload_metadata,
     _tensor_error,
@@ -77,6 +78,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--gmm2-reference-max-rows", type=int, default=64)
     parser.add_argument("--gmm2-reference-max-abs-tol", type=float, default=2e-4)
     parser.add_argument("--gmm2-reference-mean-abs-tol", type=float, default=2e-5)
+    parser.add_argument("--gmm2-raw-c2-reference-max-abs-tol", type=float, default=2e-4)
+    parser.add_argument("--gmm2-raw-c2-reference-mean-abs-tol", type=float, default=2e-5)
     parser.add_argument("--require-npu", action="store_true")
     return parser.parse_args()
 
@@ -201,6 +204,34 @@ def _tensor_float_exact_locations(actual: torch.Tensor, expected: torch.Tensor) 
         else mismatch.nonzero()[:32].tolist(),
         "max_abs_index": max_abs_index,
         "first_exact_mismatches": first_mismatches,
+    }
+
+
+def _threshold_error_counts(
+    actual: torch.Tensor,
+    expected: torch.Tensor,
+    *,
+    max_abs_tol: float,
+) -> dict[str, Any]:
+    actual_cpu = actual.detach().cpu().float()
+    expected_cpu = expected.detach().cpu().float()
+    diff = (actual_cpu - expected_cpu).abs()
+    finite_diff = torch.isfinite(diff)
+    denominator = expected_cpu.abs().clamp_min(1.0e-12)
+    relative = torch.where(finite_diff, diff / denominator, torch.full_like(diff, float("inf")))
+    failed = diff > max_abs_tol
+    return {
+        "failed_element_count_abs_gt_tolerance": int(failed.sum().item()) if failed.numel() else 0,
+        "failed_rows_first32": failed.any(dim=1).nonzero().flatten()[:32].tolist() if failed.ndim == 2 else [],
+        "failed_cols_first32": failed.any(dim=0).nonzero().flatten()[:32].tolist() if failed.ndim == 2 else [],
+        "actual_nan_count": int(torch.isnan(actual_cpu).sum().item()),
+        "actual_inf_count": int(torch.isinf(actual_cpu).sum().item()),
+        "expected_nan_count": int(torch.isnan(expected_cpu).sum().item()),
+        "expected_inf_count": int(torch.isinf(expected_cpu).sum().item()),
+        "diff_nan_count": int(torch.isnan(diff).sum().item()),
+        "diff_inf_count": int(torch.isinf(diff).sum().item()),
+        "max_relative_error": float(relative.max().item()) if relative.numel() else 0.0,
+        "mean_relative_error": float(relative.mean().item()) if relative.numel() else 0.0,
     }
 
 
@@ -477,6 +508,30 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         raw_c2_stats = _float_stats(raw_c2_active)
         raw_c2_finite = bool(torch.isfinite(raw_c2_active).all().item())
         raw_c2_nonzero = bool(torch.any(raw_c2_active.abs() > 0).item())
+        raw_reference, raw_reference_contract = _official_gmm2_raw_c2_reference(
+            hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
+            weight=layer.w2_weight,
+            weight_scale=layer.w2_weight_scale,
+            expert_token_nums=external_expert_token_nums,
+            output_columns=spec.hidden_size,
+            max_rows=args.gmm2_reference_max_rows,
+        )
+        raw_actual = raw_c2_active[: raw_reference.shape[0], : raw_reference.shape[1]]
+        raw_c2_error = _tensor_error(raw_actual, raw_reference)
+        raw_c2_error.update(
+            _threshold_error_counts(
+                raw_actual,
+                raw_reference,
+                max_abs_tol=args.gmm2_raw_c2_reference_max_abs_tol,
+            )
+        )
+        raw_c2_reference_passed = (
+            raw_c2_error["actual_finite"]
+            and raw_c2_error["expected_finite"]
+            and raw_c2_error["diff_finite"]
+            and raw_c2_error["max_abs"] <= args.gmm2_raw_c2_reference_max_abs_tol
+            and raw_c2_error["mean_abs"] <= args.gmm2_raw_c2_reference_mean_abs_tol
+        )
         return {
             "stage": "stage2_modified_hidden_official_w4a8_gmm2_raw_c2",
             "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback -> aclnnSVDQW4A8GMM2DebugReadback",
@@ -544,6 +599,18 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                     ),
                     "enabled_by_swiglu_limit_range": [450000.0, 460000.0],
                 },
+                "raw_c2_unfused_reference": {
+                    "enabled": True,
+                    "passed": bool(raw_c2_reference_passed),
+                    "contract": raw_reference_contract,
+                    "error": raw_c2_error,
+                    "max_abs_tolerance": args.gmm2_raw_c2_reference_max_abs_tol,
+                    "mean_abs_tolerance": args.gmm2_raw_c2_reference_mean_abs_tol,
+                    "diagnostic_only": (
+                        "This host-side official-contract reference is a Gate B comparator, "
+                        "not an alternative implementation or a substitute for the official kernel path."
+                    ),
+                },
                 "unfused_reference": {
                     "enabled": True,
                     "contract": reference_contract,
@@ -559,7 +626,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                 "official_gmm2_active_tile_count": None,
                 "official_gmm2_aic_raw_output_finite": raw_c2_finite,
                 "official_gmm2_aic_raw_output_nonzero": raw_c2_nonzero,
-                "official_gmm2_aic_reference_passed": False,
+                "official_gmm2_aic_reference_passed": bool(raw_c2_reference_passed),
                 "official_gmm2_c2v_handoff_verified": bool(raw_c2_finite and raw_c2_nonzero),
                 "official_gmm2_post_dequant_finite": False,
                 "official_gmm2_post_dequant_nonzero": False,

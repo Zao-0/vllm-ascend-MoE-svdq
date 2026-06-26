@@ -360,6 +360,54 @@ def _official_gmm2_unfused_reference(
     return reference, contract
 
 
+def _official_gmm2_raw_c2_reference(
+    *,
+    hidden_x_int4_packed: torch.Tensor,
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    expert_token_nums: torch.Tensor,
+    output_columns: int,
+    max_rows: int,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    row_count = min(int(hidden_x_int4_packed.shape[0]), int(max_rows))
+    counts = _clip_group_counts(expert_token_nums, row_count)
+    x_high, x_low = _official_packed_i4_hidden_to_parts(hidden_x_int4_packed[:row_count])
+    weight_scale_fp32 = _int64_float_bits_to_fp32(weight_scale)
+    unpacked_weight = _unpack_postloaded_w4_columns(weight, output_columns)
+
+    outputs: list[torch.Tensor] = []
+    row_start = 0
+    for expert_id, count in enumerate(counts.tolist()):
+        count = int(count)
+        if count <= 0:
+            continue
+        row_end = row_start + count
+        weight_e = unpacked_weight[expert_id]
+        high_acc = x_high[row_start:row_end].matmul(weight_e)
+        low_acc = x_low[row_start:row_end].matmul(weight_e)
+        combined = (high_acc * 16 + low_acc).float()
+        outputs.append(combined * weight_scale_fp32[expert_id].reshape(1, -1))
+        row_start = row_end
+    if outputs:
+        reference = torch.cat(outputs, dim=0)
+    else:
+        reference = torch.empty((0, output_columns), dtype=torch.float32)
+    contract = {
+        "source": "official dispatch_ffn_combine_w4_a8 GMM2 raw C2 high/low scaled accumulator contract",
+        "input_boundary": "hidden_x_int4_packed copied into official gmA2I4_I8 before GMM2",
+        "activation_split": (
+            "official GMM2 reads prepacked hidden INT4 high-half bytes and low-half bytes from gmA2I4_I8"
+        ),
+        "raw_c2_formula": (
+            "(high_acc * 16 + low_acc) * postloaded_weight_scale before scale_bias, hidden_x_scale, "
+            "BF16 cast, or peer-output routing"
+        ),
+        "compared_rows": int(reference.shape[0]),
+        "group_counts": counts.tolist(),
+    }
+    return reference, contract
+
+
 def _postload_metadata(layer: torch.nn.Module) -> dict[str, Any]:
     names = (
         "w13_weight",
