@@ -1,9 +1,156 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
-## External Hidden Override Pre-Barrier Diagnostic - 2026-06-26T18:34Z
+## W2 NZ Layout Comparator Diagnostic - 2026-06-26T19:00Z
 
 This section is the latest Stage 2.2 status. Older sections are historical evidence unless explicitly
 referenced here.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Source packed hidden exact-match and post-override readback both report mismatch count 0. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Gate A remains exact and Gate B raw C2 remains finite/nonzero, but strict raw-C2 parity still fails. The new W2 `weightNz=true` layout diagnostic rejects a simple host W2 layout comparator mismatch as the primary explanation. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 raw-C2 numerical parity. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+Binding constraints remain unchanged:
+
+- Use only `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
+- Do not use or debug public `torch_npu.npu_grouped_matmul`.
+- Official `dispatch_ffn_combine_w4_a8` remains the only W4A8 source of truth.
+- Do not advance to SVDQ down, final combine, or production enablement while Stage 2.2 fails.
+
+Appendix `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` remains binding.
+This attempt is a Python-side diagnostic extension only. It does not change device behavior, GMM2
+synchronization, public grouped matmul usage, production host tiling, or the official hidden/scale
+override boundary.
+
+Files changed for this attempt:
+
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+  - Added `raw_c2_weight_layout_variant_diagnostics`.
+  - Added a diagnostic CATLASS `nZ` / `zN` INT4 W2 unpack based on the official `weightNz=true` source path.
+  - Kept the existing row-major Gate B comparator and reports both variants side by side.
+  - Marks the new host-side computation as diagnostic-only, not a substitute GMM2 implementation or a proposed repack.
+
+Official source locations inspected for this diagnostic:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/op_api/aclnn_svdq_w4a8_gmm2_debug_readback.cpp:44-48`:
+  debug GMM2 op API uses `transB=false` and `weightNz=true`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h:309-314`:
+  `LayoutB` is `layout::zN` when `weightNz=true`; GMM2 creates `layoutB2` for `int4b_t`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:690-724`:
+  GMM2 sets `n2=k`, `k2=n/2`, and doubles `currentM` for INT4.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:752-767`:
+  GMM2 consumes `gmA2I4` and `gmB2` through the official layouts and writes `gmC2`.
+- `csrc/third_party/catlass/include/catlass/layout/matrix.hpp:345-365`:
+  CATLASS `nZ::MakeLayout` and `GetOffset` formula for INT4 W2 access.
+- `vllm_ascend/quantization/methods/w4a8.py:739-740`:
+  ModelSlim post-load applies `maybe_trans_nz` to `w13_weight` and `w2_weight`.
+- `vllm_ascend/quantization/methods/svdq_post_load.py:154-160`:
+  helper records NPU format metadata where available.
+
+Official-vs-debug state-table update:
+
+| State or region | Official producer | Official consumer | Official initialization point | Physical GM/workspace address and offset | Row/tile stride | Flag or event | Signal timing | Wait timing | Final drain | Current debug behavior |
+|---|---|---|---|---|---|---|---|---|---|---|
+| packed hidden `gmA2I4_I8` | Official `BlockEpilogue1` after GMM1 SwiGLU quant | Official GMM2 AIC `gmA2I4` | `DispatchAndCombine` full lifecycle | Official D1/A2 GM region; debug override copies external packed hidden into this same region | D1 physical bytes equal A2 doubled-M INT4 bytes for active rows | V2C notify before GMM2 | After all AIV cores finish, then core 0 external copy, then post-copy barrier | GMM2 waits on official `SYNCFLAGV2C` | Official lifecycle | Exact in latest run: mismatch count 0 |
+| hidden scale `gmPerTokenScale2` | Official `BlockEpilogue1` | Official `BlockEpilogue2` / post-dequant | `DispatchAndCombine` full lifecycle | Official per-token scale GM region; debug override copies external scale into same region | One FP32 scale per active row | Same V2C lifecycle | Same as packed hidden | Consumed after GMM2 raw C2 | Official lifecycle | Exact in latest run: exact mismatch count 0, max abs 0 |
+| W2 packed weight `gmB2` | ModelSlim post-load `maybe_trans_nz` W2 | Official GMM2 AIC `gmB2` | `process_weights_after_loading_modelslim` | `GetTensorAddr<int4b_t>(arrayGroupIdx, params.ptrB2)` | `LayoutB=layout::zN`, `int4b_t`, `weightNz=true` | none | Static input | GMM2 tile loop | Official lifecycle | New diagnostic compares current row-major host comparator vs CATLASS `nZ` host interpretation |
+| GMM2 accumulator / D2 region | Official GMM2 AIC | Official C2V / `BlockEpilogue2` | GMM2 loop | `gmC2[gmGroupOffsetC + layoutC.GetOffset(offsetC)]` | Row-major C tile layout | C2V handoff | GMM2 notifies after tile production | AIV waits before epilogue | Official drain | Raw C2 finite/nonzero but numerical parity fails |
+| FP32 post-dequant debug tap | Official `BlockEpilogue2` raw-debug path or W4A8 debug tap | Host readback | `W4A8_DEBUG` path | Existing debug output GM | active rows x hidden size | C2V handoff | After GMM2 raw C2 | AIV reads C2 | Official lifecycle | Gate C remains blocked while Gate B raw-C2 parity fails |
+
+Raw-C2 W2 NZ layout diagnostic probe:
+
+- Command used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, repo-local `ASCEND_CUSTOM_OPP_PATH`,
+  repo-local `libcust_opapi.so`, top-1 expert 0, 64 tokens, `max_output_size=64`, and
+  `--swiglu-limit 454545`.
+- Preflight `npu-smi info` showed physical NPUs 0-3 as 910B4 with no running NPU processes.
+- NPU preflight log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_w2_nz_layout_npu_smi.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_w2_nz_layout_top1_expert0_max64.log`
+- Summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_raw_c2_w2_nz_layout_top1_expert0_max64.json`
+- Top-level stage `passed: false`; Stage 2.2 remains failed.
+- Runtime environment: `npu_device_count: 4`, selected device `0`, runtime SOC `Ascend910B4`.
+- `production_svdq_host_tiling_fail_closed: true`.
+
+Gate A evidence:
+
+- Source packed hidden exact-match: `hidden_packed_exact: true`, mismatch count zero.
+- Post-override packed hidden readback: `exact_match: true`, mismatch count `0`.
+- Post-override hidden scale readback: `exact_mismatch_count: 0`, `max_abs: 0.0`.
+- Canonical hidden and hidden scale are finite and nonzero.
+- W2 metadata: shape `[8, 512, 256]`, dtype `torch.int32`, stride `[131072, 256, 1]`, device `npu:0`,
+  finite and nonzero.
+
+Gate B raw-C2 evidence:
+
+- `official_gmm2_entry_reached: true`.
+- `official_gmm2_aic_raw_output_finite: true`.
+- `official_gmm2_aic_raw_output_nonzero: true`.
+- `official_gmm2_c2v_handoff_verified: true`.
+- Strict raw-C2 comparator still fails:
+  - `max_abs: 23.6250057220459`
+  - `mean_abs: 3.0852577686309814`
+  - failed elements over absolute tolerance: `131056` / `131072`
+  - NaN/Inf counts: zero for actual, expected, and diff.
+
+Hidden A2 layout variants:
+
+| Variant | Mean abs | Max abs | Failed elements |
+|---|---:|---:|---:|
+| official high/low halves, low/high nibble order | `3.0852577686309814` | `23.6250057220459` | `131056` |
+| high/low halves, high/low nibble order | `3.1224827766418457` | `24.88486099243164` | `131060` |
+| swapped low/high halves, low/high nibble order | `7.387302398681641` | `44.44057083129883` | `131069` |
+| swapped low/high halves, high/low nibble order | `7.347159385681152` | `44.067378997802734` | `131065` |
+
+W2 layout variants:
+
+| Variant | Mean abs | Max abs | Failed elements | Best-row nonidentity |
+|---|---:|---:|---:|---:|
+| current row-major host reference | `3.0852577686309814` | `23.6250057220459` | `131056` | `63` |
+| CATLASS `nZ` / `weightNz=true` host interpretation | `3.1503801345825195` | `28.72287368774414` | `131058` | `63` |
+
+CATLASS `nZ` diagnostic shape:
+
+- experts: `8`
+- K rows: `512`
+- packed INT32 columns: `256`
+- output columns: `2048`
+- flattened INT4 values per expert: `1048576`
+- rows round: `512`
+- cols round: `2048`
+- max offset: `1048575`
+
+Rejected root-cause hypothesis:
+
+- The remaining raw-C2 mismatch is not explained by a simple host W2 physical-layout comparator mismatch.
+- Evidence: the current row-major host comparator is still the best W2-layout variant by mean absolute error;
+  the CATLASS `nZ` interpretation is slightly worse, and both variants fail almost every element.
+- The previous hidden half/nibble layout variants remain consistent: the official high/low, low/high-nibble
+  interpretation is still best, while swapped-half variants are much worse.
+
+Current unresolved boundary:
+
+- Gate A is exact and Gate B raw C2 is finite/nonzero, but strict Gate B numerical parity still fails.
+- Since simple A2 half/nibble and W2 `weightNz=true` host-layout mismatches are rejected, the next work
+  should return to the appendix-required official lifecycle/state table for GMM2 AIC tile state,
+  accumulator/D2 mapping, C2V handoff, and `BlockEpilogue2` source mapping before any further behavioral patch.
+- Stage 2.3 SVDQ BF16 projections, mixed AIV epilogues, SwiGLU, hidden quantization, final combine, and
+  production host tiling remain blocked.
+
+Validation before this report update:
+
+- `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`: passed.
+- `git diff --check`: passed.
+- Four-visible-NPU raw-C2 probe: completed on `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, wrote summary, and
+  correctly reported Stage 2.2 `passed: false`.
+
+## External Hidden Override Pre-Barrier Diagnostic - 2026-06-26T18:34Z
+
+This section is historical evidence. The `2026-06-26T19:00Z` section above supersedes it for current status.
 
 | Item | Status | Evidence / blocker |
 |---|---|---|

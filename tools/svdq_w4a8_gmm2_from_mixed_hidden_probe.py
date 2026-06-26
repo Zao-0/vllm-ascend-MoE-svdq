@@ -424,6 +424,128 @@ def _raw_c2_reference_from_parts(
     return torch.empty((0, output_columns), dtype=torch.float32)
 
 
+def _round_up(value: int, align: int) -> int:
+    return ((int(value) + int(align) - 1) // int(align)) * int(align)
+
+
+def _unpack_postloaded_w4_columns_zn_diagnostic(
+    weight: torch.Tensor,
+    output_columns: int,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    words = weight.detach().cpu().contiguous().to(torch.int32)
+    if words.ndim != 3:
+        raise ValueError("postloaded W4 weight diagnostic expects [experts, k, packed_n] int32 words.")
+    experts, k_rows, packed_columns = (int(v) for v in words.shape)
+    if packed_columns * 8 != int(output_columns):
+        raise ValueError(
+            f"packed W4 columns {packed_columns} do not match output columns {output_columns}."
+        )
+
+    flat_words = words.reshape(experts, -1)
+    shifts = (torch.arange(8, dtype=torch.int32) * 4).reshape(1, 1, 8)
+    flat_i4 = ((flat_words.unsqueeze(-1) >> shifts) & 0xF).reshape(experts, -1)
+    flat_i4 = torch.where(flat_i4 >= 8, flat_i4 - 16, flat_i4).to(torch.int32)
+
+    byte_per_c0 = 32
+    c0_num_per_fractal = 16
+    byte_per_fractal = byte_per_c0 * c0_num_per_fractal
+    int4_bits = 4
+    ele_num_per_c0 = (byte_per_c0 * 8) // int4_bits
+    ele_num_per_fractal = (byte_per_fractal * 8) // int4_bits
+    rows_round = _round_up(k_rows, ele_num_per_c0)
+    cols_round = _round_up(output_columns, c0_num_per_fractal)
+
+    row_ids = torch.arange(k_rows, dtype=torch.int64).reshape(k_rows, 1)
+    col_ids = torch.arange(output_columns, dtype=torch.int64).reshape(1, output_columns)
+    offsets = (
+        (row_ids // ele_num_per_c0) * (cols_round * ele_num_per_c0)
+        + (col_ids // c0_num_per_fractal) * ele_num_per_fractal
+        + (row_ids % ele_num_per_c0)
+        + (col_ids % c0_num_per_fractal) * ele_num_per_c0
+    )
+    if int(offsets.max().item()) >= int(flat_i4.shape[1]):
+        raise ValueError(
+            "computed nZ int4 offset exceeds flattened W4 storage; "
+            f"max_offset={int(offsets.max().item())}, flat_i4={int(flat_i4.shape[1])}"
+        )
+    unpacked = flat_i4[:, offsets.reshape(-1)].reshape(experts, k_rows, output_columns)
+    contract = {
+        "diagnostic_only": True,
+        "layout": "Catlass::layout::nZ / zN MakeLayout<Element=int4b_t>",
+        "source_locations": {
+            "kernel_weight_layout": (
+                "dispatch_ffn_combine_w4_a8.h uses LayoutB = layout::zN when weightNz=true "
+                "and creates layoutB2 = LayoutBInitializer<LayoutB, int4b_t>::create(k2, n2)"
+            ),
+            "op_api_attr": (
+                "op_host/op_api/aclnn_svdq_w4a8_gmm2_debug_readback.cpp hard-codes "
+                "transB=false and weightNz=true"
+            ),
+            "catlass_layout": (
+                "third_party/catlass/include/catlass/layout/matrix.hpp nZ::MakeLayout and GetOffset"
+            ),
+            "postload": (
+                "vllm_ascend/quantization/methods/w4a8.py process_weights_after_loading_modelslim "
+                "applies maybe_trans_nz before the debug op consumes W2"
+            ),
+        },
+        "constants": {
+            "BYTE_PER_C0": byte_per_c0,
+            "C0_NUM_PER_FRACTAL": c0_num_per_fractal,
+            "BYTE_PER_FRACTAL": byte_per_fractal,
+            "int4_bits": int4_bits,
+            "ELE_NUM_PER_C0": ele_num_per_c0,
+            "ELE_NUM_PER_FRACTAL": ele_num_per_fractal,
+        },
+        "shape": {
+            "experts": experts,
+            "k_rows": k_rows,
+            "packed_int32_columns": packed_columns,
+            "output_columns": int(output_columns),
+            "flattened_int4_per_expert": int(flat_i4.shape[1]),
+            "rows_round": rows_round,
+            "cols_round": cols_round,
+            "max_offset": int(offsets.max().item()),
+        },
+        "formula": (
+            "offset = row/64*(colsRound*64) + col/16*1024 + row%64 + col%16*64 "
+            "for int4b_t with BYTE_PER_C0=32 and C0_NUM_PER_FRACTAL=16"
+        ),
+    }
+    return unpacked, contract
+
+
+def _raw_c2_reference_with_unpacked_weight(
+    *,
+    x_high: torch.Tensor,
+    x_low: torch.Tensor,
+    unpacked_weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    expert_token_nums: torch.Tensor,
+    max_rows: int,
+) -> torch.Tensor:
+    row_count = min(int(x_high.shape[0]), int(x_low.shape[0]), int(max_rows))
+    counts = _clip_group_counts_for_limit(expert_token_nums, row_count)
+    weight_scale_fp32 = _int64_float_bits_to_fp32(weight_scale)
+
+    outputs: list[torch.Tensor] = []
+    row_start = 0
+    for expert_id, count in enumerate(counts):
+        count = int(count)
+        if count <= 0:
+            continue
+        row_end = row_start + count
+        weight_e = unpacked_weight[expert_id]
+        high_acc = x_high[row_start:row_end].matmul(weight_e)
+        low_acc = x_low[row_start:row_end].matmul(weight_e)
+        combined = (high_acc * 16 + low_acc).float()
+        outputs.append(combined * weight_scale_fp32[expert_id].reshape(1, -1))
+        row_start = row_end
+    if outputs:
+        return torch.cat(outputs, dim=0)
+    return torch.empty((0, int(unpacked_weight.shape[-1])), dtype=torch.float32)
+
+
 def _raw_c2_layout_variant_diagnostics(
     *,
     actual: torch.Tensor,
@@ -490,6 +612,79 @@ def _raw_c2_layout_variant_diagnostics(
             "reference is using the same physical interpretation as the official consumer."
         ),
         "official_expected_variant": "official_high_low_low_high_nibbles",
+        "best_by_mean_abs": best_name,
+        "variants": reports,
+    }
+
+
+def _raw_c2_weight_layout_variant_diagnostics(
+    *,
+    actual: torch.Tensor,
+    hidden_x_int4_packed: torch.Tensor,
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    expert_token_nums: torch.Tensor,
+    output_columns: int,
+    max_rows: int,
+    max_abs_tol: float,
+) -> dict[str, Any]:
+    x_high, x_low = _packed_i4_hidden_to_parts_variant(
+        hidden_x_int4_packed[:max_rows],
+        half_order="high_low",
+        nibble_order="low_high",
+    )
+    row_major_weight = _unpack_postloaded_w4_columns(weight, output_columns)
+    zn_weight, zn_contract = _unpack_postloaded_w4_columns_zn_diagnostic(weight, output_columns)
+    variants = {
+        "current_row_major_host_reference": {
+            "unpacked_weight": row_major_weight,
+            "contract": {
+                "diagnostic_only": True,
+                "layout": "contiguous int32 row-major host unpack used by the existing Gate B comparator",
+            },
+        },
+        "catlass_weight_nz_host_interpretation": {
+            "unpacked_weight": zn_weight,
+            "contract": zn_contract,
+        },
+    }
+    reports: dict[str, Any] = {}
+    best_name = None
+    best_mean_abs = None
+    for name, variant in variants.items():
+        reference = _raw_c2_reference_with_unpacked_weight(
+            x_high=x_high,
+            x_low=x_low,
+            unpacked_weight=variant["unpacked_weight"],
+            weight_scale=weight_scale,
+            expert_token_nums=expert_token_nums,
+            max_rows=max_rows,
+        )
+        variant_actual = actual[: reference.shape[0], : reference.shape[1]]
+        error = _tensor_error(variant_actual, reference)
+        error.update(
+            _threshold_error_counts(
+                variant_actual,
+                reference,
+                max_abs_tol=max_abs_tol,
+            )
+        )
+        reports[name] = {
+            "contract": variant["contract"],
+            "error": error,
+            "row_alignment": _row_alignment_summary(variant_actual, reference),
+            "diagnostic_only": (
+                "Host-side Gate B comparator diagnostic for the official weightNz=true W2 physical layout; "
+                "not a substitute GMM2 implementation and not a proposed weight repack."
+            ),
+        }
+        mean_abs = float(error["mean_abs"])
+        if best_mean_abs is None or mean_abs < best_mean_abs:
+            best_name = name
+            best_mean_abs = mean_abs
+    return {
+        "enabled": True,
+        "official_expected_weight_path": "transB=false, weightNz=true, LayoutB=layout::zN, ElementB=int4b_t",
         "best_by_mean_abs": best_name,
         "variants": reports,
     }
@@ -892,6 +1087,16 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             max_rows=args.gmm2_reference_max_rows,
             max_abs_tol=args.gmm2_raw_c2_reference_max_abs_tol,
         )
+        raw_c2_weight_layout_variants = _raw_c2_weight_layout_variant_diagnostics(
+            actual=raw_actual,
+            hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
+            weight=layer.w2_weight,
+            weight_scale=layer.w2_weight_scale,
+            expert_token_nums=external_expert_token_nums,
+            output_columns=spec.hidden_size,
+            max_rows=args.gmm2_reference_max_rows,
+            max_abs_tol=args.gmm2_raw_c2_reference_max_abs_tol,
+        )
         if hidden_row_exact_mask is not None:
             exact_count = int(hidden_row_exact_mask.sum().item())
             mismatch_count = int((~hidden_row_exact_mask).sum().item())
@@ -1016,6 +1221,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                 "raw_c2_readback_hidden_reference": hidden_readback_raw_reference_report,
                 "raw_c2_row_diagnostics": raw_c2_row_diagnostics,
                 "raw_c2_layout_variant_diagnostics": raw_c2_layout_variants,
+                "raw_c2_weight_layout_variant_diagnostics": raw_c2_weight_layout_variants,
                 "unfused_reference": {
                     "enabled": True,
                     "contract": reference_contract,
