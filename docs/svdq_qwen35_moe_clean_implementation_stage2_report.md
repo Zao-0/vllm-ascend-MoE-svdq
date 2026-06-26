@@ -1,8 +1,22 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Authoritative Status - 2026-06-26
+
+This table supersedes ambiguous status statements in older handoff sections. Older sections are historical evidence unless explicitly referenced by the latest active section.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Built, installed, registered, and launched on logical NPU 0 in prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden exact-match gate passed with mismatch count 0. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Official GMM2-only post-dequant readback remains all zeros while real-checkpoint reference is nonzero. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 Gate B/Gate C. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Host tiling must remain fail-closed until Stage 2.2+ production gates pass. |
+
 ## Baseline - 2026-06-26T06:17Z
 
 Status: IN PROGRESS.
+
+Historical note: this baseline section is superseded by the latest `Authoritative Status` table and later handoff sections. It is retained as evidence history.
 
 Working prompt:
 
@@ -529,6 +543,101 @@ Git/worktree state for this handoff:
   - `csrc/utils/inc/kernel/moe_distribute_base.h`
   - `csrc/build_out/`
   - `extra-info/`
+
+## Stage 2.2 Appendix GMM2 Official-Path Requirements - 2026-06-26T11:20Z
+
+Status: IN PROGRESS. This section applies the binding requirements from `/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md`.
+
+Device boundary for the next attempt:
+
+- Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 npu-smi info`
+- Result: physical devices 0, 1, 2, 3 visible; all `910B4`, health `OK`; no running NPU processes.
+- Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_raw_c2_device_boundary_npu_smi.log`
+- Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python - <<'PY' ... torch_npu device count ...`
+- Result: `npu_available: True`, `visible_device_count: 4`, logical devices 0-3 all `Ascend910B4`.
+- Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_raw_c2_device_boundary_torch_npu.log`
+
+Official source locations inspected for the GMM2 lifecycle table:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h:214-225`: GMM2-only debug initializer stores external packed hidden, scale, expert-token inputs and sets `gmm2OnlyFromPacked_`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h:247-336`: official layouts, tile shapes, `BlockMmad`, `BlockEpilogue2`, `layoutD2`, and kernel params.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:245-272`: official AIC runs `GMM1` then `GMM2`; official AIV runs `DispatchAndCombine`; GMM2-only debug diverts both task roles.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:276-315`: workspace/global buffer binding for `cumsumMM`, `gmA2I4_I8`, `gmC2`, `gmPerTokenScale2`, `tokenPerExpert`, and `preSumBeforeRank`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:545-572`: `GetCumsumForMMAIV`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:684-779`: official `GMM2(params)` AIC path and final `BlockMmad::Finalize`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:782-859`: current GMM2-only state seeding and direct V2C signaling.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1078-1234`: successful official `DispatchAndCombine` state construction, hidden pack producer, V2C signaling, and `CombineV2` call.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1270-1345`: `CombineV2` waits C2V flags and invokes `BlockEpilogue2`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1351-1410`: workspace offset ordering through `ptrC2`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_mmad_w4a4.hpp:140-210`, `:234-250`, `:432-465`: official W4A8 MMAD input copy, L0C-to-GM/Fixpipe store, and C2V flag finalize.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp:144-240`: `BlockEpilogue2` reads high/low C2, combines raw C2, applies aux and per-token hidden scale, writes FP32 debug tap.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/dispatch_ffn_combine_w4_a8_tiling.cpp:50-80`, `:83-127`, `:245-264`: host attributes, shape/listLen/expertPerRank, and workspace sizing.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/svdqw4_a8_gmm2_debug_readback_def.cpp:96-150`: debug-op external packed hidden, hidden scale, external expert-token inputs, and `swigluLimit` sentinel attribute.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/op_api/aclnn_svdq_w4a8_gmm2_debug_readback.cpp:33-56`: debug ACLNN wrapper forwards external hidden/scale/token tensors and forces MTE HCCL server.
+
+Official-vs-debug state table before the next Gate B probe:
+
+| State or region | Official producer | Official consumer | Official initialization point | Physical GM/workspace address and offset | Row/tile stride | Flag or event | Signal timing | Wait timing | Final drain | Current debug behavior |
+|---|---|---|---|---|---|---|---|---|---|---|
+| packed hidden `gmA2I4_I8` | `BlockEpilogue1` in `DispatchAndCombine` writes high/low packed hidden via `gmA2I4_I8[gmOffsetD]` (`kernel.hpp:1198-1203`). | `GMM2` reads `gmA2I4[gmGroupOffsetA + gmOffsetA]` (`kernel.hpp:759-760`). | Official path follows routing/cumsum setup and `BlockEpilogue1` per sync group (`kernel.hpp:1078-1209`). | `workspaceInfo.ptrA2Int4`; bound at `kernel.hpp:293-294`; offset formula uses `layoutD1.GetOffset(offsetC)` for producer and `layoutA2.GetOffset(offsetA)` plus `gmGroupOffsetA` for consumer. | Official `layoutD1{maxOutputSize,k2}` and `layoutA2{m,k2}` (`dispatch_ffn_combine_w4_a8.h:307-312`). | V2C protects GMM2 start after hidden producer. | `DispatchAndCombine` sets `SYNCFLAGV2C` after each `BlockEpilogue1` sync group (`kernel.hpp:1206-1209`). | `GMM2` waits `SYNCFLAGV2C` at group 0 and sync groups (`kernel.hpp:736-738`). | Full path continues to `CombineV2`, then reset/shmem cleanup (`kernel.hpp:1234-1238`). | Debug copies validated external packed hidden into `gmA2I4_I8` on AIV core 0 (`kernel.hpp:814-823`, `:853-858`) and signals V2C directly for all sync groups (`kernel.hpp:782-787`). Deviation: skips official `BlockEpilogue1` producer loop/dequantSum lifecycle. |
+| hidden scale `gmPerTokenScale2` | `BlockEpilogue1` writes per-token hidden scale (`kernel.hpp:1198-1203`). | `BlockEpilogue2` reads `gmPerTokenScale` at `gmScaleOffset` (`block_epilogue...v2.hpp:221-227`). | Officially created with hidden pack producer after `dequantSum` setup. | `workspaceInfo.ptrPerTokenScale2`; bound at `kernel.hpp:306-307`; workspace offset at `kernel.hpp:1391-1394`. | Vector length `maxOutputSize`; scale index `(preSrcExpertSum + blockCoord.m()) / 2 + row`. | Same V2C/C2V chain indirectly protects producer and later epilogue. | Producer completes before V2C signal (`kernel.hpp:1206-1209`). | AIC waits V2C before GMM2; AIV waits C2V before `BlockEpilogue2`. | `BlockEpilogue2` applies scale after raw high/low combine. | Debug copies external hidden scale to `gmPerTokenScale2` (`kernel.hpp:821-823`). Deviation: scale is not produced by in-kernel `BlockEpilogue1`, but Stage 2.1 validated it externally. |
+| `tokenPerExpert` | Official all-gather/routing state in `CrossRankSyncAndlocalTokenPerExpertAllGatherAndGetSumPreRankV2` (`kernel.hpp:1078`). | `GetCumsumForMMAIV`, `GMM2`, `CombineV2`, and `BlockEpilogue2` token pointer. | Official after routing and cross-rank sync (`kernel.hpp:1078-1082`). | Shmem peer token region: `shmem() + peermemInfo.offsetPeerTokenPerExpert`, bound at `kernel.hpp:309-313`. | `Layout3D(paddedExpertNumAligned, expertPerRank)` (`kernel.hpp:312-313`). | Official cumsum completion also gates GMM1 and later hidden production. | Official GMM1 flag at `kernel.hpp:1098-1100`; V2C after hidden producer. | GMM1 waits at `kernel.hpp:591-594`; GMM2 waits V2C. | Reset at end of full `DispatchAndCombine` (`kernel.hpp:1234-1237`). | Debug copies `externalExpertTokenNums` into local rank slice only (`kernel.hpp:803-809`). Deviation: bypasses official all-gather/pre-sum population for multi-EP; EP=1 probe currently reduces impact but table remains required. |
+| `cumsumMM` | `GetCumsumForMMAIV(tokenPerExpert, cumsumMM, ...)` (`kernel.hpp:1080-1082`). | `GMM2` currentM (`kernel.hpp:704-713`) and `CombineV2` currentExpertM (`kernel.hpp:1288-1299`). | Official after token all-gather. | `workspaceInfo.ptrcumsumMM`, bound at `kernel.hpp:284`; workspace offset at `kernel.hpp:1383-1386`. | EP by expertPerRank rows copied with padding in `GetCumsumForMMAIV` (`kernel.hpp:554-571`). | Protected by local syncs and later V2C/C2V usage. | Official before GMM1/GMM2 flows. | GMM2 and CombineV2 read directly after their waits/syncs. | Not separately drained; consumed by loops. | Debug recomputes from copied external tokens (`kernel.hpp:803-810`). Deviation: not produced by official cross-rank all-gather path. |
+| `preSumBeforeRank` | Official cross-rank sync helper populates prefix (`kernel.hpp:1078`, reads at `:1084-1089`). | `BlockEpilogue2` receives it (`kernel.hpp:1333-1334`). | Official during cross-rank token exchange. | `workspaceInfo.ptrSumBeforeRank`, bound at `kernel.hpp:314`; field offset after debug regions (`kernel.hpp:1365-1366` plus later workspace setup). | EP by expertPerRank int32. | Protected by official routing/cross-rank sync. | Before hidden producer and epilogue. | AIV epilogue consumes after C2V wait. | Full cleanup after combine. | Debug zeroes it (`kernel.hpp:792-810`). Deviation: correct only for EP=1/rank0; not an official initialization equivalent for multi-EP. |
+| GMM2 AIC input tile state | Official `GMM2` creates `layoutA`, `layoutB2`, `layoutScale`, `layoutC` from per-group shape (`kernel.hpp:724-731`). | `BlockMmad` tile copy and MMAD (`block_mmad_w4a4.hpp:140-210`). | Official after V2C wait per sync group. | A: `gmA2I4[gmGroupOffsetA+gmOffsetA]`; B: `gmB2[gmGroupOffsetB+gmOffsetB]`; scale: `gmS2[gmOffsetS]`; C2: `gmC2[gmGroupOffsetC+gmOffsetC]`. | `L1TileShape<128,256,1024>`, `L0TileShape<128,256,256>` (`dispatch_ffn_combine_w4_a8.h:257-283`). | V2C wait before entering group work. | Official AIV producer signals V2C after hidden pack per sync group. | `GMM2` waits at `kernel.hpp:736-738`. | `blockMmad.SynchronizeBlock()` and `Finalize(expertPerRank-1,0)` (`kernel.hpp:775-778`). | Debug calls the same `GMM2(params)` after direct V2C signaling (`kernel.hpp:827-859`). Deviation: surrounding official hidden-producer loop state and `dequantSum` are absent. |
+| GMM2 accumulator / D2 region | `BlockMmad` Fixpipe copies L0C to `gmC2` (`block_mmad_w4a4.hpp:432-459`). | `BlockEpilogue2` reads high/low halves from `gmC2` (`block_epilogue...v2.hpp:154-181`). | C2 workspace bound at `kernel.hpp:302`; workspace offset at `kernel.hpp:1405-1410`. | `workspaceInfo.ptrC2`; `gmCOffsetH/L = preSrcExpertSum*n2 + blockCoord.m()*n2 + blockCoord.n() (+ n2)` (`block_epilogue...v2.hpp:154-157`). | `LayoutC(inGroupProblemShape.m(), inGroupProblemShape.n())`; W4A8 stores high/low rows with doubled C allocation. | C2V flags from `BlockMmad::Finalize`. | `Finalize` called from `BlockMmad` after final K tile and again at GMM2 final drain (`block_mmad_w4a4.hpp:464-465`, `kernel.hpp:775-778`). | `CombineV2` waits flags before epilogue (`kernel.hpp:1321-1324`, `:1343-1345`). | `SynchronizeBlock` plus `Finalize`. | Debug still uses official `gmC2`; raw-C2 diagnostic taps the C2 high/low combine before scale (`block_epilogue...v2.hpp:193-207`). Gate B not yet launched after raw-C2 patch. |
+| C2V handoff state | `BlockMmad::Finalize(syncLoopIdx, flag)` sets cross-core flags (`block_mmad_w4a4.hpp:234-250`, `:464-465`). | `CombineV2` waits cross-core flags (`kernel.hpp:1321-1324`). | `syncLoopIdx` is set to groupIdx for last loop of each group (`kernel.hpp:739-742`). | Cross-core flag namespace, hard-sync path uses flag id `syncGroupIdx / CROSS_CORE_FLAG_MAX_SET_COUNT + flag`. | Per expert/sync group. | C2V. | After Fixpipe L0C->GM for final K tile. | Before each `BlockEpilogue2` tile and final drain. | `GMM2` finalizes through last expert (`kernel.hpp:775-778`). | Debug relies on same `GMM2` finalize. Deviation under investigation: whether approximate V2C/token state causes GMM2 to skip active tiles or write a different C2 extent. |
+| `BlockEpilogue2` input state | Official `CombineV2` passes `gmCGMM2`, `gmC2`, `gmPerTokenScale2`, `ptrMAux2`, tile coord/shape, groupIdx, `preSrcExpertSum`, `preSumBeforeRank`, `listLen` (`kernel.hpp:1333-1334`). | `BlockEpilogue2` combines high/low C2, adds aux, multiplies hidden scale, writes debug FP32 and BF16 output. | Epilogue params official at `kernel.hpp:1168-1180`; debug at `kernel.hpp:839-852`. | `gmCGMM2` debug output offset `(preSrcExpertSum*n2 + blockCoord.m()*n2)/2 + blockCoord.n()` (`block_epilogue...v2.hpp:167-169`). | AIV splits m rows by subcore in 32-row chunks (`kernel.hpp:1309-1335`). | Waits C2V before epilogue. | C2V from GMM2. | `CombineV2` waits before tile loop. | `BlockEpilogue2::Finalize` if any plus CombineV2 final waits. | Debug uses same `CombineV2` and `BlockEpilogue2`; raw mode returns before aux/scale/BF16 to expose Gate B. Deviation: sentinel `swigluLimit` toggles diagnostic behavior only in debug path. |
+| FP32 post-dequant debug tap | Official `BlockEpilogue2` writes FP32 post-dequant under `W4A8_DEBUG` after aux and hidden scale (`block_epilogue...v2.hpp:221-235`). | Host probe reads `gmm2PostDequant` output. | Official debug tap in `BlockEpilogue2`. | Output tensor `params.ptrDebugGMM2`; passed to `gmCGMM2`; op output defined as `gmm2PostDequant` (`svdqw4_a8_gmm2_debug_readback_def.cpp:137-144`). | Active rows by n2, with offset divided by 2 for W4A8 high/low pair. | MTE3 event `EVENT_ID7`. | After V pipe scale. | Output read after stream completion. | Event toggles around copy. | Normal debug path has all-zero Gate C. Raw diagnostic writes pre-scale high/low combine to same output (`block_epilogue...v2.hpp:200-207`) and is intended as Gate B evidence. |
+
+Required status fields after the raw-C2 Stage 2.2 probe:
+
+| Field | Current value after 2026-06-26T11:25Z raw-C2 launch |
+|---|---|
+| `official_gmm2_entry_reached` | True: `official_gmm2_kernel_launched: true` in the raw-C2 and normal summaries. |
+| `official_gmm2_loop_count` | Missing; must be added or inferred from stronger device evidence. |
+| `official_gmm2_active_tile_count` | Not verified; raw-C2 readback stayed zero, so active C2 tiles are not proven. |
+| `official_gmm2_aic_raw_output_finite` | True: raw-C2 sentinel output is finite. |
+| `official_gmm2_aic_raw_output_nonzero` | False: raw-C2 sentinel output is all zeros (`max_abs: 0.0`, `mean_abs: 0.0`, `nonzero: false`). |
+| `official_gmm2_aic_reference_passed` | False: raw-C2 probe summary `passed: false`; no accumulator oracle passed. |
+| `official_gmm2_c2v_handoff_verified` | False: the post-C2V raw readback did not expose nonzero C2 data. |
+| `official_gmm2_post_dequant_finite` | True. |
+| `official_gmm2_post_dequant_nonzero` | False. |
+| `official_gmm2_post_dequant_reference_passed` | False. |
+| `official_gmm2_numerical_gate_passed` | False. |
+
+Raw-C2 and normal-path validation after rebuild/install:
+
+- Rebuilt and installed `ops_aclnn`, `cust_opapi`, custom OPP metadata, repo-local custom OPP, system OPP, and `vllm_ascend_C`.
+- ABI validation passed:
+  - Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 pytest -q tests/ut/ops/test_svdq_moe_abi.py::test_svdq_w4a8_gmm2_debug_torch_schema_meta_and_adapter_are_registered`
+  - Result: `1 passed, 16 warnings`.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_pytest_abi.log`
+- Installed custom-op source surface contains `svdqw4_a8_gmm2_debug_readback.cpp` under the official `dispatch_ffn_combine_w4_a8` AscendC implementation directory. The narrow dynamic-file lookup returned no matching dynamic Python file.
+- Raw-C2 sentinel probe:
+  - Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH} python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py --require-npu --swiglu-limit 424242 --summary-name phase_stage2_gmm2_raw_c2_probe.json`
+  - Result: probe summary `passed: false`, `skipped: false`; raw readback output shape `[128, 2048]`, finite `true`, nonzero `false`, `max_abs: 0.0`, `mean_abs: 0.0`.
+  - Healthy input boundary in the same summary: canonical hidden BF16 finite/nonzero (`max_abs: 4.3125`), hidden INT8 finite/nonzero (`max_abs: 127.0`), hidden INT4 packed finite/nonzero (`max_abs: 128.0`), hidden scale finite/nonzero (`max_abs: 0.03395669162273407`), packed hidden exact match `true`, mismatch count `0`, W2 packed weight and W2 scale finite/nonzero, public grouped matmul not used, production SVDQ host tiling fail-closed.
+  - Reference mismatch remains: actual rows are zeros while the unfused reference is nonzero over 64 compared rows (`max_abs: 0.4712103307247162`, `mean_abs: 0.060490094125270844`).
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_probe.log`
+  - Summary: `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_raw_c2_probe.json`
+- Normal non-sentinel probe after the same rebuild/install:
+  - Command: `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH} python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py --require-npu --summary-name phase_stage2_gmm2_raw_c2_normal_check.json`
+  - Result: `passed: false`, `skipped: false`; normal post-dequant readback remains finite all-zero and does not match the nonzero unfused reference.
+  - Evidence: `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_raw_c2_normal_check.log`
+  - Summary: `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_raw_c2_normal_check.json`
+
+Interpretation:
+
+- Gate A remains PASS for the mixed-hidden boundary: the packed hidden and scale inputs supplied to the official-path debug op are deterministic, finite/nonzero, and packed hidden matches the software reference exactly.
+- Gate B is FAIL: the raw-C2 sentinel did not expose nonzero official GMM2 accumulator data after the C2V wait.
+- Gate C is FAIL: the normal post-dequant readback remains finite all-zero against a nonzero real-checkpoint unfused reference.
+- Under the appendix requirements, no additional behavioral kernel patch was made after this result. The next source change must choose a specific deviation from the official-vs-debug state table and tie it to an official counterpart.
+
+Permitted next attempt:
+
+- The already-committed raw-C2 diagnostic is allowed only as a Gate B readback attempt because it reads the official `gmC2` high/low source inside `BlockEpilogue2` after the official `CombineV2` C2V wait.
+- No further behavioral patch is permitted until a specific deviation from the table above is selected and tied to an official source counterpart.
 - Generated custom-op install mirrors under `vllm_ascend/_cann_ops_custom` were refreshed for local validation but are not intended to be committed.
 
 ## Current Handoff State - 2026-06-26T10:32Z
