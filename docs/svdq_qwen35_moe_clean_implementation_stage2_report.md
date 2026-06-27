@@ -4,10 +4,55 @@
 |---|---|---|
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
-| Stage 2.2 modified-hidden official W4A8 GMM2 | PASS | Fresh real-device recheck with Appendix GMM2 official-path fields passes Gate A/B/C. |
-| Stage 2.3 same-routing and final-combine isolated gates | PASS | Existing isolated real-checkpoint Stage 2.3 evidence is unblocked by the fresh Stage 2.2 pass. |
-| Stage 2.4 production/four-NPU admission | IN PROGRESS | Production residual W4A8 GMM execution and four-NPU target-model E2E validation remain open. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Appendix GMM2 official-path remains binding for production integration; prior isolated Gate A/B/C pass evidence is not production residual GMM execution. |
+| Stage 2.3 and later | BLOCKED | Do not advance production SVDQ down, final combine, or target-model service until the official interleavable W4A8 producer path is wired and validated. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Production enable remains false and host tiling must remain fail-closed. |
+
+## Stage 2.4 Interleavable Official W4A8 Producer Contract - 2026-06-27
+
+Purpose:
+
+- Records the interleavable official W4A8 producer contract required before production can stop failing closed.
+- Makes explicit that a monolithic official `DispatchFFNCombineW4A8::Process()` result cannot be accepted as the SVDQ
+  fused result: SVDQ must consume the official GMM1 FP32 tap, run mixed SwiGLU and hidden quantization, then launch the
+  official GMM2 producer against the SVDQ-modified packed hidden boundary.
+- Preserves the appendix constraint that the official implementation is the only source of truth for GMM1/GMM2 packed
+  W4 access, official `FetchAndPreprocessInt8ToInt4`, tiling, AIC accumulation/Fixpipe, C2V handoff,
+  `BlockEpilogue2`, `CombineV2`, and final drain.
+- Keeps production fail-closed. `RunResidualGmmStage` now requires `OfficialW4A8InterleavedProducerReady()` as a source
+  contract but still returns `false`.
+
+Recorded source contract:
+
+- `SVDQOfficialW4A8InterleavedProducerContract` binds GMM1 to `SVDQ_REGION_ACCUMULATOR_1`, GMM2 to
+  `SVDQ_REGION_ACCUMULATOR_2`, and the SVDQ hidden boundary to `SVDQ_REGION_HIDDEN_Q` /
+  `SVDQ_REGION_HIDDEN_SCALE`.
+- `requiresOfficialGmm1BeforeMixedSwiGLU=true`: the official GMM1 FP32 residual must be produced before the mixed
+  SwiGLU AIV consumes it.
+- `requiresSvdqHiddenBeforeOfficialGmm2=true`: GMM2 must consume the SVDQ-modified hidden after mixed SwiGLU and hidden
+  quantization.
+- `requiresOfficialC2VHandoffAndBlockEpilogue2=true`: GMM2 cannot substitute a local synchronization or epilogue.
+- `forbidsMonolithicProcessAsProductionResult=true`: ordinary W4A8 final combine output must not be accepted as SVDQ.
+- `requiresScratchOrdinaryW4A8Output=true`: a future executable bridge needs a scratch or split official producer
+  segment so the ordinary W4A8 output does not write the production output as the fused result.
+
+Machine-checkable state:
+
+- `source_proof.kernel_residual_gmm_official_interleaved_producer_contract_recorded=true`
+- `production_fail_closed.residual_gmm_official_interleaved_producer_contract_recorded=true`
+- `source_proof.kernel_residual_gmm_official_full_lifecycle_execution_enabled=false`
+- `production_fail_closed.residual_gmm_execution_enabled=false`
+- `production_admission.remaining_execution_requirements.residual_w4a8_gmm_execution_enabled=false`
+- `production_admission.production_enable_allowed=false`
+
+Current state:
+
+- No public `torch_npu.npu_grouped_matmul` work, scalar W4A8 GEMM, host W4 unpacking, scale guessing, or packed-format
+  reinterpretation was added.
+- This is not a behavioral GMM2 patch and does not count as numerical progress toward the real-device gate.
+- Next unresolved production boundary: implement or expose official interleavable GMM1/GMM2 producer segments, validate
+  Gate A/B/C on the real device, then validate production fused numerics and four-NPU target-model E2E with exactly
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
 
 ## Stage 2.2 Official-vs-Debug GMM2 Lifecycle Table - 2026-06-27
 

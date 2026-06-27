@@ -305,6 +305,24 @@ struct SVDQOfficialW4A8FullLifecycleLaunch {
     bool executionFailClosed;
 };
 
+struct SVDQOfficialW4A8InterleavedProducerContract {
+    uint32_t gmm1StageId;
+    uint32_t gmm2StageId;
+    uint32_t gmm1TapRegionId;
+    uint32_t gmm2TapRegionId;
+    uint32_t externalHiddenPackedRegionId;
+    uint32_t externalHiddenScaleRegionId;
+    uint32_t mixedSwiGLUStageId;
+    uint32_t hiddenQuantStageId;
+    bool requiresOfficialFetchAndPreprocessInt8ToInt4;
+    bool requiresOfficialGmm1BeforeMixedSwiGLU;
+    bool requiresSvdqHiddenBeforeOfficialGmm2;
+    bool requiresOfficialC2VHandoffAndBlockEpilogue2;
+    bool forbidsMonolithicProcessAsProductionResult;
+    bool requiresScratchOrdinaryW4A8Output;
+    bool executionFailClosed;
+};
+
 struct SVDQMixedEpilogueContract {
     uint32_t stageId;
     uint32_t residualRegionId;
@@ -1096,6 +1114,33 @@ public:
                launch.executionFailClosed;
     }
 
+    __aicore__ inline SVDQOfficialW4A8InterleavedProducerContract OfficialW4A8InterleavedProducerContract() const
+    {
+        return {SVDQ_RESIDUAL_STAGE_W4A8_GMM1, SVDQ_RESIDUAL_STAGE_W4A8_GMM2,
+            SVDQ_REGION_ACCUMULATOR_1, SVDQ_REGION_ACCUMULATOR_2, SVDQ_REGION_HIDDEN_Q,
+            SVDQ_REGION_HIDDEN_SCALE, SVDQ_STAGE_MIXED_EPILOGUE_1, SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN,
+            true, true, true, true, true, true, true};
+    }
+
+    __aicore__ inline bool OfficialW4A8InterleavedProducerReady() const
+    {
+        SVDQOfficialW4A8InterleavedProducerContract contract = OfficialW4A8InterleavedProducerContract();
+        return contract.gmm1StageId == SVDQ_RESIDUAL_STAGE_W4A8_GMM1 &&
+               contract.gmm2StageId == SVDQ_RESIDUAL_STAGE_W4A8_GMM2 &&
+               contract.gmm1TapRegionId == SVDQ_REGION_ACCUMULATOR_1 &&
+               contract.gmm2TapRegionId == SVDQ_REGION_ACCUMULATOR_2 &&
+               contract.externalHiddenPackedRegionId == SVDQ_REGION_HIDDEN_Q &&
+               contract.externalHiddenScaleRegionId == SVDQ_REGION_HIDDEN_SCALE &&
+               contract.mixedSwiGLUStageId == SVDQ_STAGE_MIXED_EPILOGUE_1 &&
+               contract.hiddenQuantStageId == SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN &&
+               contract.requiresOfficialFetchAndPreprocessInt8ToInt4 &&
+               contract.requiresOfficialGmm1BeforeMixedSwiGLU &&
+               contract.requiresSvdqHiddenBeforeOfficialGmm2 &&
+               contract.requiresOfficialC2VHandoffAndBlockEpilogue2 &&
+               contract.forbidsMonolithicProcessAsProductionResult &&
+               contract.requiresScratchOrdinaryW4A8Output && contract.executionFailClosed;
+    }
+
     __aicore__ inline void CopyInResidualQuantBf16(LocalTensor<bfloat16_t> dst,
         const GlobalTensor<bfloat16_t>& src, uint32_t offset, uint32_t count) const
     {
@@ -1337,12 +1382,14 @@ public:
     {
         SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
         if (plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM ||
-            !OfficialW4A8FullLifecycleLaunchReady(stageId)) {
+            !OfficialW4A8FullLifecycleLaunchReady(stageId) ||
+            !OfficialW4A8InterleavedProducerReady()) {
             return false;
         }
-        // Execution remains fail-closed until the official GMM1/GMM2 FP32 tap destinations are passed
-        // to an official W4A8 producer path that consumes the SVDQ hidden boundary without accepting
-        // the ordinary W4A8 final-combine output as the fused SVDQ result.
+        // Execution remains fail-closed until official W4A8 producer segments can be interleaved:
+        // GMM1 must write the FP32 tap before mixed SwiGLU, then GMM2 must consume the SVDQ hidden
+        // boundary and preserve official C2V/BlockEpilogue2 without accepting the ordinary W4A8
+        // final-combine output as the fused SVDQ result.
         return false;
     }
 

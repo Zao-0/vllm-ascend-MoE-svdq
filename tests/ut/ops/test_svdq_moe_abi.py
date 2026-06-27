@@ -1891,9 +1891,11 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     for token in (
         "plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM",
         "!OfficialW4A8FullLifecycleLaunchReady(stageId)",
-        "Execution remains fail-closed until the official GMM1/GMM2 FP32 tap destinations are passed",
-        "to an official W4A8 producer path that consumes the SVDQ hidden boundary without accepting",
-        "the ordinary W4A8 final-combine output as the fused SVDQ result.",
+        "!OfficialW4A8InterleavedProducerReady()",
+        "Execution remains fail-closed until official W4A8 producer segments can be interleaved",
+        "GMM1 must write the FP32 tap before mixed SwiGLU",
+        "GMM2 must consume the SVDQ hidden",
+        "final-combine output as the fused SVDQ result.",
         "return false;",
     ):
         assert token in gmm_execution_source
@@ -2989,6 +2991,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["residual_gmm_official_tiling_bridge_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_official_tiling_bridge_consumed"]
     assert loaded["production_fail_closed"]["residual_gmm_official_full_lifecycle_call_surface_recorded"]
+    assert loaded["production_fail_closed"]["residual_gmm_official_interleaved_producer_contract_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_embedded_official_tiling_pointer_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_official_wrapper_type_bound"]
     assert not loaded["production_fail_closed"]["residual_gmm_official_full_lifecycle_execution_enabled"]
@@ -3044,6 +3047,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_residual_gmm_official_tiling_bridge_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_official_tiling_bridge_consumed"]
     assert loaded["source_proof"]["kernel_residual_gmm_official_full_lifecycle_call_surface_recorded"]
+    assert loaded["source_proof"]["kernel_residual_gmm_official_interleaved_producer_contract_recorded"]
     assert not loaded["source_proof"]["kernel_residual_gmm_official_full_lifecycle_execution_enabled"]
     assert not loaded["source_proof"]["kernel_residual_gmm_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_gmm_scalar_helpers_absent"]
@@ -3677,6 +3681,8 @@ def test_svdq_stage2_report_records_appendix_gmm2_official_state_table():
     assert "Gate A/B/C" in report
     assert "production_svdq_host_tiling_fail_closed=true" in report
     assert "gmm2OnlyFromPacked_ = false" in report
+    assert "interleavable official W4A8 producer contract" in report
+    assert "forbidsMonolithicProcessAsProductionResult" in report
     assert "public `torch_npu.npu_grouped_matmul`" in report
     assert "RunResidualGmmStage` still returns `false`" in report
     for row_name in (

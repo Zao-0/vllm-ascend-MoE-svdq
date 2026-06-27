@@ -1011,12 +1011,10 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "bridge.producesFP32Residual && launch.weightNz && launch.residualOnly" in sources[
                 "kernel_contract"
             ]
-            and "Execution remains fail-closed until the official GMM1/GMM2 FP32 tap destinations are passed"
+            and "Execution remains fail-closed until official W4A8 producer segments can be interleaved"
             in sources["kernel_contract"]
-            and "to an official W4A8 producer path that consumes the SVDQ hidden boundary without accepting"
-            in sources["kernel_contract"]
-            and "the ordinary W4A8 final-combine output as the fused SVDQ result."
-            in sources["kernel_contract"]
+            and "without accepting the ordinary W4A8" in sources["kernel_contract"]
+            and "final-combine output as the fused SVDQ result." in sources["kernel_contract"]
         ),
         "kernel_residual_gmm_official_tiling_bridge_recorded": (
             "../../dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_tiling.h"
@@ -1060,12 +1058,10 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "launch.k == bridge.officialN / 2 && launch.n == bridge.officialK" in sources["kernel_contract"]
             and "OfficialW4A8FullLifecycleLaunchReady(uint32_t stageId) const" in sources["kernel_contract"]
             and "!OfficialW4A8FullLifecycleLaunchReady(stageId)" in sources["kernel_contract"]
-            and "Execution remains fail-closed until the official GMM1/GMM2 FP32 tap destinations are passed"
+            and "Execution remains fail-closed until official W4A8 producer segments can be interleaved"
             in sources["kernel_contract"]
-            and "to an official W4A8 producer path that consumes the SVDQ hidden boundary without accepting"
-            in sources["kernel_contract"]
-            and "the ordinary W4A8 final-combine output as the fused SVDQ result."
-            in sources["kernel_contract"]
+            and "without accepting the ordinary W4A8" in sources["kernel_contract"]
+            and "final-combine output as the fused SVDQ result." in sources["kernel_contract"]
         ),
         "kernel_residual_gmm_official_full_lifecycle_call_surface_recorded": (
             "GM_ADDR tiling;" in sources["kernel_contract"]
@@ -1120,6 +1116,26 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "launch.requiresOfficialWrapper && launch.requiresFullAicAivLifecycle" in sources[
                 "kernel_contract"
             ]
+        ),
+        "kernel_residual_gmm_official_interleaved_producer_contract_recorded": (
+            "struct SVDQOfficialW4A8InterleavedProducerContract" in sources["kernel_contract"]
+            and "OfficialW4A8InterleavedProducerContract() const" in sources["kernel_contract"]
+            and "OfficialW4A8InterleavedProducerReady() const" in sources["kernel_contract"]
+            and "SVDQ_RESIDUAL_STAGE_W4A8_GMM1, SVDQ_RESIDUAL_STAGE_W4A8_GMM2"
+            in sources["kernel_contract"]
+            and "SVDQ_REGION_ACCUMULATOR_1, SVDQ_REGION_ACCUMULATOR_2, SVDQ_REGION_HIDDEN_Q"
+            in sources["kernel_contract"]
+            and "SVDQ_REGION_HIDDEN_SCALE, SVDQ_STAGE_MIXED_EPILOGUE_1, SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN"
+            in sources["kernel_contract"]
+            and "requiresOfficialFetchAndPreprocessInt8ToInt4" in sources["kernel_contract"]
+            and "requiresOfficialGmm1BeforeMixedSwiGLU" in sources["kernel_contract"]
+            and "requiresSvdqHiddenBeforeOfficialGmm2" in sources["kernel_contract"]
+            and "requiresOfficialC2VHandoffAndBlockEpilogue2" in sources["kernel_contract"]
+            and "forbidsMonolithicProcessAsProductionResult" in sources["kernel_contract"]
+            and "requiresScratchOrdinaryW4A8Output" in sources["kernel_contract"]
+            and "!OfficialW4A8InterleavedProducerReady()" in sources["kernel_contract"]
+            and "GMM1 must write the FP32 tap before mixed SwiGLU" in sources["kernel_contract"]
+            and "GMM2 must consume the SVDQ hidden" in sources["kernel_contract"]
         ),
         "kernel_residual_gmm_official_full_lifecycle_execution_enabled": (
             "DispatchFFNCombineW4A8<DTYPE_A, DTYPE_W1, DTYPE_OUT, false, true> op" in sources[
@@ -2523,6 +2539,9 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
             ],
             "residual_gmm_official_full_lifecycle_call_surface_recorded": source_proof[
                 "kernel_residual_gmm_official_full_lifecycle_call_surface_recorded"
+            ],
+            "residual_gmm_official_interleaved_producer_contract_recorded": source_proof[
+                "kernel_residual_gmm_official_interleaved_producer_contract_recorded"
             ],
             "residual_gmm_embedded_official_tiling_pointer_recorded": source_proof[
                 "kernel_residual_gmm_official_full_lifecycle_call_surface_recorded"
