@@ -2864,11 +2864,11 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_admission"]["host_tiling_must_remain_fail_closed"]
     assert not loaded["production_admission"]["production_enable_allowed"]
     assert "stage2_2_official_gmm2_gate" in loaded["production_admission"]
-    assert loaded["production_admission"]["stage2_2_official_gmm2_gate_passed"]
-    assert loaded["production_admission"]["stage2_2_official_gmm2_gate"]["status"] == "passed"
-    assert not loaded["production_admission"]["stage2_2_official_gmm2_gate"]["stage2_3_and_later_blocked"]
+    assert not loaded["production_admission"]["stage2_2_official_gmm2_gate_passed"]
+    assert loaded["production_admission"]["stage2_2_official_gmm2_gate"]["status"] == "fail_in_progress"
+    assert loaded["production_admission"]["stage2_2_official_gmm2_gate"]["stage2_3_and_later_blocked"]
     assert "stage2_3_real_checkpoint_composition_gate" in loaded["production_admission"]
-    assert loaded["production_admission"]["stage2_3_isolated_gate_passed"]
+    assert not loaded["production_admission"]["stage2_3_isolated_gate_passed"]
     assert loaded["production_admission"]["remaining_execution_requirements"] == {
         "dispatch_routing_execution_enabled": True,
         "residual_hidden_quant_execution_enabled": False,
@@ -3303,7 +3303,7 @@ def test_svdq_kernel_contract_manifest_keeps_stage2_3_evidence_blocked_by_gmm2_g
     assert manifest["production_admission"]["host_tiling_must_remain_fail_closed"]
 
 
-def test_svdq_kernel_contract_manifest_accepts_stage2_2_and_stage2_3_evidence(tmp_path):
+def test_svdq_kernel_contract_manifest_keeps_stage2_2_reopened_despite_historical_pass_evidence(tmp_path):
     from tools.svdq_kernel_contract_manifest import build_manifest
 
     zero_error = {
@@ -3467,14 +3467,16 @@ def test_svdq_kernel_contract_manifest_accepts_stage2_2_and_stage2_3_evidence(tm
     stage2_2 = manifest["production_admission"]["stage2_2_official_gmm2_gate"]
     stage2_3 = manifest["production_admission"]["stage2_3_real_checkpoint_composition_gate"]
 
-    assert stage2_2["status"] == "passed"
-    assert stage2_2["passed"]
-    assert not stage2_2["stage2_3_and_later_blocked"]
-    assert stage2_3["status"] == "passed"
-    assert stage2_3["passed"]
-    assert stage2_3["blocking_gate"] is None
-    assert manifest["production_admission"]["stage2_2_official_gmm2_gate_passed"]
-    assert manifest["production_admission"]["stage2_3_isolated_gate_passed"]
+    assert stage2_2["status"] == "fail_in_progress"
+    assert stage2_2["evidence_status"] == "historical_passed"
+    assert stage2_2["historical_passed_under_superseded_contract"]
+    assert not stage2_2["passed"]
+    assert stage2_2["stage2_3_and_later_blocked"]
+    assert stage2_3["status"] == "blocked_by_stage2_2_official_gmm2_gate"
+    assert not stage2_3["passed"]
+    assert stage2_3["blocking_gate"] == "stage2_2_modified_hidden_official_w4a8_gmm2"
+    assert not manifest["production_admission"]["stage2_2_official_gmm2_gate_passed"]
+    assert not manifest["production_admission"]["stage2_3_isolated_gate_passed"]
     assert not manifest["production_admission"]["production_enable_allowed"]
     assert manifest["production_admission"]["host_tiling_must_remain_fail_closed"]
 

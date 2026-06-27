@@ -1715,6 +1715,16 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
         "stage2_3_and_later_blocked": True,
         "production_tiling_enable_allowed": False,
         "public_grouped_matmul_allowed": False,
+        "binding_revision": (
+            "stage2_appendix_gmm2_official_path_requires_fail_in_progress_until_a_new_official_lifecycle_"
+            "state_table_and_gate_a_b_c_evidence_are_recorded"
+        ),
+        "effective_status_for_production": "fail_in_progress",
+        "reason": (
+            "The current Stage 2 appendix explicitly reopens modified-hidden official W4A8 GMM2. "
+            "Existing summaries are retained only as historical evidence until the required official-vs-debug "
+            "state table and the new Gate A/B/C readbacks are recorded."
+        ),
         "required_gate_a": (
             "same routed-row identity with canonical hidden BF16, hidden INT8, packed INT4, "
             "hidden scale, expert token nums, prefix sums, row offsets, and W2 metadata"
@@ -1729,15 +1739,18 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
         ),
     }
     if not evidence_path.exists():
-        gate["status"] = "missing_evidence"
-        gate["reason"] = "Stage 2.2 official GMM2 Gate A/B/C evidence has not been generated."
+        gate["status"] = "fail_in_progress"
+        gate["evidence_status"] = "missing_evidence"
+        gate["historical_passed_under_superseded_contract"] = False
         return gate
 
     try:
         summary = json.loads(evidence_path.read_text(encoding="utf-8"))
     except Exception as exc:
-        gate["status"] = "invalid_evidence_json"
-        gate["reason"] = f"{type(exc).__name__}: {exc}"
+        gate["status"] = "fail_in_progress"
+        gate["evidence_status"] = "invalid_evidence_json"
+        gate["evidence_error"] = f"{type(exc).__name__}: {exc}"
+        gate["historical_passed_under_superseded_contract"] = False
         return gate
 
     stage = summary.get("stage", {})
@@ -1819,7 +1832,7 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
         "hidden_size_is_2048": int(shape.get("hidden_size", -1)) == 2048,
         "intermediate_size_is_512": int(shape.get("intermediate_size", -1)) == 512,
     }
-    passed = bool(
+    historical_passed = bool(
         summary.get("passed")
         and stage.get("passed")
         and not bool(summary.get("skipped"))
@@ -1835,8 +1848,10 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
     )
     gate.update(
         {
-            "status": "passed" if passed else "failed",
-            "passed": passed,
+            "status": "fail_in_progress",
+            "evidence_status": "historical_passed" if historical_passed else "historical_failed",
+            "passed": False,
+            "historical_passed_under_superseded_contract": historical_passed,
             "summary_passed": bool(summary.get("passed")),
             "stage_passed": bool(stage.get("passed")),
             "shape": shape,
@@ -1851,7 +1866,7 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
             ),
         }
     )
-    gate["stage2_3_and_later_blocked"] = not passed
+    gate["stage2_3_and_later_blocked"] = True
     return gate
 
 

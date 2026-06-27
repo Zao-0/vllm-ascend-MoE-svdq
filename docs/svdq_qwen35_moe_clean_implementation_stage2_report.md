@@ -4,10 +4,69 @@
 |---|---|---|
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
-| Stage 2.2 modified-hidden official W4A8 GMM2 | PASS | Dedicated Stage 2.2 evidence now satisfies the appendix Gate A/B/C fields: official lifecycle, nonzero/reference-matched int32 accumulator Gate B, C2V, post-dequant Gate C, and row identity. |
-| Stage 2.3 same-routing and final-combine isolated gates | PASS | Stage 2.3 top-k 8 fixed-index evidence is accepted only after the Stage 2.2 appendix gate passes. |
-| Stage 2.4 and later | IN PROGRESS | Production fused-op integration and four-NPU end-to-end validation remain open. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Reopened by `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md`; prior pass summaries are historical only until the new official-vs-debug state table and Gate A/B/C readbacks are recorded. |
+| Stage 2.3 same-routing and final-combine isolated gates | BLOCKED | Blocked by the reopened Stage 2.2 official GMM2 lifecycle gate. |
+| Stage 2.4 and later | BLOCKED | Production fused-op integration and four-NPU end-to-end validation remain blocked on Stage 2.2 and Stage 2.3. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
+
+## Stage 2.2 Reopened by GMM2 Official-Path Appendix - 2026-06-27
+
+Latest binding requirement:
+
+- `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` is now treated as the current
+  constraint for Stage 2.2.
+- Effective status is `FAIL / IN PROGRESS`, even when older evidence files contain `passed: true`.
+- Existing Stage 2.2 and Stage 2.3 summaries are retained as historical evidence only. They do not admit Stage 2.3,
+  production fused execution, or host tiling.
+- The public `torch_npu.npu_grouped_matmul` path remains forbidden and was not used.
+- The next behavioral GMM2 patch must first identify a specific deviation in the official-vs-debug state table below
+  and tie the correction to the official source path.
+
+Machine-checkable guardrail:
+
+- `tools/svdq_kernel_contract_manifest.py` now emits
+  `production_admission.stage2_2_official_gmm2_gate.status=fail_in_progress`,
+  `stage2_2_official_gmm2_gate_passed=false`, and `stage2_3_isolated_gate_passed=false`.
+- If old Stage 2.2 evidence is present and satisfies the previous parser, the manifest records
+  `historical_passed_under_superseded_contract=true` but still keeps `passed=false`.
+- Stage 2.3 evidence remains blocked with `blocking_gate=stage2_2_modified_hidden_official_w4a8_gmm2`.
+
+Validation:
+
+- `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+- `git diff --check -- tools/svdq_kernel_contract_manifest.py tests/ut/ops/test_svdq_moe_abi.py docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q` -> `46 passed, 16 warnings`
+- `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+  regenerated the manifest with `stage2_2_official_gmm2_gate.status=fail_in_progress`,
+  `stage2_2_official_gmm2_gate_passed=false`, `stage2_3_isolated_gate_passed=false`,
+  `stage2_3_real_checkpoint_composition_gate.status=blocked_by_stage2_2_official_gmm2_gate`, and
+  `production_enable_allowed=false`.
+
+Official W4A8 source anchors inspected:
+
+- Top-level official kernel task split: `dispatch_ffn_combine_w4_a8_kernel.hpp:247-276`.
+- Official workspace and GM bindings: `dispatch_ffn_combine_w4_a8_kernel.hpp:287-317` and `1530-1630`.
+- Official GMM2 AIC path: `dispatch_ffn_combine_w4_a8_kernel.hpp:687-794`.
+- Current debug-only packed-hidden seeding helpers: `dispatch_ffn_combine_w4_a8_kernel.hpp:944-986`.
+- Current debug-only dequant readback path: `dispatch_ffn_combine_w4_a8_kernel.hpp:990-1016`.
+- Full official AIV hidden producer / external overlay boundary: `dispatch_ffn_combine_w4_a8_kernel.hpp:1323-1412`.
+- Official GMM2 AIV dequant / C2V consumer: `dispatch_ffn_combine_w4_a8_kernel.hpp:1448-1525`.
+- Official `BlockEpilogue2` dequant and peer-output writeback: `block_epilogue_w4a8post_pertoken_v2.hpp:147-312`.
+
+Official-vs-debug state table checkpoint:
+
+| State or region | Official producer | Official consumer | Official initialization point | Physical GM/workspace address and offset | Row/tile stride | Flag or event | Signal timing | Wait timing | Final drain | Current debug behavior |
+|---|---|---|---|---|---|---|---|---|---|---|
+| packed hidden `gmA2I4_I8` | `BlockEpilogue1` writes hidden packed INT4 during the full AIV path; external overlay can replace the same region at `dispatch_ffn_combine_w4_a8_kernel.hpp:1358-1376`. | `GMM2` reads `gmA2I4` at `dispatch_ffn_combine_w4_a8_kernel.hpp:773-776`. | Bound in `initBuffer` at `dispatch_ffn_combine_w4_a8_kernel.hpp:293-301`. | `workspaceInfo.ptrA2Int4`, offset after `ptrA1Int4`, at `dispatch_ffn_combine_w4_a8_kernel.hpp:1596-1602`. | `layoutA2.GetTileLayout`; GMM2 doubles `currentM` for INT4 at `721-723`. | V2C flag `SYNCFLAGV2C`. | Official full path sets V2C after each hidden producer window at `1380-1383`. | GMM2 waits before group work at `745-747`. | `blockMmad.SynchronizeBlock()` and `Finalize()` at `790-793`. | Debug helpers can seed this region directly at `963-972`; new appendix requires preserving the full official lifecycle instead of approximating it. |
+| hidden scale `gmPerTokenScale2` | `BlockEpilogue1` writes per-token hidden scale and external overlay can replace it at `1358-1376`. | `BlockEpilogue2` consumes `gmPerTokenScale2` at `1511-1512` and scales rows at `block_epilogue_w4a8post_pertoken_v2.hpp:248-255`. | Bound at `dispatch_ffn_combine_w4_a8_kernel.hpp:307-310`. | `workspaceInfo.ptrPerTokenScale2`, offset after first per-token scale at `1567-1572`. | One FP32 scale per active routed row; Gate A must prove active-row identity. | V2C/C2V lifecycle shared with hidden packed and GMM2 output. | Same hidden producer window as packed hidden. | AIV `CombineV2` waits C2V before dequant at `1499-1502`. | `BlockEpilogue2::Finalize()` at `1525`. | Prior evidence says finite/nonzero; current appendix requires row-by-row proof with prefix and padded-row identity. |
+| `tokenPerExpert` | Official dispatch/routing and cross-rank token exchange populate peer token state before GMM2. | GMM2 uses `cumsumMM`; `BlockEpilogue2` reads per-destination counts at `block_epilogue_w4a8post_pertoken_v2.hpp:277-282`. | Bound through shared memory at `dispatch_ffn_combine_w4_a8_kernel.hpp:312-317`. | `shmem() + peermemInfo.offsetPeerTokenPerExpert`; layout `Layout3D(paddedExpertNumAligned, expertPerRank)`. | Expert-major per EP/rank/group. | HCCL/shared-memory sync and V2C/C2V flags. | Official `DispatchAndCombine` lifecycle, not standalone seeding. | GMM2 and CombineV2 wait on official flags. | Reset after combine at `1412-1415`. | Debug seeding copies `externalExpertTokenNums` at `944-958`; this is now only diagnostic unless proven equivalent to official state. |
+| `cumsumMM` | Official token-count cumsum construction in the full lifecycle. | GMM2 reads per-expert active rows at `713-723`; `CombineV2` reads the same at `1466-1477`. | Bound at `287`. | `workspaceInfo.ptrcumsumMM`, offset after expanded-row indices at `1561-1564`. | Expert prefix over local rank/EP. | V2C gating to GMM2 and C2V gating to AIV. | Must match official route/count construction. | GMM2 waits V2C at `745-747`; AIV waits C2V at `1499-1502`. | No separate substitute drain allowed. | Debug `GetCumsumForMMAIV` path at `954-958` must not be treated as a passed production lifecycle. |
+| `preSumBeforeRank` | Official cross-rank prefix state. | `BlockEpilogue2` uses it for remote peer offsets at `block_epilogue_w4a8post_pertoken_v2.hpp:277-307`. | Bound at `317`. | `workspaceInfo.ptrSumBeforeRank`, offset after debug GMM regions at `1629-1630`. | Per destination EP and local expert. | Official cross-rank synchronization. | Must be produced before dequant peer-output writeback. | Consumed after C2V wait. | Final peer-output writeback is in `BlockEpilogue2`. | Debug helper zeroes it at `933-960`; appendix forbids relying on this without a direct official counterpart. |
+| GMM2 AIC input tile state | Official `GMM2` constructs `inGroupProblemShape`, layouts, block scheduler, and offsets at `713-764`. | `BlockMmad` consumes scale, packed hidden, packed W2, and C2 output at `773-776`. | `GMM2` creates `BlockScheduler` and `BlockMmad` at `689-691`. | Inputs are `gmA2I4`, W2 from `GetTensorAddr`, and output `gmC2`. | L1 tile shape with INT4 doubled-M rows. | V2C wait before work. | Hidden producer sets V2C after each dequant window. | `GMM2` waits V2C by group. | `SynchronizeBlock` and `Finalize`. | Debug GMM2-only path bypasses GMM1/BlockEpilogue1 and must be replaced by official lifecycle preservation. |
+| GMM2 accumulator / D2 region | `BlockMmad` writes `gmC2` at `773-776`; debug accumulator tap is optional. | `BlockEpilogue2` reads high/low halves from `gmC2` at `block_epilogue_w4a8post_pertoken_v2.hpp:157-184`. | `gmC2` bound at `305`; workspace offset at `1583-1589`. | `workspaceInfo.ptrC2`; debug `ptrCGMM2` can tap post-dequant/FP32. | `layoutC` with high/low row halves. | C2V flag. | AIC sets C2V via BlockMmad lifecycle. | AIV waits C2V in `CombineV2`. | `BlockEpilogue2::Finalize()`. | Mandatory Gate B must read the exact official accumulator/D2 boundary and prove finite/nonzero/reference parity. |
+| C2V handoff state | Official AIC `BlockMmad` completion and cross-core flag lifecycle. | `CombineV2` waits before each dequant tile at `1499-1502`. | `SYNCFLAGC2V=9`, `SYNCFLAGV2C=10` at `45-46`. | Cross-core flags, not a GM tensor. | Per expert sync loop. | C2V and V2C. | Official, group-ordered. | Official, group-ordered. | Remaining waits through `syncLoopIdx` drain at `1521-1524`. | New appendix forbids more speculative flag-order edits unless tied to official code. |
+| `BlockEpilogue2` input state | `CombineV2` passes `gmCGMM2`, `gmC2`, `gmPerTokenScale2`, W2 aux, tile coords, group, `preSumBeforeRank` at `1511-1512`. | `BlockEpilogue2::operator()` dequantizes and writes peer output. | Constructed at `1325-1339` or debug readback at `996-1009`. | `gmC2`, `gmPerTokenScale2`, `ptrMAux2`, remote peer memory `offsetD`. | `actualBlockShape.m()/2` after high/low merge. | UB events inside `BlockEpilogue2`. | After C2V wait. | Internal MTE/V waits at `block_epilogue_w4a8post_pertoken_v2.hpp:182-190` and `265-270`. | `Finalize()` waits all UB stages at `132-140`. | Gate C must validate this output only after Gate B is nonzero. |
+| FP32 post-dequant debug tap | `BlockEpilogue2` debug branch writes `gmTileGMM2` after high/low merge and scale at `block_epilogue_w4a8post_pertoken_v2.hpp:258-262`. | Host probe reads debug GM. | Debug GM is optional through `ptrDebugGMM2`. | `workspaceInfo.ptrCGMM2` or external debug pointer at `1620-1627`. | FP32 row-major active tile. | Debug uses `EVENT_ID7` MTE3/V guard. | During BlockEpilogue2. | Debug waits `EVENT_ID7`. | `Finalize()` waits debug event under `W4A8_DEBUG`. | Prior all-zero readbacks are insufficient; Gate B and Gate C must be separated and interpreted as specified by the appendix. |
 
 ## Stage 2.4 Production Final Combine Source Boundary - 2026-06-27
 
@@ -51,9 +110,9 @@ Validation:
 
 Latest code state:
 
-- Read `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` as a binding constraint. The
-  appendix's older embedded `FAIL / IN PROGRESS` status is superseded only by the later dedicated Stage 2.2 evidence
-  that satisfies the appendix Gate A/B/C fields. The evidence requirements themselves remain binding.
+- Read `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` as a binding constraint. This
+  is now superseded by the later 2026-06-27 reread above: Stage 2.2 is reopened as `FAIL / IN PROGRESS`, and prior
+  pass evidence is historical only.
 - Added a production SVDQ BF16 dispatch-routing source boundary that reuses the official W4A8 routing helper set
   through an SVDQ-local route-only wrapper over `InnerMoeInitRoutingV2TilingData`. This prepares routed BF16 rows and
   expanded-row metadata before low-rank and residual stages.
@@ -84,13 +143,14 @@ Validation:
 - `git diff --check -- csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq.h csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp tools/svdq_kernel_contract_manifest.py tests/ut/ops/test_svdq_moe_abi.py`
 - `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q` -> `46 passed, 16 warnings`
 
-## Stage 2.2 Official-Path Gate Reconciled With Evidence - 2026-06-27
+## Historical: Stage 2.2 Official-Path Gate Reconciled With Evidence - 2026-06-27
 
-This is the latest authoritative handoff. The appendix
+Historical section superseded by the 2026-06-27 reread of the GMM2 official-path appendix. The appendix
 `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` remains binding for acceptance criteria:
 Stage 2.2 cannot pass from source inspection, final-output-only summaries, public grouped matmul experiments, scalar
-substitutes, or tolerance relaxation. The current dedicated Stage 2.2 real-device evidence does satisfy those
-criteria, so the machine admission manifest now consumes it directly instead of hard-coding Stage 2.2 as failed.
+substitutes, or tolerance relaxation. This historical section previously interpreted the dedicated Stage 2.2
+evidence as satisfying those criteria; the current manifest no longer consumes that evidence for admission and
+records it only as historical.
 
 Evidence consumed:
 
