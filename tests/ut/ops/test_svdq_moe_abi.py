@@ -3667,6 +3667,42 @@ def test_svdq_kernel_contract_manifest_blocks_superseded_stage2_2_recheck_and_st
     assert not admitted["production_admission"]["production_enable_allowed"]
 
 
+def test_svdq_stage2_report_records_appendix_gmm2_official_state_table():
+    report = (
+        REPO_ROOT / "docs/svdq_qwen35_moe_clean_implementation_stage2_report.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Stage 2.2 Official-vs-Debug GMM2 Lifecycle Table" in report
+    assert "official_vs_debug_state_table_complete" in report
+    assert "Gate A/B/C" in report
+    assert "production_svdq_host_tiling_fail_closed=true" in report
+    assert "gmm2OnlyFromPacked_ = false" in report
+    assert "public `torch_npu.npu_grouped_matmul`" in report
+    assert "RunResidualGmmStage` still returns `false`" in report
+    for row_name in (
+        'packed hidden `gmA2I4_I8`',
+        "hidden scale `gmPerTokenScale2`",
+        "`tokenPerExpert`",
+        "`cumsumMM`",
+        "`preSumBeforeRank`",
+        "GMM2 AIC input tile state",
+        "GMM2 accumulator / D2 region",
+        "C2V handoff state",
+        "`BlockEpilogue2` input state",
+        "FP32 post-dequant debug tap",
+    ):
+        assert row_name in report
+    for source_token in (
+        "dispatch_ffn_combine_w4_a8.h:220-233",
+        "dispatch_ffn_combine_w4_a8_kernel.hpp:687-793",
+        "dispatch_ffn_combine_w4_a8_kernel.hpp:1448-1525",
+        "block_epilogue_w4a8post_pertoken_v2.hpp:147-312",
+        "block_mmad_w4a4.hpp:142-257",
+        "svdqw4_a8_gmm2_debug_readback.cpp:16-32",
+    ):
+        assert source_token in report
+
+
 def test_svdq_bf16_routing_stage_probe_cpu_golden_uses_official_count_layout():
     from tools.svdq_bf16_routing_stage_probe import _cpu_routing_golden
 

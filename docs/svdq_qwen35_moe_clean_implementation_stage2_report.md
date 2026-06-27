@@ -9,6 +9,82 @@
 | Stage 2.4 production/four-NPU admission | IN PROGRESS | Production residual W4A8 GMM execution and four-NPU target-model E2E validation remain open. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Production enable remains false and host tiling must remain fail-closed. |
 
+## Stage 2.2 Official-vs-Debug GMM2 Lifecycle Table - 2026-06-27
+
+Purpose:
+
+- Records the mandatory Appendix GMM2 official-path table before any further behavioral GMM2 patch.
+- Treats `dispatch_ffn_combine_w4_a8` as the only source of truth for hidden packing, hidden scale, GMM2 AIC, C2V,
+  `BlockEpilogue2`, `CombineV2`, and final drain behavior.
+- Reconciles the appendix failure text with the newer current recheck evidence:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_gmm2_current_recheck_top1_expert0.json` carries
+  `appendix_gmm2_official_path.*=true`, Gate A/B/C pass fields, and `production_svdq_host_tiling_fail_closed=true`.
+  Production admission remains blocked because the production SVDQ kernel still does not execute the official residual
+  W4A8 producer path.
+
+Official source locations:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h:220-233`:
+  `InitGMM2OnlyFromPacked` calls full `Init(...)`, stores external hidden/scale pointers, and currently sets
+  `gmm2OnlyFromPacked_ = false`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h:327-348`: the wrapper constructs
+  official layouts and launches `DispatchFFNCombineW4A8Kernel`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:248-275`: AIC runs
+  `GMM1(params); GMM2(params);` and AIV runs `DispatchAndCombine(params)` when `gmm2OnlyFromPacked_` is false.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1208-1415`: full AIV
+  routing, token-state construction, hidden producer, external hidden override point, V2C signal, `CombineV2`, and
+  final token-state drain.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:687-793`: official GMM2 AIC
+  loop, packed W2/scale access, D2 workspace write, optional accumulator tap, and C2V signal.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1448-1525`: `CombineV2`
+  waits for C2V, invokes `BlockEpilogue2`, and finalizes the epilogue.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp:147-312`:
+  `BlockEpilogue2` reads D2 high/low halves, applies bias and hidden per-token scale, writes FP32 debug tap, casts to
+  output dtype, and scatters through peer output memory.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_mmad_w4a4.hpp:142-257` and `:438-485`: AIC tile load,
+  MMAD, Fixpipe, optional int32 accumulator tap, D2 write, and C2V flag finalization.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1553-1635` and `:1654-1660`:
+  official workspace and peer-memory physical layout.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/dispatch_ffn_combine_w4_a8_tiling.cpp:173-264`: official tiling
+  fields, block dim, tiling key, init-routing tiling, and workspace sizing.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/svdqw4_a8_gmm2_debug_readback.cpp:16-32`: isolated debug entry
+  calls the official wrapper and does not call public `torch_npu.npu_grouped_matmul`.
+
+| State or region | Official producer | Official consumer | Official initialization point | Physical GM/workspace address and offset | Row/tile stride | Flag or event | Signal timing | Wait timing | Final drain | Current debug behavior |
+|---|---|---|---|---|---|---|---|---|---|---|
+| packed hidden `gmA2I4_I8` | `BlockEpilogue1` in `DispatchAndCombine` writes packed hidden after GMM1 dequant/SwiGLU/hidden quant; external override may copy validated SVDQ hidden at the same boundary. | `GMM2(params)` AIC reads it as `gmA2I4` through `params.layoutA2`. | Global buffer bound in `initBuffer`; normal rows produced at `dispatch_ffn_combine_w4_a8_kernel.hpp:1357-1362`; override at `:1364-1376`. | `workspaceInfo.ptrA2Int4 = ptrWorkspace + offset after ptrA1Int4`; offset formula at `dispatch_ffn_combine_w4_a8_kernel.hpp:1597-1602`. | `layoutD1`/`layoutA2`; packed row width is `problemShape.n()/2` bytes and group offsets use `gmGroupOffsetA += inGroupProblemShape.m() * inGroupProblemShape.k()`. | V2C `SYNCFLAGV2C` after hidden production/override. | AIV sets V2C at `dispatch_ffn_combine_w4_a8_kernel.hpp:1380-1382`. | GMM2 waits at `dispatch_ffn_combine_w4_a8_kernel.hpp:745-747`. | Normal full path drains after `CombineV2`, `ResetTokenPerExpert`, and shmem status reset at `:1412-1415`. | Debug entry uses official full lifecycle with `externalHiddenXGM_`; `gmm2OnlyFromPacked_ = false`, so only the hidden boundary is overlaid and subsequent official lifecycle is preserved. |
+| hidden scale `gmPerTokenScale2` | `BlockEpilogue1` computes hidden per-row quant scale; external override may copy validated SVDQ scale. | `BlockEpilogue2` multiplies dequantized GMM2 rows by `gmPerTokenScale2`. | Bound in `initBuffer`; normal/override writes at `dispatch_ffn_combine_w4_a8_kernel.hpp:1357-1376`. | `workspaceInfo.ptrPerTokenScale2 = ptrWorkspace + offset after ptrPerTokenScale`; formula at `dispatch_ffn_combine_w4_a8_kernel.hpp:1567-1572`. | One FP32 scale per active hidden row; `BlockEpilogue2` uses `gmScaleOffset = (preSrcExpertSum + blockCoord.m()) / 2`. | Shares V2C with packed hidden. | Same as packed hidden, before V2C set. | Same GMM2 wait; `BlockEpilogue2` later reads after C2V. | `BlockEpilogue2::Finalize()` waits local copy events. | Debug copies external hidden scale at official override point; Gate A evidence says post-override scale readback is exact and nonzero. |
+| `tokenPerExpert` | `moe_init_routing_quant_v2` writes local counts, then cross-rank all-gather fills peer matrix. | GMM1/GMM2 loop sizes, `BlockEpilogue2` peer scatter, final combine routing. | Local pointer at `DispatchAndCombine` `localTokenPerExpert`; cross-rank fill at `CrossRankSyncAndlocalTokenPerExpertAllGatherAndGetSumPreRankV2`. | Peer memory: `shmem() + peermemInfo.offsetPeerTokenPerExpert`; offset is `SegmentSize() - 2 * MB_SIZE`. | `Layout3D(AlignUp(EP * expertPerRank + 1, 128), expertPerRank)`. | Initial cross-rank sync and later GMM/SwiGLU flags depend on these counts. | Built before first GMM1 signal at `dispatch_ffn_combine_w4_a8_kernel.hpp:1235-1257`. | GMM1 waits initial cumsum flag; GMM2/CombineV2 consume after hidden/V2C/C2V sequence. | `ResetTokenPerExpert(params.EP * paddedExpertNumAligned)` at `:1414`. | Debug full-lifecycle path keeps official routing state; legacy GMM2-only helpers `SeedGMM2OnlyTokenState` are not selected because `gmm2OnlyFromPacked_` is false. |
+| `cumsumMM` | AIV core 0 calls `GetCumsumForMMAIV(tokenPerExpert, cumsumMM, ...)`. | GMM1/GMM2 current-M clipping, hidden row starts, `CombineV2` tile traversal. | `dispatch_ffn_combine_w4_a8_kernel.hpp:1237-1239` in full lifecycle. | `workspaceInfo.ptrcumsumMM = ptrWorkspace + AlignUp(M,256) * topK * sizeof(int32_t)`. | Logical `[EP, expertPerRank]` cumsum with final EP row used by local GMM loops. | Initial GMM1 start signal and later C2V/V2C sequencing rely on cumsum order. | Computed before `CrossCoreSetFlag` for GMM1. | GMM1 reads after first wait; GMM2 reads after V2C waits; CombineV2 reads after C2V waits. | Not separately cleared; workspace lifetime ends with op. | Debug uses official `GetCumsumForMMAIV`; evidence records prefix/padded-row fields in Gate A. |
+| `preSumBeforeRank` | `CrossRankSyncAndlocalTokenPerExpertAllGatherAndGetSumPreRankV2` computes prior-rank prefix per expert. | `BlockEpilogue2` maps dequantized rows into peer output memory. | Available before hidden producer loop; `prevSum = preSumBeforeRank(coreIdx * expertPerRank)` at `dispatch_ffn_combine_w4_a8_kernel.hpp:1244-1246`. | `workspaceInfo.ptrSumBeforeRank` after optional debug `ptrCGMM2` region; formula at `dispatch_ffn_combine_w4_a8_kernel.hpp:1620-1630`. | `[EP, expertPerRank]` int32 prefix. | Cross-rank sync protocol in official helper, then GMM/C2V/V2C lifecycle. | Before GMM1 and hidden packing. | `BlockEpilogue2` reads during CombineV2 after C2V. | Workspace lifetime only. | Debug full lifecycle preserves official computation; GMM2-only zeroing helper is not used in current official-lifecycle debug mode. |
+| GMM2 AIC input tile state | AIC `GMM2(params)` binds `gmA2I4`, `gmB2`, `gmS2`, scheduler, and `BlockMmad`. | `BlockMmad` loads A/B/scale tiles to L1/L0, MMADs, Fixpipe writes D2. | `GMM2` lines `dispatch_ffn_combine_w4_a8_kernel.hpp:687-740`. | A from `ptrA2Int4`, B from `GetTensorAddr(params.ptrB2)`, scale from `GetTensorAddr(params.ptrScale2)`, output to `ptrC2`. | `L1TileShape<128,256,1024>`, `L0TileShape<128,256,256>`, `currentM` doubled for int4 packed halves. | Waits V2C before each sync group. | V2C set by AIV after hidden boundary is ready. | `CrossCoreWaitFlag(SYNCFLAGV2C)` at group starts. | `blockMmad.SynchronizeBlock()` and final `Finalize(expertPerRank - 1, 0)`. | Current debug path enters the same official GMM2 AIC after the hidden override. Gate B evidence records nonzero AIC raw/D2 and int32 accumulator reference pass. |
+| GMM2 accumulator / D2 region | `BlockMmad` accumulates in L0C and Fixpipe writes packed high/low D2 halves to `gmC2`; optional int32 tap captures accumulator. | `BlockEpilogue2` reads D2 high/low halves as `gmC`. | `BlockMmad::operator()` and `L1TileMmad` at `block_mmad_w4a4.hpp:142-257` and `:438-485`. | `workspaceInfo.ptrC2`; size offset after `ptrC`; formula at `dispatch_ffn_combine_w4_a8_kernel.hpp:1576-1588`. | D2 logical shape doubles `currentExpertM` for high/low halves; `BlockEpilogue2` uses `gmCOffsetH` and `gmCOffsetL`. | C2V `SYNCFLAGC2V` from AIC Fixpipe finalization. | `BlockMmad::Finalize(syncLoopIdx, 0)` emits C2V for completed groups. | `CombineV2` waits C2V before invoking epilogue. | `BlockEpilogue2::Finalize()` drains UB/MTE events. | Debug exposes both accumulator and D2-derived readbacks; current evidence marks Gate B exact boundary identified and reference-passed. |
+| C2V handoff state | AIC `BlockMmad::Finalize` sets cross-core C2V flags after D2 writes. | AIV `CombineV2` waits before reading D2. | Finalize call at end of GMM2 and per sync task. | Cross-core flags, not GM data; optional soft flag if enabled. | One flag group per sync task/expert group. | `SYNCFLAGC2V`. | After Fixpipe D2 write and any debug accumulator copy. | `CombineV2` waits in `dispatch_ffn_combine_w4_a8_kernel.hpp:1499-1502` and drains remaining waits at `:1521-1523`. | `BlockEpilogue2::Finalize()`. | Debug does not substitute C2V; evidence records `official_gmm2_c2v_handoff_verified=true`. |
+| `BlockEpilogue2` input state | D2 high/low halves in `gmC2`, per-token hidden scale, W2 bias, token prefixes, peer output base. | `BlockEpilogue2::operator()` writes dequantized/cast rows to peer output; debug tap receives FP32. | Constructed in full lifecycle at `dispatch_ffn_combine_w4_a8_kernel.hpp:1325-1339`; called from `CombineV2` at `:1511-1512`. | Reads `gmC2`, writes peer `shmem(offsetD,dstEpIdx)`, debug FP32 to `ptrCGMM2` if configured. | Tile shape from scheduler; AIV splits 32-row chunks across subcores. | Waits C2V before each tile; uses local UB copy events. | After AIC C2V. | `CombineV2` wait loop before epilogue call. | `BlockEpilogue2::Finalize()` waits UB events and debug MTE3 event. | Current debug uses official `BlockEpilogue2` with raw debug modes available; Gate C evidence says post-dequant FP32 is finite, nonzero, and reference-passed. |
+| FP32 post-dequant debug tap | `BlockEpilogue2` writes `ubFp32` via `copyUbToGmGMM2` when `W4A8_DEBUG` and `ptrDebugGMM2` are set. | Python probe compares the tap against the unfused official-contract reference; production SVDQ mixed AIV would later consume an equivalent FP32 residual boundary. | Debug pointer may redirect `workspaceInfo.ptrCGMM2` to `params.ptrDebugGMM2` at `dispatch_ffn_combine_w4_a8_kernel.hpp:1620-1624`. | `ptrCGMM2` debug GM, semantic point is post-dequant GMM2 before output cast/scatter. | Row-major `[maxOutputSize, hiddenSize]` FP32 readback. | Local MTE3/V events inside `BlockEpilogue2`; upstream C2V required first. | During `BlockEpilogue2::operator()` after bias and hidden scale multiply. | Same C2V wait as normal epilogue. | Debug event waited in `BlockEpilogue2::Finalize()`. | Current evidence resolves the prior all-zero post-dequant failure for the isolated debug gate, but production `RunResidualGmmStage` still returns `false` until this official tap is wired into production SVDQ without accepting ordinary W4A8 final-combine output. |
+
+Explicit official-vs-current-debug deviations:
+
+- The debug op name still says `GMM2OnlyFromPacked`, but the current authoritative mode is full official
+  `DispatchAndCombine` lifecycle with `gmm2OnlyFromPacked_ = false`.
+- Only `gmA2I4_I8` and `gmPerTokenScale2` are overlaid from validated SVDQ hidden tensors; token state, C2V/V2C,
+  GMM2 AIC, D2, `BlockEpilogue2`, `CombineV2`, and final drain remain official.
+- The isolated debug path may expose FP32 and int32 readbacks. Production `DispatchFFNCombineW4A8SVDQ` does not consume
+  those readbacks yet and remains fail-closed.
+- No public `torch_npu.npu_grouped_matmul`, host-side W4 unpacking, scale guessing, or scalar substitute is part of this
+  path.
+
+Current Gate A/B/C evidence summary:
+
+- Gate A: hidden packed mismatch count is zero; hidden scale is finite/nonzero; routing identity includes expert token
+  nums, active experts, prefix sums, expert-local row starts, row offsets, active-row count, and padded-row semantics.
+- Gate B: official GMM2 entry is reached; loop/tile counts are nonzero; AIC raw/D2 and int32 accumulator readbacks are
+  finite, nonzero, and reference-passed.
+- Gate C: `BlockEpilogue2`/`CombineV2` FP32 post-dequant output is finite, nonzero, and strict-reference matched after
+  Gate B is nonzero.
+- Production admission remains false because four-NPU target-model E2E and production official residual producer
+  invocation are still open.
+
 ## Stage 2.4 Official W4A8 FP32 Tap Destinations Recorded - 2026-06-27
 
 Purpose:
