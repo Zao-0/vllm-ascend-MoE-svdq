@@ -1,11 +1,66 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Stage 2.2 Official GMM2 Path Constraint Reaffirmed - 2026-06-27
+
+This section is the latest authoritative handoff. It applies
+`/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` as a binding
+constraint for the next work. The earlier sections below are historical evidence. The appendix's all-zero
+post-dequant symptom is superseded by the latest local probe evidence: Gate B int32 accumulator and Gate C
+post-dequant readbacks are finite/nonzero, but Stage 2.2 still fails strict numerical comparison.
+
+| Stage | Status | Current gate |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Gate A and int32 accumulator Gate B pass for top-1 expert 0; Gate C remains finite/nonzero but fails strict max-abs tolerance. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 Gate C strict numerical match and unresolved Fixpipe/D2/AIV contract detail. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
+
+Binding requirements for the next patch:
+
+- Do not use, modify, reinterpret, or debug public `torch_npu.npu_grouped_matmul`.
+- Do not patch V2C/C2V flags, token state, prefix sums, workspace offsets, producer/consumer roles, D2 source
+  addresses, or synchronization unless the deviation is first recorded against the successful official path.
+- Preserve the successful official W4A8 lifecycle and substitute only the already validated Stage 2.1 packed hidden
+  tensor and hidden scale at the official GMM2 input boundary.
+- Keep `DispatchFFNCombineW4A8SVDQ` production tiling fail-closed until real-device Stage 2.2 and later numerical
+  gates pass.
+- Treat compilation, registration, source inspection, loop entry, and status manifests as provenance only, not gate
+  progress.
+
+Required pre-patch state table:
+
+- The source-backed official-vs-debug lifecycle table required by the appendix is recorded in the historical section
+  `Stage 2.2 Official-Path Appendix Applied - 2026-06-27T02:05Z`.
+- That table cites the official flow through
+  `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp`,
+  `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h`,
+  `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_mmad_w4a4.hpp`, and
+  `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp`.
+- The next behavioral patch must update that table first with the exact deviation being corrected.
+
+Latest numerical evidence remains:
+
+- Gate A input boundary passed.
+- Gate B int32 accumulator passed exactly with mismatch count `0` and nonzero output.
+- C2V handoff is verified by finite/nonzero AIV consumption.
+- Gate C post-dequant output is finite/nonzero but fails strict max tolerance:
+  max abs `0.00037679076194763184`, mean abs `1.82786079676589e-05`.
+- The diagnostic-only post-dequant variant comparator identifies low32 scale bits as plausible and high32 scale bits
+  as wrong; `scale_low32_fp16_toward_zero` is closer but still fails strict max tolerance.
+
+Next unresolved boundary:
+
+- Continue only at the official Fixpipe `VDEQF16`/D2 storage and `BlockEpilogue2`/AIV comparison contract.
+- Do not advance to SVDQ down composition, final combine, or production fused-op enablement while Stage 2.2 remains
+  `FAIL / IN PROGRESS`.
+
 ## Stage 2.2 Post-Dequant Variant Diagnostic Added - 2026-06-27T02:35Z
 
-This section is the latest authoritative handoff. It supersedes the `2026-06-27T02:20Z` status-field section by
-adding a diagnostic-only post-dequant variant comparator built from the official GMM2 int32 accumulator readback.
-No kernel behavior, lifecycle flag, V2C/C2V protocol, workspace state, tolerance, production host tiling, public
-grouped-matmul path, scale formula, or packed-weight format was changed.
+Historical section. It superseded the `2026-06-27T02:20Z` status-field section by adding a diagnostic-only
+post-dequant variant comparator built from the official GMM2 int32 accumulator readback. No kernel behavior,
+lifecycle flag, V2C/C2V protocol, workspace state, tolerance, production host tiling, public grouped-matmul path,
+scale formula, or packed-weight format was changed.
 
 | Stage | Status | Current gate |
 |---|---|---|
@@ -92,10 +147,9 @@ Current interpretation:
 
 ## Stage 2.2 Required Status Fields Added to Gate C Probe - 2026-06-27T02:20Z
 
-This section is the latest authoritative handoff. It supersedes the `2026-06-27T02:05Z` report-only appendix
-application by adding and validating the appendix-required status fields in the normal Stage 2.2 post-dequant probe.
-No kernel behavior, tolerance, scale formula, packing formula, public grouped-matmul path, lifecycle flag, or
-production SVDQ path was changed.
+Historical section. It superseded the `2026-06-27T02:05Z` report-only appendix application by adding and validating
+the appendix-required status fields in the normal Stage 2.2 post-dequant probe. No kernel behavior, tolerance,
+scale formula, packing formula, public grouped-matmul path, lifecycle flag, or production SVDQ path was changed.
 
 | Stage | Status | Current gate |
 |---|---|---|
@@ -176,7 +230,7 @@ Current interpretation:
 
 ## Stage 2.2 Official-Path Appendix Applied - 2026-06-27T02:05Z
 
-This section is the latest authoritative handoff. It applies
+Historical section. It applied
 `/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` as a binding
 constraint update. The appendix's all-zero post-dequant description is historical for the earlier failing state:
 the current local evidence after the host ABI repair is finite/nonzero Gate B accumulator and finite/nonzero Gate C
