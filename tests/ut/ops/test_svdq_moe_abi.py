@@ -1270,8 +1270,8 @@ def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
     assert "routedRows * gateUpSize * FP32_BYTES" in tiling
     assert "routedRows * hiddenSize * BF16_BYTES" in tiling
     assert "routedRows * hiddenSize * FP32_BYTES" in tiling
-    assert "SVDQ_REGION_ACCUMULATOR_1, offset, routedRows * gateUpSize * BF16_BYTES" in tiling
-    assert "SVDQ_REGION_ACCUMULATOR_2, offset, routedRows * hiddenSize * BF16_BYTES" in tiling
+    assert "SVDQ_REGION_ACCUMULATOR_1, offset, routedRows * gateUpSize * FP32_BYTES" in tiling
+    assert "SVDQ_REGION_ACCUMULATOR_2, offset, routedRows * hiddenSize * FP32_BYTES" in tiling
     assert "DispatchFFNCombineW4A8SVDQ AscendC kernel is not implemented yet" not in tiling
     assert "return ge::GRAPH_SUCCESS;" in tiling
 
@@ -2071,13 +2071,13 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
         "if (!MixedEpilogueReady(epilogueId))",
         "RunMixedOutputEpilogueAIV(const SVDQMixedEpilogueLaunch& launch)",
         "RunMixedSwiGLUEpilogueAIV(const SVDQMixedEpilogueLaunch& launch)",
-        "CopyInMixedEpilogueBf16(residualBf16, residualGm, offset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
+        "CopyInMixedEpilogueFp32(residual, residualGm, offset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
         "CopyInMixedEpilogueBf16(lowRankBf16, lowRankGm, offset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
         "Add(residual, residual, lowRank, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
         "CopyOutMixedEpilogueBf16(outputGm, offset, outputBf16, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
-        "CopyInMixedEpilogueBf16(residualGateBf16, residualGm, gateOffset,",
+        "CopyInMixedEpilogueFp32(gate, residualGm, gateOffset,",
         "CopyInMixedEpilogueBf16(lowRankGateBf16, lowRankGm, gateOffset,",
-        "CopyInMixedEpilogueBf16(residualUpBf16, residualGm, upOffset,",
+        "CopyInMixedEpilogueFp32(up, residualGm, upOffset,",
         "CopyInMixedEpilogueBf16(lowRankUpBf16, lowRankGm, upOffset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
         "Exp(tmp, tmp, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
         "Div(hidden, gate, tmp, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",

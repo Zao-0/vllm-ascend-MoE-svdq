@@ -9,6 +9,41 @@
 | Stage 2.4 production/four-NPU admission | IN PROGRESS | Production residual W4A8 GMM execution and four-NPU target-model E2E validation remain open. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Production enable remains false and host tiling must remain fail-closed. |
 
+## Stage 2.4 Mixed AIV FP32 Residual Boundary - 2026-06-27
+
+Purpose:
+
+- Corrected the production workspace contract for `SVDQ_REGION_ACCUMULATOR_1` and `SVDQ_REGION_ACCUMULATOR_2` from
+  BF16 to FP32. These regions are now the official W4A8 post-dequant residual boundaries consumed by the mixed AIV
+  epilogues.
+- Updated the mixed gate/up SwiGLU AIV and mixed down AIV to read W4A8 residual values as FP32 while continuing to
+  read BF16 low-rank outputs and write BF16 hidden/routed output.
+- This aligns the production SVDQ dataflow with the Stage 2 prompt and rewrite reference:
+  `official W4A8 FP32 residual + cast_fp32(BF16 low-rank) -> FP32 add -> BF16 output`.
+- This does not enable the W4A8 residual producer or production host tiling. `RunResidualGmmStage` still fails closed
+  until the correct official residual producer boundary is wired and production fused numerics pass.
+
+Files changed:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp`
+- `csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq.h`
+- `tools/svdq_kernel_contract_manifest.py`
+- `tests/ut/ops/test_svdq_moe_abi.py`
+
+Machine-checkable source constraints:
+
+- `SVDQ_REGION_ACCUMULATOR_1` is `SVDQ_DTYPE_FP32` with size `maxOutputSize * intermediateSize * 2 * FP32_BYTES`.
+- `SVDQ_REGION_ACCUMULATOR_2` is `SVDQ_DTYPE_FP32` with size `maxOutputSize * hiddenSize * FP32_BYTES`.
+- `source_proof.kernel_mixed_swiglu_epilogue_aiv_execution_enabled=true`
+- `source_proof.kernel_mixed_output_epilogue_aiv_execution_enabled=true`
+- `production_fail_closed.residual_gmm_execution_enabled=false`
+- `production_admission.production_enable_allowed=false`
+
+Validation for this edit:
+
+- `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q`
+
 ## Stage 2.4 Official W4A8 Wrapper Type Bound - 2026-06-27
 
 Purpose:

@@ -136,12 +136,12 @@ WORKSPACE_REGIONS = [
     {
         "id": 5,
         "name": "SVDQ_REGION_ACCUMULATOR_1",
-        "dtype": "SVDQ_DTYPE_BF16",
-        "size_expr": "maxOutputSize * intermediateSize * 2 * BF16_BYTES",
+        "dtype": "SVDQ_DTYPE_FP32",
+        "size_expr": "maxOutputSize * intermediateSize * 2 * FP32_BYTES",
         "producer_stage": "SVDQ_STAGE_W4A8_GEMM_1",
         "consumer_stage": "SVDQ_STAGE_MIXED_EPILOGUE_1",
         "lifetime_id": 6,
-        "purpose": "future W4A8 gate/up residual BF16 projection",
+        "purpose": "W4A8 gate/up residual FP32 post-dequant boundary for mixed SwiGLU epilogue",
     },
     {
         "id": 6,
@@ -186,12 +186,12 @@ WORKSPACE_REGIONS = [
     {
         "id": 10,
         "name": "SVDQ_REGION_ACCUMULATOR_2",
-        "dtype": "SVDQ_DTYPE_BF16",
-        "size_expr": "maxOutputSize * hiddenSize * BF16_BYTES",
+        "dtype": "SVDQ_DTYPE_FP32",
+        "size_expr": "maxOutputSize * hiddenSize * FP32_BYTES",
         "producer_stage": "SVDQ_STAGE_W4A8_GEMM_2",
         "consumer_stage": "SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE",
         "lifetime_id": 11,
-        "purpose": "future W4A8 down residual BF16 projection",
+        "purpose": "W4A8 down residual FP32 post-dequant boundary for mixed output epilogue",
     },
     {
         "id": 11,
@@ -1272,7 +1272,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             in sources["kernel_contract"]
             and "StoreMixedEpilogueOutputBF16(launch, row, column, static_cast<bfloat16_t>(residual + lowRank))"
             in sources["kernel_contract"]
-            and "SVDQ_REGION_ACCUMULATOR_2, offset, routedRows * hiddenSize * BF16_BYTES" in sources[
+            and "SVDQ_REGION_ACCUMULATOR_2, offset, routedRows * hiddenSize * FP32_BYTES" in sources[
                 "host_tiling"
             ]
         ),
@@ -1291,7 +1291,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "SiluFloat(gate) * up" in sources["kernel_contract"]
             and "SiluFloat(float value) const" in sources["kernel_contract"]
             and "ExpApproxFloat(-value)" in sources["kernel_contract"]
-            and "SVDQ_REGION_ACCUMULATOR_1, offset, routedRows * gateUpSize * BF16_BYTES" in sources[
+            and "SVDQ_REGION_ACCUMULATOR_1, offset, routedRows * gateUpSize * FP32_BYTES" in sources[
                 "host_tiling"
             ]
         ),
@@ -1301,10 +1301,10 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "RunMixedOutputEpilogueAIV(const SVDQMixedEpilogueLaunch& launch)"
             in sources["kernel_contract"]
             and "if (g_coreType == AIC)" in sources["kernel_contract"]
-            and "GlobalTensor<bfloat16_t> residualGm" in sources["kernel_contract"]
+            and "GlobalTensor<float> residualGm" in sources["kernel_contract"]
             and "GlobalTensor<bfloat16_t> lowRankGm" in sources["kernel_contract"]
             and "GlobalTensor<bfloat16_t> outputGm" in sources["kernel_contract"]
-            and "CopyInMixedEpilogueBf16(residualBf16, residualGm, offset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)"
+            and "CopyInMixedEpilogueFp32(residual, residualGm, offset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)"
             in sources["kernel_contract"]
             and "CopyInMixedEpilogueBf16(lowRankBf16, lowRankGm, offset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)"
             in sources["kernel_contract"]
@@ -1322,11 +1322,11 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             in sources["kernel_contract"]
             and "const uint32_t upOffset = row * launch.residualColumns + launch.upColumnOffset + column"
             in sources["kernel_contract"]
-            and "CopyInMixedEpilogueBf16(residualGateBf16, residualGm, gateOffset,"
+            and "CopyInMixedEpilogueFp32(gate, residualGm, gateOffset,"
             in sources["kernel_contract"]
             and "CopyInMixedEpilogueBf16(lowRankGateBf16, lowRankGm, gateOffset,"
             in sources["kernel_contract"]
-            and "CopyInMixedEpilogueBf16(residualUpBf16, residualGm, upOffset,"
+            and "CopyInMixedEpilogueFp32(up, residualGm, upOffset,"
             in sources["kernel_contract"]
             and "CopyInMixedEpilogueBf16(lowRankUpBf16, lowRankGm, upOffset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)"
             in sources["kernel_contract"]

@@ -134,8 +134,8 @@ static void BuildWorkspaceMap(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
         SVDQ_DTYPE_FP32, SVDQ_STAGE_QUANT_1, SVDQ_STAGE_MIXED_EPILOGUE_1, 4);
     SetWorkspaceRegion(tilingData, SVDQ_REGION_PROJECTION_1, offset, routedRows * gateUpSize * BF16_BYTES,
         SVDQ_DTYPE_BF16, SVDQ_STAGE_LOWRANK_1, SVDQ_STAGE_MIXED_EPILOGUE_1, 5);
-    SetWorkspaceRegion(tilingData, SVDQ_REGION_ACCUMULATOR_1, offset, routedRows * gateUpSize * BF16_BYTES,
-        SVDQ_DTYPE_BF16, SVDQ_STAGE_W4A8_GEMM_1, SVDQ_STAGE_MIXED_EPILOGUE_1, 6);
+    SetWorkspaceRegion(tilingData, SVDQ_REGION_ACCUMULATOR_1, offset, routedRows * gateUpSize * FP32_BYTES,
+        SVDQ_DTYPE_FP32, SVDQ_STAGE_W4A8_GEMM_1, SVDQ_STAGE_MIXED_EPILOGUE_1, 6);
     SetWorkspaceRegion(tilingData, SVDQ_REGION_HIDDEN, offset, routedRows * intermediateSize * BF16_BYTES,
         SVDQ_DTYPE_BF16, SVDQ_STAGE_MIXED_EPILOGUE_1, SVDQ_STAGE_QUANT_2, 7);
     SetWorkspaceRegion(tilingData, SVDQ_REGION_HIDDEN_Q, offset, routedRows * intermediateSize * INT8_BYTES,
@@ -144,8 +144,8 @@ static void BuildWorkspaceMap(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
         SVDQ_DTYPE_FP32, SVDQ_STAGE_QUANT_2, SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, 9);
     SetWorkspaceRegion(tilingData, SVDQ_REGION_PROJECTION_2, offset, routedRows * hiddenSize * BF16_BYTES,
         SVDQ_DTYPE_BF16, SVDQ_STAGE_LOWRANK_2, SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, 10);
-    SetWorkspaceRegion(tilingData, SVDQ_REGION_ACCUMULATOR_2, offset, routedRows * hiddenSize * BF16_BYTES,
-        SVDQ_DTYPE_BF16, SVDQ_STAGE_W4A8_GEMM_2, SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, 11);
+    SetWorkspaceRegion(tilingData, SVDQ_REGION_ACCUMULATOR_2, offset, routedRows * hiddenSize * FP32_BYTES,
+        SVDQ_DTYPE_FP32, SVDQ_STAGE_W4A8_GEMM_2, SVDQ_STAGE_MIXED_OUTPUT_EPILOGUE, 11);
     SetWorkspaceRegion(tilingData, SVDQ_REGION_LOWRANK_ACCUMULATOR_1, offset, routedRows * gateUpSize * FP32_BYTES,
         SVDQ_DTYPE_FP32, SVDQ_STAGE_LOWRANK_1, SVDQ_STAGE_LOWRANK_1, 12);
     SetWorkspaceRegion(tilingData, SVDQ_REGION_LOWRANK_ACCUMULATOR_2, offset, routedRows * hiddenSize * FP32_BYTES,
