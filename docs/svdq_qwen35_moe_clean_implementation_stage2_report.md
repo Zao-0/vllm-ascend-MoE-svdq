@@ -4,18 +4,98 @@
 |---|---|---|
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
-| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Binding appendix now requires official producer/consumer lifecycle reconstruction and Gate A/B/C readback; latest unresolved boundary is official GMM2 post-dequant readback all zeros while the unfused official-contract reference is nonzero. |
-| Stage 2.3 and later | BLOCKED | Do not advance same-routing composition, SVDQ down composition, final combine admission, or four-NPU service until Stage 2.2 passes. |
-| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | PASS | Fresh real-device recheck with Appendix GMM2 official-path fields passes Gate A/B/C. |
+| Stage 2.3 same-routing and final-combine isolated gates | PASS | Existing isolated real-checkpoint Stage 2.3 evidence is unblocked by the fresh Stage 2.2 pass. |
+| Stage 2.4 production/four-NPU admission | IN PROGRESS | Production residual W4A8 GMM execution and four-NPU target-model E2E validation remain open. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Production enable remains false and host tiling must remain fail-closed. |
+
+## Stage 2.2 Appendix-Field Real-Device Recheck Passed - 2026-06-27T04:58Z
+
+Latest authoritative status:
+
+- Stage 2.2 is now passed under `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md`.
+- The probe ran on logical NPU 0 with `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`; `npu-smi` reported physical NPUs 0-3 as
+  910B4 devices with no active NPU processes, and `torch.npu.device_count()` reported exactly 4 visible devices.
+- The public `torch_npu.npu_grouped_matmul` path was not used.
+- Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed.
+
+Device command:
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 \
+ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer \
+LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH:-} \
+python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py \
+  --require-npu \
+  --device-id 0 \
+  --top-k 1 \
+  --route-experts 0 \
+  --local-num-experts 8 \
+  --num-tokens 16 \
+  --max-output-size 512 \
+  --gmm2-reference-max-rows 64 \
+  --summary-name stage2/phase_stage2_gmm2_current_recheck_top1_expert0.json
+```
+
+Artifacts:
+
+- Device log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_current_recheck_appendix_fields.log`
+- Device exit code:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_current_recheck_appendix_fields.exitcode`
+- Stage 2.2 summary:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_gmm2_current_recheck_top1_expert0.json`
+- Manifest log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_4_manifest_after_appendix_field_probe.log`
+- Production admission manifest:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+
+Stage 2.2 result:
+
+- Probe summary: `passed=true`, `skipped=false`.
+- `stage.passed=true`.
+- Appendix fields are all true:
+  `official_vs_debug_state_table_complete`,
+  `gate_a_routing_identity_complete`,
+  `gate_a_prefix_and_padded_row_evidence_complete`,
+  `gate_b_exact_aic_raw_or_d2_boundary_identified`,
+  `gate_b_aic_raw_output_reference_passed`,
+  `gate_c_validated_after_gate_b_nonzero`, and
+  `active_failure_all_zero_post_dequant_resolved`.
+- Required numerical flags are true:
+  `official_gmm2_aic_raw_output_nonzero`,
+  `official_gmm2_aic_reference_passed`,
+  `official_gmm2_post_dequant_nonzero`,
+  `official_gmm2_post_dequant_reference_passed`, and
+  `official_gmm2_numerical_gate_passed`.
+
+Regenerated manifest result:
+
+- `production_admission.stage2_2_official_gmm2_gate.status=passed`
+- `production_admission.stage2_2_official_gmm2_gate.evidence_status=current_recheck_passed`
+- `production_admission.stage2_2_official_gmm2_gate_passed=true`
+- `production_admission.stage2_3_real_checkpoint_composition_gate.status=passed`
+- `production_admission.stage2_3_isolated_gate_passed=true`
+- `production_admission.production_enable_allowed=false`
+- Remaining requirements:
+  `residual_w4a8_gmm_execution_enabled=false` and `four_npu_target_model_e2e_validated=false`.
+
+Next unresolved boundary:
+
+- Do not enable production host tiling yet. The next required work is wiring the residual W4A8 GMM production path
+  through the official W4A8 AIC/AIV lifecycle, then validating fused production numerics and exactly-four-NPU target
+  model E2E.
 
 ## Stage 2.2 Authoritative Status Reset - 2026-06-27
 
-Latest binding requirement:
+Historical section superseded by the 2026-06-27T04:58Z Appendix-field real-device recheck above.
+
+Previous binding requirement:
 
 - `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` is now the active constraint for
   Stage 2.2.
-- The authoritative state is Stage 2.0 PASS, Stage 2.1 PASS, Stage 2.2 FAIL / IN PROGRESS, Stage 2.3+ BLOCKED, and
-  production FAIL-CLOSED.
+- The authoritative state at that time was Stage 2.0 PASS, Stage 2.1 PASS, Stage 2.2 FAIL / IN PROGRESS,
+  Stage 2.3+ BLOCKED, and production FAIL-CLOSED.
 - The active failure is the official GMM2 post-dequant readback returning all zeros while the real-checkpoint unfused
   official-contract reference is nonzero.
 - Do not reopen BF16 producer work or the packed-hidden Stage 2.1 work. The active problem is the official W4A8 GMM2
@@ -33,7 +113,7 @@ Current code-state note:
 
 - The residual W4A8 official tiling bridge recorded later in this report is a fail-closed source boundary only. It does
   not enable residual W4A8 GMM execution and does not satisfy Stage 2.2 Gate B or Gate C.
-- Older sections that describe isolated PASS evidence are historical and superseded by this status reset for admission.
+- This section is retained to explain the fail-closed reset before fresh Appendix-field evidence was generated.
 
 ## Stage 2.2 Appendix Evidence Fields Added to Probe - 2026-06-27
 
@@ -56,15 +136,14 @@ Fields now emitted by each probe mode:
 - `gate_c_validated_after_gate_b_nonzero`
 - `active_failure_all_zero_post_dequant_resolved`
 
-Gate behavior:
+Gate behavior implemented by the probe:
 
 - Loop-stats mode can record Gate A context but keeps Gate B and Gate C false.
 - Raw-C2/D2 mode can record Gate B source-boundary and reference status, but keeps Gate C false.
 - Normal post-dequant mode marks Gate C true only after Gate B is identified, nonzero, and reference-passed, and the
   official `BlockEpilogue2` / `CombineV2` post-dequant output is finite, nonzero, and reference-passed.
-- The current committed evidence remains blocked because it predates these new fields:
-  `stage2_2_official_gmm2_gate.status=fail_in_progress`,
-  `stage2_2_official_gmm2_gate_passed=false`, and `stage2_3_isolated_gate_passed=false`.
+- Evidence generated before the fields were added remained blocked. The fresh 2026-06-27T04:58Z run above now carries
+  these fields and admits Stage 2.2.
 
 Validation:
 
@@ -74,10 +153,7 @@ Validation:
 
 Next unresolved boundary:
 
-- Rerun the real-device Stage 2.2 probe with `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3` so the new appendix fields are
-  populated from actual device execution. If Gate B is zero, continue in official GMM2 AIC input/state/tiling/lifecycle.
-  If Gate B is nonzero and Gate C is zero or mismatched, continue in C2V, D2 source mapping, `BlockEpilogue2`, or AIV
-  readback. Do not advance Stage 2.3+ until Stage 2.2 passes under these fields.
+- The field-emission work is complete. The fresh run above has populated the fields from actual device execution.
 
 ## Stage 2.2 Historical Official-Path Recheck - 2026-06-27
 
