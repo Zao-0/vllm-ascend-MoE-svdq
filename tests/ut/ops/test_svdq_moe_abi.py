@@ -1110,6 +1110,7 @@ def test_svdq_w4a8_tap_mixed_epilogue_probe_uses_official_taps_and_records_limit
 
 def test_svdq_w4a8_gmm2_probe_emits_post_reset_revision_only_after_gate_abc():
     from tools.svdq_w4a8_gmm2_from_mixed_hidden_probe import (
+        CURRENT_AUTHORITATIVE_REQUIREMENTS_REVISION,
         POST_RESET_OFFICIAL_PATH_CORRECTION_REVISION,
         _appendix_gmm2_official_path_revision_manifest,
     )
@@ -1146,6 +1147,7 @@ def test_svdq_w4a8_gmm2_probe_emits_post_reset_revision_only_after_gate_abc():
     assert not blocked["post_reset_official_path_correction_revision_ready"]
     assert not blocked["stage2_2_acceptance_possible"]
     assert "official_path_correction_revision" not in blocked
+    assert "current_authoritative_requirements_revision" not in blocked
 
     ready = _appendix_gmm2_official_path_revision_manifest(
         diagnostic_mode="full_lifecycle_gmm2_post_dequant",
@@ -1162,6 +1164,10 @@ def test_svdq_w4a8_gmm2_probe_emits_post_reset_revision_only_after_gate_abc():
     assert ready["post_reset_official_path_correction_revision_ready"]
     assert ready["stage2_2_acceptance_possible"]
     assert ready["official_path_correction_revision"] == POST_RESET_OFFICIAL_PATH_CORRECTION_REVISION
+    assert (
+        ready["current_authoritative_requirements_revision"]
+        == CURRENT_AUTHORITATIVE_REQUIREMENTS_REVISION
+    )
 
 
 def test_svdq_final_combine_device_probe_executes_official_token_unpermute_surface():

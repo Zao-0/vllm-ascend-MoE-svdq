@@ -66,6 +66,9 @@ DEFAULT_SUMMARY_NAME = "phase_stage2_gmm2_from_mixed_hidden_summary.json"
 POST_RESET_OFFICIAL_PATH_CORRECTION_REVISION = (
     "stage2_appendix_gmm2_official_path_mandatory_official_path_correction_20260627"
 )
+CURRENT_AUTHORITATIVE_REQUIREMENTS_REVISION = (
+    "stage2_appendix_gmm2_official_path_current_authoritative_fail_in_progress_20260627"
+)
 _PRELOADED_CUSTOM_OPAPI_GLOBAL = False
 
 
@@ -974,6 +977,7 @@ def _appendix_gmm2_official_path_revision_manifest(
     }
     if post_reset_revision_ready:
         manifest["official_path_correction_revision"] = POST_RESET_OFFICIAL_PATH_CORRECTION_REVISION
+        manifest["current_authoritative_requirements_revision"] = CURRENT_AUTHORITATIVE_REQUIREMENTS_REVISION
     return manifest
 
 

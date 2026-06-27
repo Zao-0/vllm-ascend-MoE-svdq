@@ -251,6 +251,33 @@ Current constraint:
   permit SVDQ BF16 projections, mixed AIV epilogues, SwiGLU integration, hidden quantization integration, or production
   host tiling enablement.
 
+## Stage 2.2 Current-Requirements Probe Marker - 2026-06-27
+
+Purpose:
+
+- Added a second guarded evidence marker to `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`:
+  `current_authoritative_requirements_revision =
+  stage2_appendix_gmm2_official_path_current_authoritative_fail_in_progress_20260627`.
+- The marker is emitted only by `_appendix_gmm2_official_path_revision_manifest` when the same strict condition that
+  emits `official_path_correction_revision` is true: routing identity is complete, prefix/padded-row evidence is
+  complete, Gate B source boundary is identified/nonzero/reference-passed, and Gate C post-dequant is finite,
+  nonzero, and reference-passed after Gate B.
+- This makes the manifest's current admission requirement reachable by a future qualifying real-device recheck without
+  weakening the Stage 2.2 gate or admitting the existing historical JSON evidence.
+
+Files changed:
+
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+- `tests/ut/ops/test_svdq_moe_abi.py`
+- `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+
+Current interpretation:
+
+- Existing evidence remains `stage2_2.status=fail_in_progress` because it lacks
+  `current_authoritative_requirements_revision`.
+- This is probe/admission plumbing only. It is not a new real-device Gate A/B/C result, does not use public
+  `torch_npu.npu_grouped_matmul`, and does not enable production `DispatchFFNCombineW4A8SVDQ` host tiling.
+
 ## Stage 2.5 Low-Rank BF16 Accumulator Boundary Attempt - 2026-06-27
 
 Purpose:
