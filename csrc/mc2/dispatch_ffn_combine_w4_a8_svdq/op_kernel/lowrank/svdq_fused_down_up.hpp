@@ -782,7 +782,7 @@ public:
 
     template <typename BlockMmadType>
     __aicore__ inline bool RunOfficialBlockMmadBF16(
-        const SVDQLowRankOutputTilePlan& outputTilePlan, BlockMmadType& blockMmad, GM_ADDR output,
+        const SVDQLowRankOutputTilePlan& outputTilePlan, BlockMmadType& blockMmad, const __gm__ uint8_t* output,
         uint32_t outputStrideColumns) const
     {
         if (!outputTilePlan.HasWork() || output == nullptr || outputStrideColumns == 0) {
@@ -863,10 +863,14 @@ public:
         if (!outputTilePlan.HasWork()) {
             return false;
         }
+        const SVDQLowRankExpertPlan& expert = outputTilePlan.expert;
+        const __gm__ uint8_t* accumulatorBase =
+            MatrixAddress(args_.accumulator, expert.tokenStart, expert.stage.outputStrideColumns,
+                expert.stage.outputColumnOffset);
         return RunOfficialBlockMmadBF16(
             outputTilePlan,
             blockMmad,
-            args_.accumulator,
+            accumulatorBase,
             outputTilePlan.expert.stage.outputStrideColumns);
     }
 

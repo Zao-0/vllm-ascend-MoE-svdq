@@ -8,6 +8,123 @@
 | Stage 2.3 and later | BLOCKED | Do not advance production SVDQ down, final combine, or target-model service until the official interleavable W4A8 producer path is wired and validated. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Production enable remains false and host tiling must remain fail-closed. |
 
+## Stage 2.2 Appendix GMM2 Official-Path Reset - 2026-06-27
+
+Binding document:
+
+- `/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md`
+
+Authoritative rebuild state:
+
+- Stage 2.0 seven-output mixed epilogue debug ABI: PASS.
+- Stage 2.1 canonical hidden INT8 / packed INT4 boundary: PASS.
+- Stage 2.2 modified-hidden official W4A8 GMM2: FAIL / IN PROGRESS.
+- Stage 2.3 and later stages: BLOCKED.
+- Production `DispatchFFNCombineW4A8SVDQ`: FAIL-CLOSED.
+
+Required interpretation for the rebuilt environment:
+
+- The active failure is official GMM2 post-dequant readback returning all zeros while the unfused official-contract
+  reference is nonzero. Do not treat source inspection, manifest records, scalar substitutes, public grouped-matmul
+  experiments, or isolated compilation as progress toward this gate.
+- Do not reopen BF16 producer work or the packed-hidden Stage 2.1 work. The active problem is the official W4A8 GMM2
+  producer/consumer lifecycle and state reconstruction.
+- Do not make speculative changes to V2C/C2V flag order, producer/consumer core ownership, `tokenPerExpert`,
+  `cumsumMM`, `preSumBeforeRank`, GMM2 loop state, AIC/AIV role assignment, D2/epilogue source addresses, workspace
+  offsets, or synchronization unless the change is tied to an exact documented counterpart in the successful official
+  W4A8 implementation.
+- The only behavioral source of truth is `dispatch_ffn_combine_w4_a8`: GMM2 AIC, packed W2 access, scale access,
+  Fixpipe/D2 or accumulator boundary, C2V handoff, `BlockEpilogue2`, `CombineV2`, and final drain must match the
+  successful official lifecycle.
+- Before any further behavioral GMM2 patch, add a complete official-vs-debug state table covering packed hidden,
+  hidden scale, `tokenPerExpert`, `cumsumMM`, `preSumBeforeRank`, GMM2 input tile state, accumulator/D2, C2V handoff,
+  `BlockEpilogue2`, and the FP32 post-dequant debug tap. The table must identify the exact deviation being corrected.
+- Preferred correction strategy: start from a known-successful official W4A8 debug kernel path, preserve the official
+  lifecycle, and replace only the GMM2 hidden packed input and hidden scale with the already validated Stage 2.1 SVDQ
+  tensors.
+- Mandatory gates are Gate A input-boundary/routing identity, Gate B AIC raw accumulator/Fixpipe/D2 readback, and Gate C
+  AIV post-dequant output. Stage 2.2 passes only when Gate B and Gate C are finite, nonzero, and strict-reference
+  matched on real device after the Gate A routing evidence is complete.
+- All work must continue to use exactly `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`; production host tiling remains
+  fail-closed until all isolated and production real-device numerical gates pass.
+- The Stage 2.5 low-rank accumulator work recorded below is not the active next gate under this appendix. It remains a
+  failed, unrebuilt isolated attempt and must not be used to advance production before Stage 2.2 is resolved again.
+
+## Stage 2.5 Low-Rank BF16 Accumulator Boundary Attempt - 2026-06-27
+
+Purpose:
+
+- Extended the isolated low-rank debug probe so the Stage 2.5 boundary checks cover gate, up, and down projections:
+  `actual BF16 GM output == cast_bf16(actual FP32 accumulator readback)`.
+- Kept this isolated to the low-rank debug operator and probe. No production residual W4A8 execution was enabled.
+- Did not use, adapt, or debug public `torch_npu.npu_grouped_matmul`.
+
+Source changes in this attempt:
+
+- `tools/svdq_lowrank_debug_readback_probe.py`
+  now splits the fused gate/up BF16 output and FP32 accumulator readback into gate and up slices, compares gate/up/down
+  outputs against the unfused reference, and requires the three accumulator-cast boundary checks when
+  `--require-accumulator-readback` is set.
+- `tools/svdq_kernel_contract_manifest.py` records
+  `stage2_5_required_boundary_checks = [gate_output_bf16_vs_accumulator_cast, up_output_bf16_vs_accumulator_cast,
+  down_output_bf16_vs_accumulator_cast]`.
+- `tests/ut/ops/test_svdq_moe_abi.py` asserts the expanded probe and manifest contract, including gate/up/down
+  accumulator comparison names and the gate/up column offset contract.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/lowrank/svdq_fused_down_up.hpp` routes the debug FP32
+  accumulator base through the expert token start and stage output column offset instead of writing every stage/expert
+  at row/column zero of the shared accumulator. The helper now accepts a const GM base because it already converts to
+  mutable tensors internally via `MutableGmPtr`.
+- Host build fixes were added for the SVDQ wrapper compile path:
+  `SVDQBF16RouteOnlyTilingBase::PostTiling()` returns true, the SVDQ tiling header includes
+  `kernel_tiling/kernel_tiling.h`, and the copied official W4A8 unpermute tiling helper parses in both AscendC and
+  host C++ while preserving the same struct layout and formula.
+
+Real-device evidence from this attempt:
+
+- Four-device preflight passed with `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`; logical devices 0-3 were visible as
+  Ascend910B4.
+- Failed pre-fix probe artifact:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_5_lowrank_accumulator_boundary_gate_up_down.json`.
+- In that artifact, copy-only consumer gate passed and BF16 outputs matched references within tolerance:
+  gate max abs about `1.06e-4`, up max abs about `1.54e-4`, down max abs about `8.13e-5`.
+- The same artifact failed the Stage 2.5 accumulator boundary: gate/up accumulator-cast checks failed, up accumulator
+  slices contained zeros, and expert/stage regions showed aliasing symptoms. This is failed evidence, not a gate pass.
+
+Build state before environment rebuild:
+
+- First rebuild log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_5_lowrank_accumulator_rebuild_install.log`.
+  It failed before the low-rank kernel rebuilt due to host tiling issues:
+  missing `Mc2InitTiling` / `Mc2CcTiling`, host parsing of `[host, aicore]` in
+  `moe_token_unpermute_tiling.h`, missing `SVDQBF16RouteOnlyTilingBase::PostTiling()`, and host visibility of
+  `MoeTokenUnpermuteTiling`.
+- Second rebuild log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_5_lowrank_accumulator_rebuild_install_after_host_tiling_fix.log`.
+  It moved past the original host tiling blockers and failed on host C++ unqualified `min` in the copied official
+  unpermute tiling helper.
+- Third rebuild log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_5_lowrank_accumulator_rebuild_install_after_min_fix.log`.
+  It moved past the unpermute helper and failed compiling `SVDQLowRankDebugReadback` because the accumulator base was
+  still seen as `const __gm__ uint8_t*` by `RunOfficialBlockMmadBF16`.
+- Fourth rebuild log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_5_lowrank_accumulator_rebuild_install_after_accumulator_const_fix.log`.
+  It failed with the same `RunOfficialBlockMmadBF16` const-qualification error. The source was subsequently adjusted
+  to make the helper accept a const GM base, but that final signature change was not rebuilt before the environment
+  rebuild window.
+
+Validation completed after the final source edit:
+
+- `python -m py_compile tools/svdq_lowrank_debug_readback_probe.py tools/svdq_kernel_contract_manifest.py`
+- `git diff --check -- csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/unpermute/moe_token_unpermute_tiling.h csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/lowrank/svdq_fused_down_up.hpp tools/svdq_lowrank_debug_readback_probe.py tools/svdq_kernel_contract_manifest.py tests/ut/ops/test_svdq_moe_abi.py`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py::test_svdq_cann_lowrank_down_up_component_contract_is_wired tests/ut/ops/test_svdq_moe_abi.py::test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map -q`
+
+Resume requirements:
+
+- Rebuild/install the custom ops in the rebuilt environment before rerunning the Stage 2.5 numerical probe.
+- Rerun the isolated Stage 2.5 probe with exactly `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3` and require accumulator readback.
+- Only if gate/up/down BF16-output-vs-accumulator-cast checks pass should the work proceed to production wiring or
+  target-model E2E. Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed.
+
 ## Stage 2.4 Interleavable Official W4A8 Producer Contract - 2026-06-27
 
 Purpose:

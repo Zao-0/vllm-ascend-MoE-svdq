@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdint>
 
+#include "kernel_tiling/kernel_tiling.h"
 #include "lowrank/svdq_fused_down_up_tiling.h"
 #include "../../dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_tiling.h"
 #include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"

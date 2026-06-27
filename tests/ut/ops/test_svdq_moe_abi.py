@@ -2458,6 +2458,20 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "_load_validation_layer(" in lowrank_debug_probe
     assert "build_svdq_bf16_stage_reference" in lowrank_debug_probe
     assert "--require-accumulator-readback" in lowrank_debug_probe
+    for token in (
+        'reference["gate_l2_output"]',
+        'reference["up_l2_output"]',
+        'reference["down_l2_output"]',
+        '"gate_output_bf16_vs_accumulator_cast"',
+        '"up_output_bf16_vs_accumulator_cast"',
+        '"down_output_bf16_vs_accumulator_cast"',
+        '"gate_accumulator"',
+        '"up_accumulator"',
+        '"down_accumulator"',
+        "column_offset=gate_columns",
+        "row_stride_elements=int(actual[\"gate_up_output_bf16\"].stride(0))",
+    ):
+        assert token in lowrank_debug_probe
     assert 'DEFAULT_SUMMARY_NAME = "phase_j_lowrank_debug_readback_probe_summary.json"' in lowrank_debug_probe
     assert "_aggregate_stage_errors(results)" in lowrank_debug_probe
     assert '"aggregate_stage_errors": _aggregate_stage_errors(results)' in lowrank_debug_probe
@@ -2481,6 +2495,8 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "MatrixAddress(" in lowrank_header
     assert "FactorAddress(const SVDQLowRankStagePlan& stage, uint32_t expertId)" in lowrank_header
     assert "AccumulatorAddress(" in lowrank_header
+    assert "MatrixAddress(args_.accumulator, expert.tokenStart, expert.stage.outputStrideColumns" in lowrank_header
+    assert "expert.stage.outputColumnOffset" in lowrank_header
     assert "FactorTileAddress(" in lowrank_header
     assert "GM_ADDR rank;" in lowrank_header
     assert "args_.rank != nullptr" in lowrank_header
@@ -3260,6 +3276,11 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "readback_source": "L0C accumulator after each MMAD K tile",
         "final_tile_semantics": "final full-K FP32 accumulator is mirrored before BF16 output conversion",
         "partial_tile_semantics": "non-final K-tile partial sums are mirrored for host-readable debug validation",
+        "stage2_5_required_boundary_checks": [
+            "gate_output_bf16_vs_accumulator_cast",
+            "up_output_bf16_vs_accumulator_cast",
+            "down_output_bf16_vs_accumulator_cast",
+        ],
         "source_proof": [
             "op_cmake_has_local_debug_readback_option",
             "op_cmake_debug_readback_defaults_on",

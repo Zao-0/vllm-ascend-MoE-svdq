@@ -2417,6 +2417,11 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
             "readback_source": "L0C accumulator after each MMAD K tile",
             "final_tile_semantics": "final full-K FP32 accumulator is mirrored before BF16 output conversion",
             "partial_tile_semantics": "non-final K-tile partial sums are mirrored for host-readable debug validation",
+            "stage2_5_required_boundary_checks": [
+                "gate_output_bf16_vs_accumulator_cast",
+                "up_output_bf16_vs_accumulator_cast",
+                "down_output_bf16_vs_accumulator_cast",
+            ],
             "source_proof": [
                 "op_cmake_has_local_debug_readback_option",
                 "op_cmake_debug_readback_defaults_on",

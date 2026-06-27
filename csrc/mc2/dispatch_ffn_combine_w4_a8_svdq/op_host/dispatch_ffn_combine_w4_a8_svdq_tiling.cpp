@@ -306,6 +306,11 @@ protected:
             static_cast<int64_t>(aicoreParams_.ubSize) - sortSpace - otherSpace - expertSpace - gatherSpace;
         return remainUbAfterSort > 0;
     }
+
+    bool PostTiling() override
+    {
+        return true;
+    }
 };
 
 static void BuildBF16DispatchRoutingTiling(DispatchFFNCombineW4A8SVDQTilingData* tilingData)

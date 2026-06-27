@@ -16,7 +16,12 @@ struct MoeTokenUnpermuteTilingData {
     int64_t buffer_num;
 };
 
-__forceinline__ [host, aicore] void
+#if defined(__CCE_KT_TEST__) || defined(__NPU_ARCH__) || defined(ASCENDC_CPU_DEBUG)
+__forceinline__ [host, aicore]
+#else
+inline
+#endif
+void
 MoeTokenUnpermuteTiling(int32_t m, int32_t n, int32_t topK, MoeTokenUnpermuteTilingData &tilingData, uint32_t coreNum)
 {
     #define I64(x) static_cast<int64_t>(x)
@@ -29,7 +34,7 @@ MoeTokenUnpermuteTiling(int32_t m, int32_t n, int32_t topK, MoeTokenUnpermuteTil
     uint32_t outTokens = m / topK;
     tilingData.tokens_core_length = I64(outTokens / coreNum);
     tilingData.tokens_core_remain = I64(outTokens % coreNum);
-    tilingData.tokens_splited_length = I64(min(tilingData.tokens_core_length, 600));
+    tilingData.tokens_splited_length = I64(tilingData.tokens_core_length < 600 ? tilingData.tokens_core_length : 600);
     tilingData.tokens_splited_num = I64(tilingData.tokens_core_length / tilingData.tokens_splited_length);
     tilingData.tokens_splited_remain = I64(tilingData.tokens_core_length % tilingData.tokens_splited_length);
     tilingData.buffer_num = 4;

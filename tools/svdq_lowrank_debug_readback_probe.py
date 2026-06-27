@@ -528,6 +528,7 @@ def _first_boundary_mismatch(
     expert: int,
     row_start: int,
     row_stride_elements: int,
+    column_offset: int,
     element_size_bytes: int,
 ) -> dict[str, Any] | None:
     actual_fp32 = actual_bf16.float()
@@ -539,7 +540,7 @@ def _first_boundary_mismatch(
     if bad_indices.numel() == 0:
         return None
     row, column = (int(value.item()) for value in bad_indices[0])
-    physical_element_offset = (row_start + row) * row_stride_elements + column
+    physical_element_offset = (row_start + row) * row_stride_elements + column_offset + column
     return {
         "stage": stage,
         "logical_index": [row, column],
@@ -567,6 +568,7 @@ def _bf16_output_boundary_check(
     expert: int,
     span: tuple[int, int],
     row_stride_elements: int,
+    column_offset: int = 0,
 ) -> dict[str, Any]:
     start, end = span
     actual = actual_bf16[start:end]
@@ -587,7 +589,7 @@ def _bf16_output_boundary_check(
         "workspace_region_offset_bytes": 0,
         "expert_offset": int(expert),
         "routed_row_offset": int(start),
-        "output_column_offset": 0,
+        "output_column_offset": int(column_offset),
         "logical_shape": list(actual.shape),
         "physical_padded_shape": list(actual.shape),
         "row_stride_elements": int(row_stride_elements),
@@ -604,6 +606,7 @@ def _bf16_output_boundary_check(
         expert=expert,
         row_start=start,
         row_stride_elements=row_stride_elements,
+        column_offset=column_offset,
         element_size_bytes=int(actual.element_size()),
     )
     return {
@@ -648,13 +651,39 @@ def _compare_expert(
     require_accumulator_readback: bool,
 ) -> dict[str, Any]:
     start, end = span
+    expected_gate = reference["gate_l2_output"].detach().float().cpu()
+    expected_up = reference["up_l2_output"].detach().float().cpu()
     expected_down = reference["down_l2_output"].detach().float().cpu()
+    gate_columns = int(expected_gate.shape[1])
+    up_columns = int(expected_up.shape[1])
+    gate_slice = slice(0, gate_columns)
+    up_slice = slice(gate_columns, gate_columns + up_columns)
 
     comparisons = {
+        "gate_l2_output": _stage_error(actual["gate_up_output"][start:end, gate_slice], expected_gate),
+        "up_l2_output": _stage_error(actual["gate_up_output"][start:end, up_slice], expected_up),
         "down_l2_output": _stage_error(actual["down_output"][start:end], expected_down),
     }
     boundary_checks = {}
     if require_accumulator_readback:
+        boundary_checks["gate_output_bf16_vs_accumulator_cast"] = _bf16_output_boundary_check(
+            stage="gate_output",
+            actual_bf16=actual["gate_up_output_bf16"][:, gate_slice],
+            accumulator_fp32=actual["gate_up_accumulator"][:, gate_slice],
+            expert=expert,
+            span=span,
+            row_stride_elements=int(actual["gate_up_output_bf16"].stride(0)),
+            column_offset=0,
+        )
+        boundary_checks["up_output_bf16_vs_accumulator_cast"] = _bf16_output_boundary_check(
+            stage="up_output",
+            actual_bf16=actual["gate_up_output_bf16"][:, up_slice],
+            accumulator_fp32=actual["gate_up_accumulator"][:, up_slice],
+            expert=expert,
+            span=span,
+            row_stride_elements=int(actual["gate_up_output_bf16"].stride(0)),
+            column_offset=gate_columns,
+        )
         boundary_checks["down_output_bf16_vs_accumulator_cast"] = _bf16_output_boundary_check(
             stage="down_output",
             actual_bf16=actual["down_output_bf16"],
@@ -663,11 +692,31 @@ def _compare_expert(
             span=span,
             row_stride_elements=int(actual["down_output_bf16"].stride(0)),
         )
+        comparisons["gate_accumulator"] = _stage_error(
+            actual["gate_up_accumulator"][start:end, gate_slice],
+            expected_gate,
+        )
+        comparisons["up_accumulator"] = _stage_error(
+            actual["gate_up_accumulator"][start:end, up_slice],
+            expected_up,
+        )
         comparisons["down_accumulator"] = _stage_error(
             actual["down_accumulator"][start:end],
             expected_down,
         )
     accumulator_diagnostics = {
+        "gate_accumulator_finite": {
+            "actual_finite": bool(
+                torch.isfinite(actual["gate_up_accumulator"][start:end, gate_slice]).all().item()
+            ),
+            "numel": int(actual["gate_up_accumulator"][start:end, gate_slice].numel()),
+            "required": bool(require_accumulator_readback),
+        },
+        "up_accumulator_finite": {
+            "actual_finite": bool(torch.isfinite(actual["gate_up_accumulator"][start:end, up_slice]).all().item()),
+            "numel": int(actual["gate_up_accumulator"][start:end, up_slice].numel()),
+            "required": bool(require_accumulator_readback),
+        },
         "down_accumulator_finite": {
             "actual_finite": bool(torch.isfinite(actual["down_accumulator"][start:end]).all().item()),
             "numel": int(actual["down_accumulator"][start:end].numel()),
@@ -675,9 +724,16 @@ def _compare_expert(
         }
     }
     if require_accumulator_readback:
-        required_names = ("down_l2_output", "down_accumulator")
+        required_names = (
+            "gate_l2_output",
+            "up_l2_output",
+            "down_l2_output",
+            "gate_accumulator",
+            "up_accumulator",
+            "down_accumulator",
+        )
     else:
-        required_names = ("down_l2_output",)
+        required_names = ("gate_l2_output", "up_l2_output", "down_l2_output")
     passed_by_stage = {
         name: _stage_passed(comparisons[name], max_abs_tol=max_abs_tol, mean_abs_tol=mean_abs_tol)
         for name in required_names
