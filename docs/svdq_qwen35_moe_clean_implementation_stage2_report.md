@@ -1,5 +1,69 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Stage 2.2 GMM2 Host Extension ABI Handoff - 2026-06-27T01:05Z
+
+This section is the latest authoritative handoff before the environment rebuild. It supersedes the
+`2026-06-27T00:40Z` install-probe section. The current blocker is an installed host-extension ABI/cache mismatch,
+not a W4A8 numerical result.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Accepted prior Stage 2 evidence; unchanged. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | CANN debug-op metadata is six-output, but the loaded `vllm_ascend_C` torch extension still registers the older three-return schema. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 Gate B and Gate C. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+Binding constraints reaffirmed:
+
+- `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` remains binding.
+- No public `torch_npu.npu_grouped_matmul` path was used, modified, reinterpreted, or debugged.
+- No speculative scale formula, packed-weight repack, V2C/C2V lifecycle change, or production SVDQ path change was
+  made.
+- The active validation target remains the official W4A8 GMM2 Gate B accumulator/readback path, followed only then
+  by Gate C post-dequant comparison.
+
+New finding after the `00:40Z` crash:
+
+- The repo-local aggregate CANN kernel config was regenerated and refreshed after the earlier crash:
+  `vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/kernel/config/ascend910b/binary_info_config.json`
+  now declares the six expected outputs:
+  `out`, `expert_token_nums`, `gmm2PostDequant`, `hiddenXReadback`, `hiddenScaleReadback`,
+  `gmm2AccumulatorInt32`.
+- That aggregate config has eight `SVDQW4A8GMM2DebugReadback_*` binary entries, and all referenced `.o` and `.json`
+  files exist under the repo-local custom-op tree.
+- The source tree already declares the four-return Python-facing debug op:
+  `gmm2_post_dequant`, `hidden_x_readback`, `hidden_scale_readback`, `gmm2_accumulator_int32`.
+- The loaded installed extension is stale. `torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback._schemas` still
+  reports only three returned tensors:
+  `gmm2_post_dequant`, `hidden_x_readback`, `hidden_scale_readback`.
+- `strings vllm_ascend/vllm_ascend_C.cpython-312-aarch64-linux-gnu.so` confirms the installed extension still
+  contains the old schema string ending at `hidden_scale_readback`. It does not expose
+  `gmm2_accumulator_int32`.
+
+Evidence captured:
+
+- Aggregate binary-info audit:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_aggregate_binary_info_after_fix.log`
+- Python torch-op schema audit:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_python_schema_after_aggregate_fix.log`
+- Installed extension schema-string audit:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_extension_schema_strings.log`
+- Earlier exit-139 probe remains recorded at:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_int32_accumulator_true_top1_expert0.log`
+
+Current interpretation:
+
+1. Do not treat the `00:40Z` exit-139 probe as a Gate B accumulator result, a Gate C post-dequant result, or a
+   W4A8 math failure. The host extension and CANN custom-op metadata were not ABI-consistent.
+2. The next environment must rebuild/reinstall the Python extension so
+   `vllm_ascend/vllm_ascend_C.cpython-312-aarch64-linux-gnu.so` contains the four-return schema with
+   `gmm2_accumulator_int32`.
+3. After rebuild, first rerun only the schema audit with `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3` and confirm the torch
+   schema returns four tensors.
+4. Only after the torch schema and CANN aggregate metadata agree should the real-device Stage 2.2 probe be rerun.
+   The first numerical gate remains `gmm2_accumulator_int32` Gate B; Gate C post-dequant remains downstream.
+
 ## Stage 2.2 GMM2 Int32 Accumulator Install Probe - 2026-06-27T00:40Z
 
 This section is the latest authoritative handoff. It supersedes the `2026-06-27T00:13Z` rebuild handoff.
