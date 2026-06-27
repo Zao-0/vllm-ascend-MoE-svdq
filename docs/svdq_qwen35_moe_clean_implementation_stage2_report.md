@@ -1,5 +1,104 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Stage 2.2 GMM2 Host ABI Fixed, Accumulator Gate Proven - 2026-06-27T01:20Z
+
+This section is the latest authoritative handoff. It supersedes the `2026-06-27T01:05Z` host-extension ABI
+handoff. The stale host-extension ABI/cache blocker is fixed in the current local build/install, and the official
+GMM2 int32 accumulator readback now proves the AIC producer is nonzero and exact. Stage 2.2 is still not passed:
+raw D2/Fixpipe half readback and final post-dequant comparison still miss the strict reference gate.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Hidden packed INT4 and hidden scale read back exactly in the new Stage 2.2 probes. |
+| Stage 2.2 Gate A input boundary | PASS for top-1 expert 0 diagnostic | Canonical hidden, packed hidden, hidden scale, routing identity, padded rows, W2 metadata, and override readbacks are finite/nonzero/exact where required. |
+| Stage 2.2 Gate B int32 accumulator | PASS for top-1 expert 0 diagnostic | `gmm2AccumulatorInt32` is returned, nonzero, and exact against the official-contract int32 reference with mismatch count `0`. |
+| Stage 2.2 raw D2/Fixpipe half readback | FAIL / IN PROGRESS | High and low FP16 D2 half readbacks are finite/nonzero but fail strict raw-C2 reference tolerances with <=2 FP16 ULP differences. |
+| Stage 2.2 Gate C post-dequant | FAIL / IN PROGRESS | Official W4A8_DEBUG post-dequant tap is finite/nonzero but fails strict reference max-abs tolerance. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 raw D2/Gate C numerical gates. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+Binding constraints reaffirmed:
+
+- `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` remains binding.
+- No public `torch_npu.npu_grouped_matmul` path was used, modified, reinterpreted, or debugged.
+- No speculative scale formula, packed-weight repack, V2C/C2V lifecycle change, or production SVDQ path change was
+  made.
+- The official `dispatch_ffn_combine_w4_a8` implementation remains the only source of truth for W4A8 GMM2,
+  packed-weight access, accumulator, D2/Fixpipe, and AIV dequant behavior.
+
+Host ABI/cache repair completed:
+
+- Rebuilt the CMake host extension target with `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`:
+  `cmake --build build/temp.linux-aarch64-cpython-312 --target vllm_ascend_C -- -j1`.
+- Installed the rebuilt extension with:
+  `cmake --install build/temp.linux-aarch64-cpython-312`.
+- `strings vllm_ascend/vllm_ascend_C.cpython-312-aarch64-linux-gnu.so` now contains the four-return schema ending
+  with `Tensor gmm2_accumulator_int32`.
+- Fresh Python registration now reports:
+  `torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback(...) -> (Tensor gmm2_post_dequant, Tensor hidden_x_readback, Tensor hidden_scale_readback, Tensor gmm2_accumulator_int32)`.
+- Four-NPU preflight passed: logical NPUs `0,1,2,3` are visible as `Ascend910B4`.
+
+Evidence captured:
+
+- Four-visible-NPU Python preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_visible_npu_python_pre_host_rebuild.log`
+- Host extension rebuild log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_host_extension_vllm_ascend_C_rebuild.log`
+- Host extension install log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_host_extension_cmake_install_after_rebuild.log`
+- Installed extension schema-string audit:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_extension_schema_strings_after_install.log`
+- Fresh torch-op schema audit:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_python_schema_after_host_rebuild.log`
+
+Real-device Gate B/C probes after host ABI repair:
+
+- Raw high-half D2 / int32 accumulator probe:
+  - log:
+    `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_int32_accumulator_after_host_rebuild_true_top1_expert0.log`
+  - summary:
+    `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_int32_accumulator_after_host_rebuild_true_top1_expert0.json`
+  - exit code: `1` because the raw D2 strict gate still fails.
+  - key result: `official_gmm2_accumulator_int32_reference_passed: true`, exact mismatch count `0`,
+    `actual_nonzero: true`.
+  - raw high-half D2 result: finite/nonzero; strict reference failed with max abs `0.0009765625`, mean abs
+    `4.444917431101203e-05`, FP16 ULP max `2`.
+- Raw low-half D2 probe:
+  - log:
+    `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_raw_c2_low_after_host_rebuild_true_top1_expert0.log`
+  - summary:
+    `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_raw_c2_low_after_host_rebuild_true_top1_expert0.json`
+  - exit code: `1` because the raw D2 strict gate still fails.
+  - key result: `official_gmm2_accumulator_int32_reference_passed: true`, exact mismatch count `0`,
+    `actual_nonzero: true`.
+  - raw low-half D2 result: finite/nonzero; strict reference failed with max abs `0.001953125`, mean abs
+    `0.00014361337525770068`, FP16 ULP max `2`.
+- Normal W4A8_DEBUG post-dequant probe:
+  - log:
+    `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_post_dequant_after_host_rebuild_true_top1_expert0.log`
+  - summary:
+    `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_post_dequant_after_host_rebuild_true_top1_expert0.json`
+  - exit code: `1` because strict post-dequant reference still fails.
+  - key result: post-dequant active tensor is finite/nonzero, max abs `0.3963119685649872`, mean abs
+    `0.05269600450992584`.
+  - post-dequant reference error: max abs `0.00037679076194763184`, mean abs `1.82786079676589e-05`.
+    Mean is under the predeclared `2e-05` threshold, but max exceeds the predeclared `2e-04` threshold.
+
+Current interpretation:
+
+1. The previous exit-139 blocker was an installed host-extension ABI/cache mismatch; it is fixed in the current
+   local build/install.
+2. The official GMM2 AIC accumulator producer is now proven for this diagnostic: accumulator readback is exact,
+   nonzero, and uses the official packed W2 and Stage 2.1 packed hidden boundary.
+3. The remaining Stage 2.2 failure is no longer an all-zero GMM2 output and no longer an AIC accumulator mismatch.
+   It is downstream of the exact int32 accumulator, in the D2/Fixpipe rounding contract, raw half readback
+   comparator, or AIV post-dequant reference path.
+4. Do not relax tolerances to pass this gate. The next patch must be tied to the exact official Fixpipe/D2/AIV
+   contract and should first determine whether the unfused reference is missing an official rounding/scale-bit
+   detail or whether the debug readback is tapping the wrong D2 half/source point.
+5. Stage 2.3+ and production `DispatchFFNCombineW4A8SVDQ` remain blocked/fail-closed.
+
 ## Stage 2.2 GMM2 Host Extension ABI Handoff - 2026-06-27T01:05Z
 
 This section is the latest authoritative handoff before the environment rebuild. It supersedes the
