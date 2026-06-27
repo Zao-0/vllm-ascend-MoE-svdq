@@ -16,6 +16,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_EVIDENCE_DIR = Path("/root/workspace/lza/svdq_clean_evidence")
+STAGE2_3_REAL_COMPOSITION_EVIDENCE = Path("stage2/phase_stage2_real_composition_topk8_experts0_7.json")
 
 OP_ROOT = Path("csrc/mc2/dispatch_ffn_combine_w4_a8_svdq")
 OP_CMAKE = OP_ROOT / "op_host/CMakeLists.txt"
@@ -1662,10 +1663,137 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
             raise ValueError(f"W4A8 debug readback source proof failed: {proof_name}.")
 
 
-def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
+def _zero_error(error: dict[str, Any]) -> bool:
+    return (
+        bool(error.get("actual_finite"))
+        and bool(error.get("expected_finite"))
+        and bool(error.get("diff_finite"))
+        and float(error.get("max_abs", float("inf"))) == 0.0
+        and float(error.get("mean_abs", float("inf"))) == 0.0
+    )
+
+
+def _stage2_3_real_composition_gate(evidence_dir: Path) -> dict[str, Any]:
+    evidence_path = evidence_dir / STAGE2_3_REAL_COMPOSITION_EVIDENCE
+    gate: dict[str, Any] = {
+        "name": "stage2_3_real_checkpoint_topk8_composition",
+        "evidence_path": str(evidence_path),
+        "required_probe": "svdq_w4a8_tap_mixed_epilogue_probe",
+        "required_summary_name": str(STAGE2_3_REAL_COMPOSITION_EVIDENCE),
+        "evidence_found": evidence_path.exists(),
+        "passed": False,
+        "production_scope": "isolated_single_device_real_checkpoint_gate",
+        "production_tiling_enable_allowed": False,
+        "public_grouped_matmul_used": False,
+    }
+    if not evidence_path.exists():
+        gate["status"] = "missing_evidence"
+        gate["reason"] = "Stage 2.3 top-k 8 real-device summary has not been generated in the evidence directory."
+        return gate
+
+    try:
+        summary = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        gate["status"] = "invalid_evidence_json"
+        gate["reason"] = f"{type(exc).__name__}: {exc}"
+        return gate
+
+    stage = summary.get("stage", {})
+    shape = stage.get("shape", {})
+    stage_passed = stage.get("stage_passed", {})
+    same_route = stage.get("stage2_3_same_routing_manifest", {})
+    same_route_checks = same_route.get("checks", {})
+    gmm2 = stage.get("official_gmm2_from_svdq_hidden", {})
+    gmm2_checks = gmm2.get("checks", {})
+    gmm2_error = gmm2.get("unfused_reference", {}).get("error", {})
+    stage_errors = stage.get("stage_errors", {})
+    down_error = stage_errors.get("down_mixed", {})
+    out_error = stage_errors.get("out_bf16", {})
+    required_stage_flags = {
+        name: bool(stage_passed.get(name))
+        for name in (
+            "first_mixed_epilogue",
+            "official_gmm2_from_svdq_hidden",
+            "gate_mixed",
+            "up_mixed",
+            "hidden_bf16",
+            "hidden_scale",
+            "hidden_q",
+            "down_mixed",
+            "out_bf16",
+            "same_routing_identity",
+        )
+    }
+    required_same_route_flags = {
+        name: bool(same_route_checks.get(name))
+        for name in (
+            "expert_token_total_matches_active_rows",
+            "same_canonical_hidden_feeds_svdq_down_and_w4a8_hidden_quant",
+            "official_gmm2_output_feeds_final_mixed_residual_down",
+            "final_mixed_output_is_final_combine_input",
+            "same_source_token_payload_across_topk_slots_proven",
+        )
+    }
+    required_gmm2_flags = {
+        name: bool(gmm2_checks.get(name))
+        for name in (
+            "official_gmm2_entry_reached",
+            "gate_a_input_boundary_passed",
+            "official_gmm2_post_dequant_finite",
+            "official_gmm2_post_dequant_nonzero",
+            "official_gmm2_post_dequant_reference_passed",
+            "official_gmm2_numerical_gate_passed",
+        )
+    }
+    shape_passed = {
+        "num_tokens_is_4": int(shape.get("num_tokens", -1)) == 4,
+        "top_k_is_8": int(shape.get("top_k", -1)) == 8,
+        "active_rows_is_32": int(shape.get("active_rows", -1)) == 32,
+        "hidden_size_is_2048": int(shape.get("hidden_size", -1)) == 2048,
+        "intermediate_size_is_512": int(shape.get("intermediate_size", -1)) == 512,
+    }
+    exact_numerics = {
+        "official_gmm2_error_zero": _zero_error(gmm2_error),
+        "final_down_mixed_error_zero": _zero_error(down_error),
+        "final_out_bf16_error_zero": _zero_error(out_error),
+    }
+    passed = bool(
+        summary.get("passed")
+        and stage.get("passed")
+        and all(required_stage_flags.values())
+        and all(required_same_route_flags.values())
+        and all(required_gmm2_flags.values())
+        and all(shape_passed.values())
+        and all(exact_numerics.values())
+        and not bool(stage.get("public_grouped_matmul_used", False))
+        and bool(stage.get("production_svdq_host_tiling_fail_closed", True))
+    )
+    gate.update(
+        {
+            "status": "passed" if passed else "failed",
+            "passed": passed,
+            "summary_passed": bool(summary.get("passed")),
+            "stage_passed": bool(stage.get("passed")),
+            "shape": shape,
+            "required_stage_flags": required_stage_flags,
+            "required_same_routing_flags": required_same_route_flags,
+            "required_official_gmm2_flags": required_gmm2_flags,
+            "required_shape_flags": shape_passed,
+            "exact_numerical_flags": exact_numerics,
+            "rank_metadata": stage.get("rank_metadata"),
+            "production_tiling_fail_closed_in_evidence": bool(
+                stage.get("production_svdq_host_tiling_fail_closed", True)
+            ),
+        }
+    )
+    return gate
+
+
+def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVIDENCE_DIR) -> dict[str, Any]:
     sources = _read_sources(repo_root)
     source_proof = _source_proof(sources)
     host_tiling_source = _production_host_tiling_source(sources)
+    stage2_3_gate = _stage2_3_real_composition_gate(evidence_dir)
     manifest = {
         "schema_version": 1,
         "operator": "DispatchFFNCombineW4A8SVDQ",
@@ -1944,6 +2072,37 @@ def build_manifest(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
             "mixed_epilogue_contract_recorded": True,
             "final_combine_contract_recorded": True,
         },
+        "production_admission": {
+            "stage2_3_real_checkpoint_composition_gate": stage2_3_gate,
+            "stage2_3_isolated_gate_passed": bool(stage2_3_gate["passed"]),
+            "host_tiling_must_remain_fail_closed": True,
+            "production_enable_allowed": False,
+            "reason": (
+                "Stage 2.3 isolated real-checkpoint composition is necessary but not sufficient. "
+                "Production tiling remains blocked until fused production execution replaces the current "
+                "dispatch routing, residual W4A8 GMM, mixed epilogue, and final-combine execution stubs and "
+                "the target model passes four-NPU end-to-end validation."
+            ),
+            "remaining_execution_requirements": {
+                "dispatch_routing_execution_enabled": source_proof["kernel_dispatch_routing_execution_enabled"],
+                "residual_hidden_quant_execution_enabled": source_proof[
+                    "kernel_residual_hidden_quant_scalar_execution_enabled"
+                ],
+                "residual_w4a8_gmm_execution_enabled": source_proof[
+                    "kernel_residual_gmm_scalar_execution_enabled"
+                ],
+                "mixed_swiglu_epilogue_execution_enabled": source_proof[
+                    "kernel_mixed_swiglu_epilogue_scalar_execution_enabled"
+                ],
+                "mixed_output_epilogue_execution_enabled": source_proof[
+                    "kernel_mixed_output_epilogue_scalar_execution_enabled"
+                ],
+                "final_combine_execution_enabled": source_proof[
+                    "kernel_final_combine_scalar_execution_enabled"
+                ],
+                "four_npu_target_model_e2e_validated": False,
+            },
+        },
         "source_proof": source_proof,
         "counts": {
             "factor_abi": len(FACTOR_ABI),
@@ -1972,7 +2131,7 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
-    manifest = build_manifest(args.repo_root)
+    manifest = build_manifest(args.repo_root, evidence_dir=args.evidence_dir)
     output = args.output or args.evidence_dir / "phase_s_kernel_contract_manifest.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

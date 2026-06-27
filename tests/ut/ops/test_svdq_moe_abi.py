@@ -2828,6 +2828,18 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["w4a8_residual_contract_recorded"]
     assert loaded["production_fail_closed"]["mixed_epilogue_contract_recorded"]
     assert loaded["production_fail_closed"]["final_combine_contract_recorded"]
+    assert loaded["production_admission"]["host_tiling_must_remain_fail_closed"]
+    assert not loaded["production_admission"]["production_enable_allowed"]
+    assert "stage2_3_real_checkpoint_composition_gate" in loaded["production_admission"]
+    assert loaded["production_admission"]["remaining_execution_requirements"] == {
+        "dispatch_routing_execution_enabled": False,
+        "residual_hidden_quant_execution_enabled": False,
+        "residual_w4a8_gmm_execution_enabled": False,
+        "mixed_swiglu_epilogue_execution_enabled": False,
+        "mixed_output_epilogue_execution_enabled": False,
+        "final_combine_execution_enabled": False,
+        "four_npu_target_model_e2e_validated": False,
+    }
     assert loaded["source_proof"]["kernel_resolves_rank_workspace_regions"]
     assert loaded["source_proof"]["kernel_records_dispatch_routing_contract"]
     assert loaded["source_proof"]["host_tiling_builds_dispatch_routing_subtiling"]
@@ -3153,6 +3165,93 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert gate_up_invocation["second_input_column_offset"] == "info.upRankOffset"
     assert gate_up_invocation["second_output_column_offset"] == "info.intermediateSize"
     assert down_invocation["second_up_factor"] == "SVDQ_INVALID_ID"
+
+
+def test_svdq_kernel_contract_manifest_accepts_stage2_3_topk8_evidence(tmp_path):
+    from tools.svdq_kernel_contract_manifest import build_manifest
+
+    evidence_path = tmp_path / "stage2/phase_stage2_real_composition_topk8_experts0_7.json"
+    evidence_path.parent.mkdir(parents=True)
+    zero_error = {
+        "actual_finite": True,
+        "expected_finite": True,
+        "diff_finite": True,
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+    }
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "passed": True,
+                "stage": {
+                    "passed": True,
+                    "public_grouped_matmul_used": False,
+                    "production_svdq_host_tiling_fail_closed": True,
+                    "shape": {
+                        "num_tokens": 4,
+                        "top_k": 8,
+                        "active_rows": 32,
+                        "hidden_size": 2048,
+                        "intermediate_size": 512,
+                    },
+                    "rank_metadata": {
+                        "gate_rank": 64,
+                        "up_rank": 64,
+                        "down_rank": 64,
+                        "gate_rank_offset": 0,
+                        "up_rank_offset": 64,
+                    },
+                    "stage_passed": {
+                        "first_mixed_epilogue": True,
+                        "official_gmm2_from_svdq_hidden": True,
+                        "gate_mixed": True,
+                        "up_mixed": True,
+                        "hidden_bf16": True,
+                        "hidden_scale": True,
+                        "hidden_q": True,
+                        "down_mixed": True,
+                        "out_bf16": True,
+                        "same_routing_identity": True,
+                    },
+                    "stage2_3_same_routing_manifest": {
+                        "checks": {
+                            "expert_token_total_matches_active_rows": True,
+                            "same_canonical_hidden_feeds_svdq_down_and_w4a8_hidden_quant": True,
+                            "official_gmm2_output_feeds_final_mixed_residual_down": True,
+                            "final_mixed_output_is_final_combine_input": True,
+                            "same_source_token_payload_across_topk_slots_proven": True,
+                        }
+                    },
+                    "official_gmm2_from_svdq_hidden": {
+                        "checks": {
+                            "official_gmm2_entry_reached": True,
+                            "gate_a_input_boundary_passed": True,
+                            "official_gmm2_post_dequant_finite": True,
+                            "official_gmm2_post_dequant_nonzero": True,
+                            "official_gmm2_post_dequant_reference_passed": True,
+                            "official_gmm2_numerical_gate_passed": True,
+                        },
+                        "unfused_reference": {"error": zero_error},
+                    },
+                    "stage_errors": {
+                        "down_mixed": zero_error,
+                        "out_bf16": zero_error,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = build_manifest(REPO_ROOT, evidence_dir=tmp_path)
+    gate = manifest["production_admission"]["stage2_3_real_checkpoint_composition_gate"]
+
+    assert gate["evidence_found"]
+    assert gate["passed"]
+    assert gate["status"] == "passed"
+    assert manifest["production_admission"]["stage2_3_isolated_gate_passed"]
+    assert not manifest["production_admission"]["production_enable_allowed"]
+    assert manifest["production_admission"]["host_tiling_must_remain_fail_closed"]
 
 
 def test_svdq_bf16_routing_stage_probe_cpu_golden_uses_official_count_layout():

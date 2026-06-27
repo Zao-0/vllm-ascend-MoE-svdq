@@ -9,6 +9,77 @@
 | Stage 2.4 and later | IN PROGRESS | Production fused-op integration and four-NPU end-to-end validation remain open. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
 
+## Stage 2.4 Production Admission Gate Added - 2026-06-27T03:05Z
+
+This section is the latest handoff for production integration. It does not supersede the Stage 2.3 numerical pass:
+Stage 2.3 remains passed. It adds a machine-checkable admission gate that consumes the Stage 2.3 top-k 8 evidence
+and keeps production tiling blocked until the remaining fused execution paths are implemented and validated.
+
+Files changed:
+
+- `tools/svdq_kernel_contract_manifest.py`
+- `tests/ut/ops/test_svdq_moe_abi.py`
+- `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+
+Exact behavior added:
+
+- `build_manifest(..., evidence_dir=...)` now records `production_admission`.
+- The admission gate reads
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_real_composition_topk8_experts0_7.json`.
+- It verifies the Stage 2.3 summary is the real-checkpoint top-k 8 gate:
+  `num_tokens=4`, `top_k=8`, `active_rows=32`, `hidden_size=2048`, `intermediate_size=512`.
+- It requires all Stage 2.3 stage flags to pass:
+  first mixed epilogue, official GMM2 from SVDQ hidden, gate/up hidden quant, down mixed output, final BF16 output,
+  and same-routing identity.
+- It requires all same-routing checks to pass, including
+  `same_source_token_payload_across_topk_slots_proven=true`.
+- It requires all official GMM2-from-SVDQ-hidden checks to pass.
+- It requires exact zero error for official GMM2, final mixed down, and final BF16 output.
+- It explicitly reports `production_enable_allowed=false` and `host_tiling_must_remain_fail_closed=true`.
+
+Validation commands:
+
+- Syntax and whitespace:
+  `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+  `git diff --check -- tools/svdq_kernel_contract_manifest.py tests/ut/ops/test_svdq_moe_abi.py`
+- Focused static ABI regression:
+  `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q`
+  passed with `45 passed, 16 warnings`.
+- Manifest generation:
+  `python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+
+Evidence paths:
+
+- Manifest output:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+- Manifest log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_4_production_admission_manifest.log`
+
+Validated manifest result:
+
+- `production_admission.stage2_3_real_checkpoint_composition_gate.evidence_found: true`.
+- `production_admission.stage2_3_real_checkpoint_composition_gate.status: passed`.
+- `production_admission.stage2_3_real_checkpoint_composition_gate.passed: true`.
+- `production_admission.stage2_3_isolated_gate_passed: true`.
+- `production_admission.production_enable_allowed: false`.
+- `production_admission.host_tiling_must_remain_fail_closed: true`.
+- Remaining execution requirements are all still false:
+  `dispatch_routing_execution_enabled`,
+  `residual_hidden_quant_execution_enabled`,
+  `residual_w4a8_gmm_execution_enabled`,
+  `mixed_swiglu_epilogue_execution_enabled`,
+  `mixed_output_epilogue_execution_enabled`,
+  `final_combine_execution_enabled`,
+  and `four_npu_target_model_e2e_validated`.
+
+Current interpretation:
+
+1. The codebase now has a machine-checkable bridge from the Stage 2.3 real-device evidence to production admission.
+2. The admission gate prevents treating the isolated Stage 2.3 pass as production readiness.
+3. The next implementation work must replace the production fused-kernel execution stubs with validated official
+   production paths, starting with dispatch/routing and official W4A8 residual GMM integration, while preserving the
+   official contracts validated in Stage 2.2 and Stage 2.3.
+
 ## Stage 2.3 Real-Checkpoint Top-k 8 Composition Pass - 2026-06-27T02:57Z
 
 This section is the latest authoritative handoff. It supersedes the `2026-06-27T02:43Z` synthetic same-routing
