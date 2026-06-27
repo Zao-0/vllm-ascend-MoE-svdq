@@ -426,6 +426,18 @@ def test_svdq_host_tiling_builds_official_dispatch_routing_subtiling():
     ):
         assert token in tiling
 
+    production_tiling = tiling[
+        tiling.index("static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc") : tiling.index(
+            "struct DispatchFFNCombineW4A8SVDQCompileInfo"
+        )
+    ]
+    bridge_build_index = production_tiling.index("BuildResidualW4A8OfficialTiling(tilingData);")
+    workspace_index = production_tiling.index("workSpaces[0] = SVDQ_SYSTEM_WORKSPACE + info.workspaceBytes +")
+    fail_closed_index = production_tiling.index("production tiling is fail-closed after metadata construction")
+    final_return_index = production_tiling.index("return ge::GRAPH_FAILED;", fail_closed_index)
+    assert bridge_build_index < workspace_index < fail_closed_index < final_return_index
+    assert "return ge::GRAPH_SUCCESS;" not in production_tiling
+
 
 def _build_aclnn_branch(build_script: str, start: str, end: str) -> str:
     branch = build_script[build_script.index(start) :]
@@ -2922,6 +2934,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["rank_split_contract"]["split_source"] == "explicit gateRank/upRank offsets"
     assert loaded["rank_split_contract"]["up_rank_offset"] == "gateRank"
     assert loaded["production_fail_closed"]["host_tiling_returns_graph_failed"]
+    assert loaded["production_fail_closed"]["host_tiling_metadata_builds_before_fail_closed"]
     assert not loaded["production_fail_closed"]["host_tiling_success_enabled"]
     assert loaded["production_fail_closed"]["sync_handoff_source_enabled"]
     assert loaded["production_fail_closed"]["lowrank_is_implemented_uses_complete_contract"]
@@ -2970,6 +2983,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_resolves_rank_workspace_regions"]
     assert loaded["source_proof"]["kernel_records_dispatch_routing_contract"]
     assert loaded["source_proof"]["host_tiling_builds_dispatch_routing_subtiling"]
+    assert loaded["source_proof"]["host_tiling_fail_closed_after_metadata_construction"]
     assert loaded["source_proof"]["kernel_tiling_contains_dispatch_routing_subtiling"]
     assert loaded["source_proof"]["kernel_dispatch_routing_uses_official_tiling_contract"]
     assert loaded["source_proof"]["kernel_dispatch_routing_calls_official_bf16_helper"]

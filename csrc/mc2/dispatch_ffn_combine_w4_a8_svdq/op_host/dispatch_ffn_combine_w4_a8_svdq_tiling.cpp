@@ -930,10 +930,6 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
         context->GetTilingData<DispatchFFNCombineW4A8SVDQTilingData>();
     OP_TILING_CHECK(tilingData == nullptr,
         OP_LOGE(nodeName, "tilingData is nullptr."), return ge::GRAPH_FAILED);
-    OP_LOGE(nodeName,
-        "DispatchFFNCombineW4A8SVDQ production tiling is fail-closed until official W4A8 AIC/AIV "
-        "residual and mixed-epilogue stages pass real-device numerical validation.");
-    return ge::GRAPH_FAILED;
 
     auto& info = tilingData->info;
     OP_TILING_CHECK(DispatchFFNCombineW4A8SVDQCheckAttrAndSetTiling(context, info) != ge::GRAPH_SUCCESS,
@@ -965,7 +961,11 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
                     tilingData->dispatchRouting.bf16RoutingWorkspaceBytes +
                     tilingData->dispatchRouting.routingWorkspaceBytes;
 
-    return ge::GRAPH_SUCCESS;
+    OP_LOGE(nodeName,
+        "DispatchFFNCombineW4A8SVDQ production tiling is fail-closed after metadata construction until "
+        "official W4A8 AIC/AIV residual execution, fused production numerics, and four-NPU target-model "
+        "E2E validation pass.");
+    return ge::GRAPH_FAILED;
 }
 
 struct DispatchFFNCombineW4A8SVDQCompileInfo {};

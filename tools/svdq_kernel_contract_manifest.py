@@ -789,6 +789,17 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         else ""
     )
     host_tiling_source = _production_host_tiling_source(sources)
+    host_bridge_build_index = host_tiling_source.find("BuildResidualW4A8OfficialTiling(tilingData);")
+    host_workspace_index = host_tiling_source.find("workSpaces[0] = SVDQ_SYSTEM_WORKSPACE + info.workspaceBytes +")
+    host_fail_closed_log_index = host_tiling_source.find("production tiling is fail-closed after metadata construction")
+    host_fail_closed_return_index = (
+        host_tiling_source.find("return ge::GRAPH_FAILED;", host_fail_closed_log_index)
+        if host_fail_closed_log_index >= 0
+        else -1
+    )
+    host_fail_closed_after_metadata = (
+        0 <= host_bridge_build_index < host_workspace_index < host_fail_closed_log_index < host_fail_closed_return_index
+    )
     dispatch_compile_options = _build_aclnn_branch(
         sources["op_cmake"],
         "add_ops_compile_options(\n    OP_NAME DispatchFFNCombineW4A8SVDQ",
@@ -818,6 +829,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "SVDQ_ROUTING_UB_SIZE" in sources["host_tiling"]
             and "tilingData->dispatchRouting.routingWorkspaceBytes" in sources["host_tiling"]
         ),
+        "host_tiling_fail_closed_after_metadata_construction": host_fail_closed_after_metadata,
         "op_cmake_has_local_debug_readback_option": (
             "option(SVDQ_LOWRANK_DEBUG_ACCUMULATOR_READBACK" in sources["op_cmake"]
         ),
@@ -2399,6 +2411,9 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
                 "production tiling is fail-closed" in host_tiling_source
                 or "return ge::GRAPH_FAILED;" in host_tiling_source
             ),
+            "host_tiling_metadata_builds_before_fail_closed": source_proof[
+                "host_tiling_fail_closed_after_metadata_construction"
+            ],
             "host_tiling_success_enabled": source_proof["host_tiling_graph_success_enabled"],
             "sync_handoff_source_enabled": source_proof["kernel_synchronizes_stage_boundaries"],
             "lowrank_is_implemented_uses_complete_contract": (

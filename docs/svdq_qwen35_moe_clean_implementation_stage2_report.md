@@ -9,6 +9,33 @@
 | Stage 2.4 production/four-NPU admission | IN PROGRESS | Production residual W4A8 GMM execution and four-NPU target-model E2E validation remain open. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Production enable remains false and host tiling must remain fail-closed. |
 
+## Stage 2.4 Host Tiling Metadata Build Before Fail-Closed Return - 2026-06-27
+
+Purpose:
+
+- Production host tiling now runs shape/dtype/platform validation, builds the workspace map, sync table, dispatch
+  routing tiling, official residual W4A8 tiling bridge, BF16/residual/mixed/final-combine shape tables, and workspace
+  size metadata before the final fail-closed return.
+- The production tiling function still returns `ge::GRAPH_FAILED`; it does not admit a production launch and does not
+  claim residual W4A8 GMM execution.
+- This corrects the previous source state where the fail-closed return happened before the official W4A8 bridge build,
+  leaving the production metadata construction code unreachable.
+
+Machine-checkable source constraints:
+
+- `source_proof.host_tiling_fail_closed_after_metadata_construction=true`
+- `production_fail_closed.host_tiling_metadata_builds_before_fail_closed=true`
+- `production_fail_closed.host_tiling_returns_graph_failed=true`
+- `production_fail_closed.host_tiling_success_enabled=false`
+- `production_fail_closed.residual_gmm_execution_enabled=false`
+- `production_admission.production_enable_allowed=false`
+
+Validation for this edit:
+
+- `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q`
+- `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+
 ## Stage 2.4 Residual W4A8 Official Tiling Bridge Consumed - 2026-06-27
 
 Purpose:
