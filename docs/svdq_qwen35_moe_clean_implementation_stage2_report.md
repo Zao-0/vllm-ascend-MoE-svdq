@@ -1,5 +1,93 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Stage 2.2 GMM2 Int32 Accumulator Install Probe - 2026-06-27T00:40Z
+
+This section is the latest authoritative handoff. It supersedes the `2026-06-27T00:13Z` rebuild handoff.
+The six-output debug op now builds, installs into the repo-local custom-op tree, and registers from Python, but
+the real-device Stage 2.2 probe currently crashes before producing any numerical Gate B/Gate C comparison. This
+is not a Stage 2.2 numerical pass and it does not enable production SVDQ.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Accepted prior Stage 2 evidence; unchanged by the install refresh. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Six-output GMM2 debug op registers, but the real-device probe exits `139` before numerical comparison. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 Gate B and Gate C. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+Binding constraints reaffirmed:
+
+- `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` remains binding.
+- No public `torch_npu.npu_grouped_matmul` path was used, modified, or debugged.
+- No speculative scale formula, packed-weight repack, V2C/C2V lifecycle change, or production SVDQ path change was
+  made.
+- The active problem remains the official W4A8 GMM2 producer/consumer lifecycle and Gate B/Gate C validation.
+
+Install and registration work completed:
+
+- A broad `cmake --build csrc/build --target package -- -j1` attempt was started to refresh the `.run` package,
+  but it entered a full selected-op binary rebuild and was interrupted with exit `130`. This is recorded only as
+  packaging provenance; it is not numerical progress.
+- `cmake --install csrc/build --prefix /tmp/svdq_stage2_gmm2_install` completed and staged the current custom-op
+  artifacts.
+- The repo-local install under `vllm_ascend/_cann_ops_custom/vendors/custom_transformer` was refreshed from the
+  staged CMake install for:
+  - `op_api/lib/libcust_opapi.so`
+  - `op_impl/ai_core/tbe/config/ascend910b/aic-ascend910b-ops-info.json`
+  - `op_api/include/aclnnop/aclnnInner_svdqw4_a8_gmm2_debug_readback.h`
+  - `op_proto/inc/svdqw4_a8_gmm2_debug_readback_proto.h`
+  - the GMM2 debug kernel directory and per-op kernel config.
+- The generated per-op kernel dispatch config initially contained both stale five-output hashes and rebuilt
+  six-output hashes. The stale five-output generated kernel artifacts were removed from the build output, then
+  `csrc/cmake/scripts/util/ascendc_ops_config.py --skip-binary-info-config` regenerated
+  `csrc/build/binary/ascend910b/bin/svdqw4_a8_gmm2_debug_readback.json`.
+- The installed GMM2 debug kernel config now has exactly eight variants, and every variant exposes six outputs:
+  `out`, `expert_token_nums`, `gmm2PostDequant`, `hiddenXReadback`, `hiddenScaleReadback`, and
+  `gmm2AccumulatorInt32`.
+- Python registration with `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`,
+  `ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer`,
+  and the repo-local `libcust_opapi.so` passed:
+  `torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback` is registered.
+
+Real-device probe result:
+
+- Command used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`, routed true top-1 expert 0, `--local-num-experts 8`, and
+  `--swiglu-limit 451111`.
+- NPU preflight showed four visible idle 910B4 devices.
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_int32_accumulator_true_top1_expert0.log`
+- Exit code:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_int32_accumulator_true_top1_expert0.exitcode`
+  contains `139`.
+- No summary JSON was produced.
+- The only runtime failure visible in the probe log is:
+  `TBE Subprocess[task_distribute] raise error[], main process disappeared!`, followed by a shell
+  `Segmentation fault (core dumped)` message.
+
+Evidence files from this install/probe attempt:
+
+- Interrupted broad package log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_int32_accumulator_package.log`
+- Temporary CMake install log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_int32_accumulator_cmake_install_tmp.log`
+- Clean installed config audit:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_int32_accumulator_installed_config_cleaned.txt`
+- Registration log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_int32_accumulator_registration.log`
+- NPU preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_int32_accumulator_npu_smi.log`
+
+Current interpretation and next work:
+
+1. The previous binary-build blocker is fixed: the op-info, op API library, installed per-op kernel config, and
+   installed debug kernel variants are six-output.
+2. Stage 2.2 Gate B has not run to comparison; do not interpret the exit-139 probe as an accumulator mismatch or
+   a zero/nonzero result.
+3. After the environment rebuild, rerun a minimal device launch with the cleaned six-output install and inspect
+   CANN/TBE crash logs before making behavioral kernel changes.
+4. If the launch reaches Python output, validate `gmm2_accumulator_int32` first. Only after Gate B is finite,
+   nonzero, and compared against the official-contract reference may Gate C post-dequant validation continue.
+
 ## Stage 2.2 GMM2 Int32 Accumulator Binary Rebuild - 2026-06-27T00:13Z
 
 This section is the latest authoritative handoff. It supersedes the immediately following
