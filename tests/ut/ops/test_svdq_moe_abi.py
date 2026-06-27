@@ -1617,6 +1617,9 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     assert "ResidualGmmLaunchReady(uint32_t stageId)" in contract
     assert "ResidualGmmOfficialBridgeContract(" in contract
     assert "ResidualGmmOfficialBridgeReady(uint32_t stageId) const" in contract
+    assert "ResidualW4A8BridgeTiling() const" in contract
+    assert "return tilingData_.residualW4A8Bridge" in contract
+    assert "ResidualGmmOfficialTilingBridgeReady(uint32_t stageId) const" in contract
     assert "RunResidualDynamicQuantStage(uint32_t stageId)" in contract
     assert "RunResidualGmmStage(uint32_t stageId)" in contract
     assert "RunResidualStage(uint32_t stageId)" in contract
@@ -1822,6 +1825,18 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         "bridge.requiresPackedW4Weights && bridge.requiresOfficialAicAccumulator",
         "bridge.requiresOfficialC2VHandoff && bridge.requiresOfficialAivDequant",
         "bridge.producesBF16Residual && launch.weightNz && launch.residualOnly",
+        "SVDQResidualW4A8BridgeTiling bridge = ResidualW4A8BridgeTiling()",
+        "DispatchFFNCombineW4A8Info officialInfo = bridge.officialTiling.dispatchFFNCombineW4A8Info",
+        "bridge.officialK == tilingData_.info.hiddenSize",
+        "bridge.officialN == tilingData_.info.intermediateSize * 2",
+        "bridge.officialListLen == tilingData_.info.expertPerRank",
+        "bridge.hostExecutionFailClosed",
+        "!officialInfo.isTransposeB && officialInfo.isWeightNz",
+        "officialCoc.initRoutingQuantTilingKey == tilingData_.dispatchRouting.initRoutingQuantTilingKey",
+        "stageId == SVDQ_RESIDUAL_STAGE_W4A8_GMM1",
+        "launch.k == bridge.officialK && launch.n == bridge.officialN",
+        "stageId == SVDQ_RESIDUAL_STAGE_W4A8_GMM2",
+        "launch.k == bridge.officialN / 2 && launch.n == bridge.officialK",
     ):
         assert token in gmm_ready_source
 
@@ -1832,7 +1847,7 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     ]
     for token in (
         "plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM",
-        "!ResidualGmmOfficialBridgeReady(stageId)",
+        "!ResidualGmmOfficialTilingBridgeReady(stageId)",
         "Execution remains fail-closed until this bridge directly reuses the official W4A8 AIC/AIV lifecycle.",
         "return false;",
     ):
@@ -2918,6 +2933,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["residual_gmm_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_official_bridge_contract_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_official_tiling_bridge_recorded"]
+    assert loaded["production_fail_closed"]["residual_gmm_official_tiling_bridge_consumed"]
     assert not loaded["production_fail_closed"]["residual_gmm_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_gmm_scalar_helpers_absent"]
     assert loaded["production_fail_closed"]["mixed_epilogue_launch_descriptor_recorded"]
@@ -2967,6 +2983,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_residual_gmm_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_official_bridge_contract_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_official_tiling_bridge_recorded"]
+    assert loaded["source_proof"]["kernel_residual_gmm_official_tiling_bridge_consumed"]
     assert not loaded["source_proof"]["kernel_residual_gmm_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_gmm_scalar_helpers_absent"]
     assert loaded["source_proof"]["kernel_residual_routed_input_quant_execution_enabled"]

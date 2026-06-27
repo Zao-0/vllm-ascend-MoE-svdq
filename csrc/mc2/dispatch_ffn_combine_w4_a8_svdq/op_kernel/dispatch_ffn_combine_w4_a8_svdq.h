@@ -551,6 +551,11 @@ public:
         return tilingData_.dispatchRouting;
     }
 
+    __aicore__ inline SVDQResidualW4A8BridgeTiling ResidualW4A8BridgeTiling() const
+    {
+        return tilingData_.residualW4A8Bridge;
+    }
+
     __aicore__ inline GM_ADDR DispatchRoutingTempWorkspace() const
     {
         return runtime_.workspace + tilingData_.info.workspaceBytes;
@@ -974,6 +979,45 @@ public:
                bridge.producesBF16Residual && launch.weightNz && launch.residualOnly;
     }
 
+    __aicore__ inline bool ResidualGmmOfficialTilingBridgeReady(uint32_t stageId) const
+    {
+        if (!ResidualGmmOfficialBridgeReady(stageId)) {
+            return false;
+        }
+        SVDQResidualGmmLaunch launch = BuildResidualGmmLaunch(stageId);
+        SVDQResidualW4A8BridgeTiling bridge = ResidualW4A8BridgeTiling();
+        DispatchFFNCombineW4A8Info officialInfo = bridge.officialTiling.dispatchFFNCombineW4A8Info;
+        auto officialCoc = bridge.officialTiling.cocTiling;
+        const bool fullOfficialShapeReady = bridge.officialM == tilingData_.info.m &&
+            bridge.officialK == tilingData_.info.hiddenSize &&
+            bridge.officialN == tilingData_.info.intermediateSize * 2 &&
+            bridge.officialListLen == tilingData_.info.expertPerRank &&
+            bridge.officialWorkspaceBytes > 0 && bridge.hostExecutionFailClosed;
+        const bool officialInfoReady = officialInfo.M == bridge.officialM &&
+            officialInfo.K == bridge.officialK && officialInfo.N == bridge.officialN &&
+            officialInfo.expertPerRank == tilingData_.info.expertPerRank &&
+            officialInfo.maxOutputSize == tilingData_.info.maxOutputSize &&
+            !officialInfo.isTransposeB && officialInfo.isWeightNz &&
+            officialInfo.topK == tilingData_.info.topK &&
+            officialInfo.worldSize == tilingData_.info.worldSize &&
+            officialInfo.listLen == bridge.officialListLen &&
+            officialInfo.swigluLimit == tilingData_.info.swigluLimit;
+        const bool officialCocReady = officialCoc.m0 == 128 && officialCoc.k0 == 256 &&
+            officialCoc.n0 == 256 && officialCoc.swizzleDirect == 1 &&
+            officialCoc.swizzleOffset == 7 && officialCoc.ubMoveNum == 16 * 1024 &&
+            officialCoc.pValue == 1 && officialCoc.commNpuSplit == tilingData_.info.worldSize &&
+            officialCoc.commDataSplit == 1 &&
+            officialCoc.lenPerLoop == officialCoc.m0 * officialCoc.n0 / 2 &&
+            officialCoc.initRoutingQuantTilingKey == tilingData_.dispatchRouting.initRoutingQuantTilingKey;
+        const bool stageShapeMatchesOfficial =
+            (stageId == SVDQ_RESIDUAL_STAGE_W4A8_GMM1 &&
+                launch.k == bridge.officialK && launch.n == bridge.officialN) ||
+            (stageId == SVDQ_RESIDUAL_STAGE_W4A8_GMM2 &&
+                launch.k == bridge.officialN / 2 && launch.n == bridge.officialK);
+        return fullOfficialShapeReady && officialInfoReady && officialCocReady &&
+            stageShapeMatchesOfficial && launch.listLen == bridge.officialListLen;
+    }
+
     __aicore__ inline void CopyInResidualQuantBf16(LocalTensor<bfloat16_t> dst,
         const GlobalTensor<bfloat16_t>& src, uint32_t offset, uint32_t count) const
     {
@@ -1214,7 +1258,8 @@ public:
     __aicore__ inline bool RunResidualGmmStage(uint32_t stageId) const
     {
         SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
-        if (plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM || !ResidualGmmOfficialBridgeReady(stageId)) {
+        if (plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM ||
+            !ResidualGmmOfficialTilingBridgeReady(stageId)) {
             return false;
         }
         // Execution remains fail-closed until this bridge directly reuses the official W4A8 AIC/AIV lifecycle.

@@ -1024,6 +1024,28 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             in sources["host_tiling"]
             and "official.cocTiling.moeInitRoutingQuantV2TilingData =" in sources["host_tiling"]
         ),
+        "kernel_residual_gmm_official_tiling_bridge_consumed": (
+            "ResidualW4A8BridgeTiling() const" in sources["kernel_contract"]
+            and "return tilingData_.residualW4A8Bridge" in sources["kernel_contract"]
+            and "ResidualGmmOfficialTilingBridgeReady(uint32_t stageId) const" in sources["kernel_contract"]
+            and "SVDQResidualW4A8BridgeTiling bridge = ResidualW4A8BridgeTiling()" in sources["kernel_contract"]
+            and "DispatchFFNCombineW4A8Info officialInfo = "
+            "bridge.officialTiling.dispatchFFNCombineW4A8Info" in sources["kernel_contract"]
+            and "bridge.officialK == tilingData_.info.hiddenSize" in sources["kernel_contract"]
+            and "bridge.officialN == tilingData_.info.intermediateSize * 2" in sources["kernel_contract"]
+            and "bridge.hostExecutionFailClosed" in sources["kernel_contract"]
+            and "officialInfo.isWeightNz" in sources["kernel_contract"]
+            and "!officialInfo.isTransposeB" in sources["kernel_contract"]
+            and "officialCoc.initRoutingQuantTilingKey == tilingData_.dispatchRouting.initRoutingQuantTilingKey"
+            in sources["kernel_contract"]
+            and "stageId == SVDQ_RESIDUAL_STAGE_W4A8_GMM1" in sources["kernel_contract"]
+            and "launch.k == bridge.officialK && launch.n == bridge.officialN" in sources["kernel_contract"]
+            and "stageId == SVDQ_RESIDUAL_STAGE_W4A8_GMM2" in sources["kernel_contract"]
+            and "launch.k == bridge.officialN / 2 && launch.n == bridge.officialK" in sources["kernel_contract"]
+            and "!ResidualGmmOfficialTilingBridgeReady(stageId)" in sources["kernel_contract"]
+            and "Execution remains fail-closed until this bridge directly reuses the official W4A8 AIC/AIV lifecycle."
+            in sources["kernel_contract"]
+        ),
         "kernel_residual_gmm_scalar_execution_enabled": (
             "return RunResidualPackedW4A8ScalarGmmStage(launch);" in sources["kernel_contract"]
             and "RunResidualPackedW4A8ScalarGmmStage(const SVDQResidualGmmLaunch& launch) const"
@@ -2407,6 +2429,9 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
             ],
             "residual_gmm_official_tiling_bridge_recorded": source_proof[
                 "kernel_residual_gmm_official_tiling_bridge_recorded"
+            ],
+            "residual_gmm_official_tiling_bridge_consumed": source_proof[
+                "kernel_residual_gmm_official_tiling_bridge_consumed"
             ],
             "residual_gmm_execution_enabled": source_proof[
                 "kernel_residual_gmm_scalar_execution_enabled"

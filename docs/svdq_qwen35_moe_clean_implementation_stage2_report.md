@@ -9,6 +9,44 @@
 | Stage 2.4 production/four-NPU admission | IN PROGRESS | Production residual W4A8 GMM execution and four-NPU target-model E2E validation remain open. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Production enable remains false and host tiling must remain fail-closed. |
 
+## Stage 2.4 Residual W4A8 Official Tiling Bridge Consumed - 2026-06-27
+
+Purpose:
+
+- This is a source-boundary/prod-admission bookkeeping step only. It is not numerical progress under the Appendix GMM2
+  official-path gate and does not enable production residual W4A8 GMM execution.
+- Added kernel-side consumption of the embedded official W4A8 tiling bridge through `ResidualW4A8BridgeTiling()` and
+  `ResidualGmmOfficialTilingBridgeReady(uint32_t stageId)`.
+- `RunResidualGmmStage` now requires the tiling-aware official bridge readiness check, then still returns `false`.
+  Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed until the official W4A8 AIC/AIV lifecycle is directly
+  reused and production real-device numerical gates pass.
+
+Machine-checkable source constraints:
+
+- The kernel validates embedded official shape fields: `M=m`, `K=hiddenSize`, `N=2*intermediateSize`,
+  `listLen=expertPerRank`, nonzero official workspace bytes, and `hostExecutionFailClosed=true`.
+- The kernel validates official W4A8 tiling fields: `isTransposeB=false`, `isWeightNz=true`, matching `topK`,
+  `worldSize`, `maxOutputSize`, `swigluLimit`, CoC tile constants, and the routed quant tiling key.
+- The residual stage mapping remains explicit:
+  GMM1 uses `launch.k == officialK` and `launch.n == officialN`; GMM2 uses `launch.k == officialN/2` and
+  `launch.n == officialK`.
+- Scalar/public grouped-matmul execution remains absent. The public `torch_npu.npu_grouped_matmul` path was not used.
+
+Expected manifest state after regeneration:
+
+- `source_proof.kernel_residual_gmm_official_tiling_bridge_consumed=true`
+- `production_fail_closed.residual_gmm_official_tiling_bridge_consumed=true`
+- `production_fail_closed.residual_gmm_execution_enabled=false`
+- `production_admission.remaining_execution_requirements.residual_w4a8_gmm_execution_enabled=false`
+- `production_admission.production_enable_allowed=false`
+
+Validation for this edit:
+
+- `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+- `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q`
+- `git diff --check -- csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq.h tools/svdq_kernel_contract_manifest.py tests/ut/ops/test_svdq_moe_abi.py docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+
 ## Stage 2.2 Appendix-Field Real-Device Recheck Passed - 2026-06-27T04:58Z
 
 Latest authoritative status:
