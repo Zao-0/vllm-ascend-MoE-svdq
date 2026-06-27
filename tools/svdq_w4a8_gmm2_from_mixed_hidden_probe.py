@@ -10,7 +10,7 @@
 This Stage 2.2 probe keeps the production SVDQ operator fail-closed. It uses
 the already isolated mixed-epilogue debug op to produce canonical SVDQ-modified
 hidden, plain INT8 hidden, official high/low packed INT4 hidden, and hidden
-scale. It then relaunches the official W4A8 GMM2 consumer path through
+scale. It then relaunches the official W4A8 full lifecycle path through
 ``torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback`` with real post-loaded W2
 checkpoint weights and compares the official GMM2 post-dequant readback against
 the existing unfused reference derived from the official W4A8 contract.
@@ -2067,6 +2067,51 @@ def _gmm2_raw_debug_mode(swiglu_limit: float) -> str | None:
     return None
 
 
+def _official_lifecycle_debug_contract() -> dict[str, Any]:
+    return {
+        "debug_op": "torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback",
+        "aclnn_entry": "aclnnSVDQW4A8GMM2DebugReadback",
+        "mode": "official DispatchAndCombine lifecycle with external hidden/scale overlay",
+        "gmm2_only_from_packed": False,
+        "source_backing": {
+            "init_entry": (
+                "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/"
+                "dispatch_ffn_combine_w4_a8.h:220-233"
+            ),
+            "init_contract": (
+                "InitGMM2OnlyFromPacked calls Init(...), stores externalHiddenX/externalHiddenScale, "
+                "and sets gmm2OnlyFromPacked_ = false."
+            ),
+            "aic_dispatch": (
+                "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/"
+                "dispatch_ffn_combine_w4_a8_kernel.hpp:250-262"
+            ),
+            "aiv_dispatch": (
+                "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/"
+                "dispatch_ffn_combine_w4_a8_kernel.hpp:268-275"
+            ),
+            "override_point": (
+                "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/"
+                "dispatch_ffn_combine_w4_a8_kernel.hpp:1364-1376"
+            ),
+            "override_contract": (
+                "After official BlockEpilogue1 produces the normal hidden boundary, core 0 overlays "
+                "only gmA2I4_I8 and gmPerTokenScale2 from the validated external tensors, then the "
+                "official V2C signal, GMM2, C2V handoff, CombineV2, and BlockEpilogue2 lifecycle continue."
+            ),
+            "combine_contract": (
+                "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/"
+                "dispatch_ffn_combine_w4_a8_kernel.hpp:1448-1525"
+            ),
+        },
+        "forbidden_paths": {
+            "public_grouped_matmul_used": False,
+            "scalar_w4a8_gemm_used": False,
+            "custom_v2c_or_c2v_signal_substitute_used": False,
+        },
+    }
+
+
 def _parse_gmm2_loop_stats(tensor: torch.Tensor, *, expert_per_rank: int) -> dict[str, Any]:
     values = tensor.detach().cpu().flatten()[:512].tolist()
     group_count = min(int(values[1]) if len(values) > 1 else 0, int(expert_per_rank), 48)
@@ -2800,11 +2845,40 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         max_rows=args.gmm2_reference_max_rows,
         max_abs_tol=args.gmm2_reference_max_abs_tol,
     )
+    loop_stats_for_normal: dict[str, Any] = {
+        "enabled": False,
+        "reason": "normal post-dequant run did not request the source-backed loop-stats relaunch",
+    }
+    if not loop_stats_debug and not raw_c2_debug:
+        loop_stats_tensor, _, _, _ = _call_gmm2_debug_op(435000.0)
+        torch.npu.synchronize()
+        loop_stats_for_normal = _parse_gmm2_loop_stats(loop_stats_tensor, expert_per_rank=local_num_experts)
+        loop_stats_for_normal.update(
+            {
+                "diagnostic_swiglu_limit": 435000.0,
+                "source_boundary": (
+                    "Full official lifecycle loop-stats relaunch. AIC GMM2 observes V2C from "
+                    "DispatchAndCombine, writes scheduling counters, and returns before post-dequant."
+                ),
+                "diagnostic_only": True,
+            }
+        )
+    loop_stats_valid = bool(
+        loop_stats_for_normal.get("enabled")
+        and loop_stats_for_normal.get("valid_magic")
+        and loop_stats_for_normal.get("state_probe", {}).get("valid_magic")
+    )
+    official_gmm2_loop_count = int(loop_stats_for_normal["total_core_loops"]) if loop_stats_valid else None
+    official_gmm2_active_tile_count = official_gmm2_loop_count
     return {
         "stage": "stage2_modified_hidden_official_w4a8_gmm2",
         "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback -> aclnnSVDQW4A8GMM2DebugReadback",
         "mixed_hidden_source_op": "torch.ops._C_ascend.svdq_mixed_epilogue_debug_readback",
-        "official_source_of_truth": "dispatch_ffn_combine_w4_a8 GMM2 AIC path and W4A8_DEBUG AIV post-dequant tap",
+        "official_source_of_truth": (
+            "dispatch_ffn_combine_w4_a8 DispatchAndCombine lifecycle, official GMM2 AIC path, "
+            "official C2V/CombineV2 handoff, and W4A8_DEBUG AIV post-dequant tap"
+        ),
+        "official_lifecycle_debug_contract": _official_lifecycle_debug_contract(),
         "public_grouped_matmul_used": False,
         "real_checkpoint_validation": True,
         "production_svdq_host_tiling_fail_closed": True,
@@ -2855,12 +2929,17 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             "post_dequant_variant_diagnostics": post_dequant_variant_diagnostics,
             "actual_d2_post_dequant_reconstruction": actual_d2_post_dequant_reconstruction,
             "actual_d2_from_accumulator_diagnostics": actual_d2_from_accumulator_diagnostics,
+            "loop_stats_from_official_lifecycle": loop_stats_for_normal,
             "int32_accumulator_readback_reference": accumulator_int32_report,
         },
         "checks": {
             "official_gmm2_entry_reached": True,
-            "official_gmm2_loop_count": None,
-            "official_gmm2_active_tile_count": None,
+            "official_gmm2_loop_count": official_gmm2_loop_count,
+            "official_gmm2_active_tile_count": official_gmm2_active_tile_count,
+            "official_gmm2_loop_stats_valid": loop_stats_valid,
+            "official_gmm2_active_tile_count_nonzero": bool(
+                loop_stats_valid and loop_stats_for_normal.get("active_tile_count_nonzero")
+            ),
             "official_gmm2_aic_raw_output_finite": bool(accumulator_int32_report["enabled"]),
             "official_gmm2_aic_raw_output_nonzero": bool(accumulator_int32_actual_nonzero),
             "official_gmm2_aic_reference_passed": bool(accumulator_int32_reference_passed),

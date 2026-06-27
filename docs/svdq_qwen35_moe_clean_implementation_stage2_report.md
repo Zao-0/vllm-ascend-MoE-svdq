@@ -4,13 +4,110 @@
 |---|---|---|
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
-| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Must now be debugged only against the complete official lifecycle contract. Latest diagnostic evidence is not an acceptance pass until the official producer/consumer state table is complete and Gate B/Gate C pass on the official path. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Official-lifecycle loop/tile stats, Gate A, and accumulator Gate B now pass for top-1 expert 0; Gate C still fails strict post-dequant numerical tolerance. |
 | Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 official GMM2 lifecycle and strict numerical gates. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
 
+## Stage 2.2 Official-Lifecycle Loop Stats Diagnostic - 2026-06-27T02:13Z
+
+This section is the latest authoritative handoff. It supersedes the `2026-06-27` official-lifecycle constraint
+handoff by adding a source-backed loop/tile diagnostic to the normal Stage 2.2 probe and validating it on real
+Ascend 910B4 hardware. The change does not alter kernel behavior, V2C/C2V flags, workspace offsets, packed W4
+format, scale formulas, tolerances, production host tiling, or the public grouped-matmul path.
+
+Files changed:
+
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+
+Exact behavior implemented:
+
+- The probe now records `official_lifecycle_debug_contract`, explicitly documenting that
+  `SVDQW4A8GMM2DebugReadback` enters the official `DispatchAndCombine` lifecycle because
+  `InitGMM2OnlyFromPacked` sets `gmm2OnlyFromPacked_ = false`.
+- For normal post-dequant runs, the probe relaunches the same official-lifecycle debug op with
+  `swigluLimit=435000.0`, the existing source-backed loop-stats mode, and records
+  `gmm2.loop_stats_from_official_lifecycle`.
+- The normal summary now fills `official_gmm2_loop_count`, `official_gmm2_active_tile_count`,
+  `official_gmm2_loop_stats_valid`, and `official_gmm2_active_tile_count_nonzero` instead of leaving the loop/tile
+  fields as `None`.
+- The loop-stats relaunch is diagnostic-only and does not change pass/fail. Stage 2.2 still requires Gate C to pass
+  strict reference tolerance.
+
+Official source locations tied to this diagnostic:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h:220-233`:
+  `InitGMM2OnlyFromPacked` stores the external hidden/scale pointers and sets `gmm2OnlyFromPacked_ = false`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:250-275`:
+  AIC runs `GMM2(params)` and AIV runs `DispatchAndCombine(params)` when `gmm2OnlyFromPacked` is false.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:797-820`:
+  debug `swigluLimit` ranges select loop stats or raw D2 readback without introducing a new lifecycle.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:831-920`:
+  `WriteGMM2OnlyLoopStats` records active rows, doubled rows, core loops, token state, and cumsum state.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1364-1382`:
+  the official AIV path overlays only external GMM2 hidden/scale and then emits the official V2C signal.
+
+Validation commands:
+
+- Syntax check:
+  `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+- Diff whitespace check:
+  `git diff --check -- tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+- NPU/process preflight logs captured with `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
+- Real-device normal Gate C probe:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH:-} python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py --require-npu --top-k 1 --route-experts 0 --local-num-experts 8 --summary-name phase_stage2_gmm2_official_lifecycle_loopstats_true_top1_expert0.json`
+
+Evidence paths:
+
+- NPU preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_official_lifecycle_loopstats_preflight_npus.log`
+- Python logical-device preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_official_lifecycle_loopstats_preflight_python.log`
+- Active process preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_official_lifecycle_loopstats_preflight_processes.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_official_lifecycle_loopstats_true_top1_expert0.log`
+- Probe exit code:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_official_lifecycle_loopstats_true_top1_expert0.exitcode`
+  contains `1`, expected because Stage 2.2 still fails strict Gate C.
+- Probe summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_official_lifecycle_loopstats_true_top1_expert0.json`
+
+Validated status fields from the new summary:
+
+- `official_lifecycle_debug_contract.mode: official DispatchAndCombine lifecycle with external hidden/scale overlay`
+- `official_lifecycle_debug_contract.gmm2_only_from_packed: false`
+- `official_gmm2_loop_stats_valid: true`
+- `official_gmm2_loop_count: 8`
+- `official_gmm2_active_tile_count: 8`
+- `official_gmm2_active_tile_count_nonzero: true`
+- `gate_a_input_boundary_passed: true`
+- `official_gmm2_accumulator_int32_reference_passed: true`
+- `official_gmm2_post_dequant_reference_passed: false`
+- `official_gmm2_numerical_gate_passed: false`
+
+Numerical result:
+
+- Gate A passes and the Stage 2.1 packed hidden/scale override readback remains exact.
+- Official-lifecycle loop stats are valid: total active rows `16`, groups with work `1`, total core loops `8`.
+- Pre-Fixpipe int32 accumulator Gate B still passes the exact reference.
+- Gate C remains finite/nonzero but fails strict post-dequant tolerance:
+  max abs `0.00037679076194763184`, mean abs `1.82786079676589e-05`.
+
+Current interpretation:
+
+1. The current debug op is no longer just a standalone GMM2-only state machine for the normal Stage 2.2 probe; it
+   enters the official `DispatchAndCombine` lifecycle and overlays only the validated external hidden INT4 and
+   hidden scale at the official AIV boundary.
+2. The old report language describing the current normal probe as synthetic-lifecycle-only is now superseded for
+   the normal run, though the historical GMM2-only helper remains in source for loop/debug modes.
+3. The unresolved boundary is still after exact int32 accumulation and before strict Gate C post-dequant agreement:
+   either the exact official Fixpipe/D2 value contract or a remaining source-backed reference mismatch around D2
+   reconstruction must be resolved without changing public grouped matmul, packed W4, or tolerances.
+4. Stage 2.2 remains `FAIL / IN PROGRESS`; Stage 2.3 and production remain blocked.
+
 ## Stage 2.2 Official-Lifecycle Constraint Handoff - 2026-06-27
 
-This section is the latest authoritative handoff. It supersedes the `2026-06-27T01:59Z` direct
+Historical section. It superseded the `2026-06-27T01:59Z` direct
 accumulator-to-D2 diagnostic as the controlling work constraint. The prior diagnostics remain valid failed
 experiments, but they do not count as Stage 2.2 acceptance evidence until the debug operator is proven equivalent to
 the successful official `dispatch_ffn_combine_w4_a8` producer/consumer lifecycle.
