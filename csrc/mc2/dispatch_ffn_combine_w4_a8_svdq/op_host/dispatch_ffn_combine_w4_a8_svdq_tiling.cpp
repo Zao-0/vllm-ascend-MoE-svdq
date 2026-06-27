@@ -367,6 +367,65 @@ static void BuildDispatchRoutingTiling(DispatchFFNCombineW4A8SVDQTilingData* til
     CopyMoeInitRoutingQuantV2TilingData(dispatchRouting, routingBase);
 }
 
+static uint64_t ResidualW4A8OfficialWorkspaceBytes(const DispatchFFNCombineW4A8SVDQInfo& info)
+{
+    const uint32_t officialK = info.hiddenSize;
+    const uint32_t officialN = info.intermediateSize * 2;
+    const uint32_t n2 = officialK;
+    const uint32_t k2 = officialN / 2;
+    return ((info.m + 256 - 1) / 256 * 256) * info.topK * INT32_BYTES +
+           info.worldSize * info.worldSize * info.expertPerRank * INT32_BYTES * 3 +
+           info.maxOutputSize * FP32_BYTES * 2 +
+           info.maxOutputSize * officialN * BF16_BYTES * 2 +
+           info.maxOutputSize * n2 * BF16_BYTES * 2 +
+           info.maxOutputSize * officialK +
+           info.maxOutputSize * k2 +
+           info.worldSize * INT32_BYTES * 16;
+}
+
+static void BuildResidualW4A8OfficialTiling(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
+{
+    auto& info = tilingData->info;
+    auto& bridge = tilingData->residualW4A8Bridge;
+    auto& official = bridge.officialTiling;
+    auto& officialInfo = official.dispatchFFNCombineW4A8Info;
+
+    bridge.officialM = info.m;
+    bridge.officialK = info.hiddenSize;
+    bridge.officialN = info.intermediateSize * 2;
+    bridge.officialListLen = info.expertPerRank;
+    bridge.officialWorkspaceBytes = ResidualW4A8OfficialWorkspaceBytes(info);
+    bridge.hostExecutionFailClosed = true;
+
+    officialInfo.M = bridge.officialM;
+    officialInfo.K = bridge.officialK;
+    officialInfo.N = bridge.officialN;
+    officialInfo.expertPerRank = info.expertPerRank;
+    officialInfo.maxOutputSize = info.maxOutputSize;
+    officialInfo.isTransposeB = false;
+    officialInfo.isWeightNz = true;
+    officialInfo.aivNum = tilingData->dispatchRouting.aivNum;
+    officialInfo.totalUbSize = SVDQ_ROUTING_UB_SIZE;
+    officialInfo.topK = info.topK;
+    officialInfo.worldSize = info.worldSize;
+    officialInfo.listLen = bridge.officialListLen;
+    officialInfo.swigluLimit = info.swigluLimit;
+
+    official.cocTiling.m0 = 128;
+    official.cocTiling.k0 = 256;
+    official.cocTiling.n0 = 256;
+    official.cocTiling.swizzleDirect = 1;
+    official.cocTiling.swizzleOffset = 7;
+    official.cocTiling.ubMoveNum = 16 * 1024;
+    official.cocTiling.pValue = 1;
+    official.cocTiling.commNpuSplit = info.worldSize;
+    official.cocTiling.commDataSplit = 1;
+    official.cocTiling.lenPerLoop = official.cocTiling.m0 * official.cocTiling.n0 / 2;
+    official.cocTiling.initRoutingQuantTilingKey = tilingData->dispatchRouting.initRoutingQuantTilingKey;
+    official.cocTiling.moeInitRoutingQuantV2TilingData =
+        tilingData->dispatchRouting.moeInitRoutingQuantV2TilingData;
+}
+
 static void SetBF16StageShape(
     DispatchFFNCombineW4A8SVDQTilingData* tilingData, uint32_t stageId, uint32_t factorId,
     uint32_t inputRegionId, uint32_t outputRegionId, uint32_t m, uint32_t k, uint32_t n,
@@ -890,6 +949,7 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
     BuildSyncFlagTable(tilingData);
     BuildBF16DispatchRoutingTiling(tilingData);
     BuildDispatchRoutingTiling(tilingData);
+    BuildResidualW4A8OfficialTiling(tilingData);
     BuildBF16StageShapeTable(tilingData);
     BuildResidualStageShapeTable(tilingData);
     BuildResidualQuantShapeTable(tilingData);

@@ -1578,6 +1578,10 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     assert "SVDQResidualQuantShape residualQuantShapes[SVDQ_RESIDUAL_QUANT_COUNT]" in tiling_header
     assert "SVDQResidualGmmShape" in tiling_header
     assert "SVDQResidualGmmShape residualGmmShapes[SVDQ_RESIDUAL_GMM_COUNT]" in tiling_header
+    assert "../../dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_tiling.h" in tiling_header
+    assert "SVDQResidualW4A8BridgeTiling" in tiling_header
+    assert "DispatchFFNCombineW4A8TilingData officialTiling" in tiling_header
+    assert "SVDQResidualW4A8BridgeTiling residualW4A8Bridge" in tiling_header
     assert "SetResidualStageShape" in tiling
     assert "BuildResidualStageShapeTable" in tiling
     assert "BuildResidualStageShapeTable(tilingData)" in tiling
@@ -1587,6 +1591,9 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     assert "SetResidualGmmShape" in tiling
     assert "BuildResidualGmmShapeTable" in tiling
     assert "BuildResidualGmmShapeTable(tilingData)" in tiling
+    assert "ResidualW4A8OfficialWorkspaceBytes" in tiling
+    assert "BuildResidualW4A8OfficialTiling" in tiling
+    assert "BuildResidualW4A8OfficialTiling(tilingData)" in tiling
     assert "ResidualStageShape(uint32_t stageId)" in contract
     assert "return tilingData_.residualStageShapes[stageId]" in contract
     assert "ResidualQuantShape(uint32_t quantId)" in contract
@@ -1743,6 +1750,21 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         "bias1Slot",
         "bias2Slot",
         "info.expertPerRank",
+    ):
+        assert token in tiling
+
+    for token in (
+        "bridge.officialK = info.hiddenSize",
+        "bridge.officialN = info.intermediateSize * 2",
+        "bridge.officialListLen = info.expertPerRank",
+        "bridge.hostExecutionFailClosed = true",
+        "officialInfo.isWeightNz = true",
+        "officialInfo.isTransposeB = false",
+        "official.cocTiling.m0 = 128",
+        "official.cocTiling.k0 = 256",
+        "official.cocTiling.n0 = 256",
+        "official.cocTiling.initRoutingQuantTilingKey = tilingData->dispatchRouting.initRoutingQuantTilingKey",
+        "official.cocTiling.moeInitRoutingQuantV2TilingData =",
     ):
         assert token in tiling
 
@@ -2895,6 +2917,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["residual_quant_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_official_bridge_contract_recorded"]
+    assert loaded["production_fail_closed"]["residual_gmm_official_tiling_bridge_recorded"]
     assert not loaded["production_fail_closed"]["residual_gmm_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_gmm_scalar_helpers_absent"]
     assert loaded["production_fail_closed"]["mixed_epilogue_launch_descriptor_recorded"]
@@ -2913,11 +2936,11 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_admission"]["host_tiling_must_remain_fail_closed"]
     assert not loaded["production_admission"]["production_enable_allowed"]
     assert "stage2_2_official_gmm2_gate" in loaded["production_admission"]
-    assert loaded["production_admission"]["stage2_2_official_gmm2_gate_passed"]
-    assert loaded["production_admission"]["stage2_2_official_gmm2_gate"]["status"] == "passed"
-    assert not loaded["production_admission"]["stage2_2_official_gmm2_gate"]["stage2_3_and_later_blocked"]
+    assert not loaded["production_admission"]["stage2_2_official_gmm2_gate_passed"]
+    assert loaded["production_admission"]["stage2_2_official_gmm2_gate"]["status"] == "fail_in_progress"
+    assert loaded["production_admission"]["stage2_2_official_gmm2_gate"]["stage2_3_and_later_blocked"]
     assert "stage2_3_real_checkpoint_composition_gate" in loaded["production_admission"]
-    assert loaded["production_admission"]["stage2_3_isolated_gate_passed"]
+    assert not loaded["production_admission"]["stage2_3_isolated_gate_passed"]
     assert loaded["production_admission"]["remaining_execution_requirements"] == {
         "dispatch_routing_execution_enabled": True,
         "residual_hidden_quant_execution_enabled": True,
@@ -2942,6 +2965,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_residual_quant_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_official_bridge_contract_recorded"]
+    assert loaded["source_proof"]["kernel_residual_gmm_official_tiling_bridge_recorded"]
     assert not loaded["source_proof"]["kernel_residual_gmm_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_gmm_scalar_helpers_absent"]
     assert loaded["source_proof"]["kernel_residual_routed_input_quant_execution_enabled"]
@@ -3356,7 +3380,7 @@ def test_svdq_kernel_contract_manifest_keeps_stage2_3_evidence_blocked_by_gmm2_g
     assert manifest["production_admission"]["host_tiling_must_remain_fail_closed"]
 
 
-def test_svdq_kernel_contract_manifest_accepts_current_stage2_2_recheck_and_stage2_3_evidence(tmp_path):
+def test_svdq_kernel_contract_manifest_blocks_superseded_stage2_2_recheck_and_stage2_3_evidence(tmp_path):
     from tools.svdq_kernel_contract_manifest import build_manifest
 
     zero_error = {
@@ -3521,16 +3545,17 @@ def test_svdq_kernel_contract_manifest_accepts_current_stage2_2_recheck_and_stag
     stage2_2 = manifest["production_admission"]["stage2_2_official_gmm2_gate"]
     stage2_3 = manifest["production_admission"]["stage2_3_real_checkpoint_composition_gate"]
 
-    assert stage2_2["status"] == "passed"
-    assert stage2_2["evidence_status"] == "current_recheck_passed"
+    assert stage2_2["status"] == "fail_in_progress"
+    assert stage2_2["evidence_status"] == "current_recheck_missing_appendix_gmm2_official_path_revision_fields"
     assert not stage2_2["historical_passed_under_superseded_contract"]
-    assert stage2_2["passed"]
-    assert not stage2_2["stage2_3_and_later_blocked"]
-    assert stage2_3["status"] == "passed"
-    assert stage2_3["passed"]
-    assert stage2_3["blocking_gate"] is None
-    assert manifest["production_admission"]["stage2_2_official_gmm2_gate_passed"]
-    assert manifest["production_admission"]["stage2_3_isolated_gate_passed"]
+    assert not stage2_2["passed"]
+    assert stage2_2["stage2_3_and_later_blocked"]
+    assert not all(stage2_2["required_appendix_gmm2_official_path_revision_flags"].values())
+    assert stage2_3["status"] == "blocked_by_stage2_2_official_gmm2_gate"
+    assert not stage2_3["passed"]
+    assert stage2_3["blocking_gate"] == "stage2_2_modified_hidden_official_w4a8_gmm2"
+    assert not manifest["production_admission"]["stage2_2_official_gmm2_gate_passed"]
+    assert not manifest["production_admission"]["stage2_3_isolated_gate_passed"]
     assert not manifest["production_admission"]["production_enable_allowed"]
     assert manifest["production_admission"]["host_tiling_must_remain_fail_closed"]
 

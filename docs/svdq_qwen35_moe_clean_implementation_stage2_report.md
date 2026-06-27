@@ -4,19 +4,47 @@
 |---|---|---|
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
-| Stage 2.2 modified-hidden official W4A8 GMM2 | PASS | Current 2026-06-27 recheck uses the official full lifecycle with external hidden/scale overlay and passes Gate A/B/C. |
-| Stage 2.3 same-routing and final-combine isolated gates | PASS | Previously validated Stage 2.3 evidence is unblocked by the current Stage 2.2 Gate A/B/C recheck. |
-| Stage 2.4 and later | IN PROGRESS | Production fused-op integration and four-NPU end-to-end validation remain open. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Binding appendix now requires official producer/consumer lifecycle reconstruction and Gate A/B/C readback; latest unresolved boundary is official GMM2 post-dequant readback all zeros while the unfused official-contract reference is nonzero. |
+| Stage 2.3 and later | BLOCKED | Do not advance same-routing composition, SVDQ down composition, final combine admission, or four-NPU service until Stage 2.2 passes. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
 
-## Stage 2.2 Current Official-Path Recheck Passed - 2026-06-27
+## Stage 2.2 Authoritative Status Reset - 2026-06-27
+
+Latest binding requirement:
+
+- `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` is now the active constraint for
+  Stage 2.2.
+- The authoritative state is Stage 2.0 PASS, Stage 2.1 PASS, Stage 2.2 FAIL / IN PROGRESS, Stage 2.3+ BLOCKED, and
+  production FAIL-CLOSED.
+- The active failure is the official GMM2 post-dequant readback returning all zeros while the real-checkpoint unfused
+  official-contract reference is nonzero.
+- Do not reopen BF16 producer work or the packed-hidden Stage 2.1 work. The active problem is the official W4A8 GMM2
+  producer/consumer lifecycle and state reconstruction.
+- Do not make another behavioral GMM2 patch until the official-vs-debug state table below is updated with the
+  deviation being corrected.
+- Gate A still needs complete routed-row identity, prefix, expert-local row, and padded-row evidence. Gate B must expose
+  the exact official AIC raw accumulator/D2 boundary and prove it finite/nonzero/reference-matched. Gate C must validate
+  the official `BlockEpilogue2` / `CombineV2` FP32 post-dequant output only after Gate B is nonzero.
+- The public `torch_npu.npu_grouped_matmul` path remains forbidden and was not used.
+- Production SVDQ host tiling remains fail-closed. Source-boundary manifests, tiling records, compilation, registration,
+  and kernel entry do not count as Stage 2.2 numerical progress.
+
+Current code-state note:
+
+- The residual W4A8 official tiling bridge recorded later in this report is a fail-closed source boundary only. It does
+  not enable residual W4A8 GMM execution and does not satisfy Stage 2.2 Gate B or Gate C.
+- Older sections that describe isolated PASS evidence are historical and superseded by this status reset for admission.
+
+## Stage 2.2 Historical Official-Path Recheck - 2026-06-27
 
 Latest binding requirement:
 
 - `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` is now treated as the current
   constraint for Stage 2.2.
-- The appendix reopened Stage 2.2 until the official-vs-debug state table and a current Gate A/B/C recheck were
-  recorded. That current recheck now passes.
+- This section is retained as historical evidence only. It is superseded by the authoritative status reset above and must
+  not be used to advance Stage 2.3+ or enable production.
+- The appendix reopened Stage 2.2 until the official-vs-debug state table and a current Gate A/B/C recheck are recorded
+  against the latest official-path requirements.
 - The older root-level Stage 2.2 summary remains historical. The current admission evidence is
   `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_gmm2_current_recheck_top1_expert0.json`.
 - The public `torch_npu.npu_grouped_matmul` path remains forbidden and was not used.
@@ -26,11 +54,11 @@ Latest binding requirement:
 Machine-checkable guardrail:
 
 - `tools/svdq_kernel_contract_manifest.py` now emits
-  `production_admission.stage2_2_official_gmm2_gate.status=passed`,
-  `stage2_2_official_gmm2_gate_passed=true`, and `stage2_3_isolated_gate_passed=true` only when the current
-  `stage2/phase_stage2_gmm2_current_recheck_top1_expert0.json` evidence passes all required appendix fields.
-- If the current Stage 2.2 recheck file is missing, Stage 2.2 remains `fail_in_progress` and Stage 2.3 remains
-  blocked.
+  `production_admission.stage2_2_official_gmm2_gate.status=fail_in_progress`,
+  `stage2_2_official_gmm2_gate_passed=false`, and `stage2_3_isolated_gate_passed=false` for the currently available
+  evidence, because it lacks the new Appendix GMM2 official-path revision fields.
+- If the current Stage 2.2 recheck file is missing, invalid, or missing those revision fields, Stage 2.2 remains
+  `fail_in_progress` and Stage 2.3 remains blocked.
 - `production_enable_allowed=false` and `host_tiling_must_remain_fail_closed=true`.
 
 Validation:
@@ -48,8 +76,9 @@ Validation:
   `official_gmm2_post_dequant_reference_passed=true`, and `official_gmm2_numerical_gate_passed=true`.
   The strict post-dequant comparison records `max_abs=0.0` and `mean_abs=0.0`.
 - `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
-  regenerated the manifest with `stage2_2_official_gmm2_gate.status=passed`,
-  `stage2_2_official_gmm2_gate_passed=true`, `stage2_3_isolated_gate_passed=true`, and
+  regenerated the manifest with `stage2_2_official_gmm2_gate.status=fail_in_progress`,
+  `evidence_status=current_recheck_missing_appendix_gmm2_official_path_revision_fields`,
+  `stage2_2_official_gmm2_gate_passed=false`, `stage2_3_isolated_gate_passed=false`, and
   `production_enable_allowed=false`.
 
 Official W4A8 source anchors inspected:
@@ -111,6 +140,42 @@ Validation:
 - `git diff --check -- csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq.h tools/svdq_kernel_contract_manifest.py tests/ut/ops/test_svdq_moe_abi.py docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
 - `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q` -> `46 passed, 16 warnings`
 
+## Stage 2.4 Residual W4A8 Official Tiling Bridge - 2026-06-27
+
+Latest code state:
+
+- Added `SVDQResidualW4A8BridgeTiling` to carry an embedded `DispatchFFNCombineW4A8TilingData` payload for the future
+  official residual W4A8 GMM bridge.
+- Host tiling now fills the official W4A8 shape contract: `M=m`, `K=hiddenSize`, `N=2*intermediateSize`,
+  `listLen=expertPerRank`, `isTransposeB=false`, and `isWeightNz=true`.
+- The bridge copies the official CoC constants `m0=128`, `k0=256`, `n0=256`, `swizzleDirect=1`,
+  `swizzleOffset=7`, `ubMoveNum=16*1024`, `pValue=1`, `commNpuSplit=worldSize`, `commDataSplit=1`, and
+  `lenPerLoop=m0*n0/2`.
+- The bridge reuses `dispatchRouting.initRoutingQuantTilingKey` and
+  `dispatchRouting.moeInitRoutingQuantV2TilingData` so the future residual W4A8 path is tied to the official routing
+  quant tiling payload instead of a parallel substitute.
+- `officialWorkspaceBytes` is computed with the official W4A8 workspace formula using the SVDQ production dimensions.
+- `hostExecutionFailClosed=true` is recorded in the bridge, and production host tiling still returns `GRAPH_FAILED`.
+  Residual W4A8 GMM execution remains disabled until the official GMM2 lifecycle gates pass.
+
+Regenerated manifest:
+
+- Command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+- Resulting key state:
+  `production_fail_closed.residual_gmm_official_tiling_bridge_recorded=true`,
+  `source_proof.kernel_residual_gmm_official_tiling_bridge_recorded=true`,
+  `production_fail_closed.residual_gmm_execution_enabled=false`,
+  `production_admission.remaining_execution_requirements.residual_w4a8_gmm_execution_enabled=false`, and
+  `production_admission.production_enable_allowed=false`.
+
+Validation:
+
+- `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+- `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+- `git diff --check -- csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp tools/svdq_kernel_contract_manifest.py tests/ut/ops/test_svdq_moe_abi.py docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q` -> `46 passed, 16 warnings`
+
 ## Stage 2.4 Production Hidden Quant AIV Source Boundary - 2026-06-27
 
 Latest code state:
@@ -157,8 +222,9 @@ Latest binding constraint reread:
 - Reread `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` before this source patch.
 - No official GMM2 lifecycle, V2C/C2V flag protocol, packed W4 layout, W4A8 scale formula, or public
   `torch_npu.npu_grouped_matmul` path was changed or reinterpreted.
-- This source patch depends on the current Stage 2.2 Gate A/B/C recheck evidence listed above. It does not claim
-  production admission and does not enable production host tiling.
+- This source patch depends on historical Stage 2.2 Gate A/B/C recheck evidence listed above. Under the current
+  appendix it does not claim Stage 2.2 admission, does not unblock Stage 2.3+, and does not enable production host
+  tiling.
 
 Latest code state:
 
@@ -432,7 +498,7 @@ Real-device result:
 - Final-combine error:
   active shape `[4, 2048]`, actual dtype `torch.bfloat16`, expected dtype `torch.bfloat16`,
   finite actual/expected/diff, max abs `0.0`, mean abs `0.0`.
-- Updated production admission gate:
+- Historical production admission gate under the superseded contract:
   `status=passed`, `passed=true`, `stage2_3_isolated_gate_passed=true`,
   `exact_numerical_flags.final_combine_output_error_zero=true`,
   `required_final_combine_flags.real_final_combine_uses_official_index_semantics=true`,

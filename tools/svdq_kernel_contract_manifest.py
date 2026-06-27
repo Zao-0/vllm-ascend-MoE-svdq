@@ -1002,6 +1002,28 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "Execution remains fail-closed until this bridge directly reuses the official W4A8 AIC/AIV lifecycle."
             in sources["kernel_contract"]
         ),
+        "kernel_residual_gmm_official_tiling_bridge_recorded": (
+            "../../dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_tiling.h"
+            in sources["kernel_tiling"]
+            and "SVDQResidualW4A8BridgeTiling" in sources["kernel_tiling"]
+            and "DispatchFFNCombineW4A8TilingData officialTiling" in sources["kernel_tiling"]
+            and "SVDQResidualW4A8BridgeTiling residualW4A8Bridge" in sources["kernel_tiling"]
+            and "ResidualW4A8OfficialWorkspaceBytes" in sources["host_tiling"]
+            and "BuildResidualW4A8OfficialTiling" in sources["host_tiling"]
+            and "BuildResidualW4A8OfficialTiling(tilingData)" in sources["host_tiling"]
+            and "bridge.officialK = info.hiddenSize" in sources["host_tiling"]
+            and "bridge.officialN = info.intermediateSize * 2" in sources["host_tiling"]
+            and "bridge.officialListLen = info.expertPerRank" in sources["host_tiling"]
+            and "bridge.hostExecutionFailClosed = true" in sources["host_tiling"]
+            and "officialInfo.isWeightNz = true" in sources["host_tiling"]
+            and "officialInfo.isTransposeB = false" in sources["host_tiling"]
+            and "official.cocTiling.m0 = 128" in sources["host_tiling"]
+            and "official.cocTiling.k0 = 256" in sources["host_tiling"]
+            and "official.cocTiling.n0 = 256" in sources["host_tiling"]
+            and "official.cocTiling.initRoutingQuantTilingKey = tilingData->dispatchRouting.initRoutingQuantTilingKey"
+            in sources["host_tiling"]
+            and "official.cocTiling.moeInitRoutingQuantV2TilingData =" in sources["host_tiling"]
+        ),
         "kernel_residual_gmm_scalar_execution_enabled": (
             "return RunResidualPackedW4A8ScalarGmmStage(launch);" in sources["kernel_contract"]
             and "RunResidualPackedW4A8ScalarGmmStage(const SVDQResidualGmmLaunch& launch) const"
@@ -1804,14 +1826,16 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
         "production_tiling_enable_allowed": False,
         "public_grouped_matmul_allowed": False,
         "binding_revision": (
-            "stage2_appendix_gmm2_official_path_admits_current_recheck_after_official_lifecycle_"
-            "state_table_and_gate_a_b_c_evidence_are_recorded"
+            "stage2_appendix_gmm2_official_path_requires_explicit_official_lifecycle_state_table_"
+            "and_gate_a_b_c_evidence"
         ),
         "effective_status_for_production": "pending_current_recheck",
         "reason": (
-            "The Stage 2 appendix reopened modified-hidden official W4A8 GMM2 until a current "
-            "official-lifecycle recheck records the required state table and Gate A/B/C readbacks. "
-            "The root-level trunc13 summary is retained only as historical evidence."
+            "The Stage 2 appendix keeps modified-hidden official W4A8 GMM2 in FAIL / IN PROGRESS "
+            "until evidence records the official-vs-debug state table, exact routed-row identity, "
+            "Gate A input boundary, Gate B AIC raw/D2 output, and Gate C BlockEpilogue2/CombineV2 "
+            "post-dequant readback. Older current-recheck summaries are retained only as historical "
+            "evidence unless they explicitly carry the appendix revision fields."
         ),
         "required_gate_a": (
             "same routed-row identity with canonical hidden BF16, hidden INT8, packed INT4, "
@@ -1921,6 +1945,30 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
         "hidden_size_is_2048": int(shape.get("hidden_size", -1)) == 2048,
         "intermediate_size_is_512": int(shape.get("intermediate_size", -1)) == 512,
     }
+    appendix_revision = stage.get("appendix_gmm2_official_path", {})
+    appendix_revision_flags = {
+        "official_vs_debug_state_table_complete": bool(
+            appendix_revision.get("official_vs_debug_state_table_complete")
+        ),
+        "gate_a_routing_identity_complete": bool(
+            appendix_revision.get("gate_a_routing_identity_complete")
+        ),
+        "gate_a_prefix_and_padded_row_evidence_complete": bool(
+            appendix_revision.get("gate_a_prefix_and_padded_row_evidence_complete")
+        ),
+        "gate_b_exact_aic_raw_or_d2_boundary_identified": bool(
+            appendix_revision.get("gate_b_exact_aic_raw_or_d2_boundary_identified")
+        ),
+        "gate_b_aic_raw_output_reference_passed": bool(
+            appendix_revision.get("gate_b_aic_raw_output_reference_passed")
+        ),
+        "gate_c_validated_after_gate_b_nonzero": bool(
+            appendix_revision.get("gate_c_validated_after_gate_b_nonzero")
+        ),
+        "active_failure_all_zero_post_dequant_resolved": bool(
+            appendix_revision.get("active_failure_all_zero_post_dequant_resolved")
+        ),
+    }
     passed = bool(
         summary.get("passed")
         and stage.get("passed")
@@ -1934,11 +1982,21 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
         and all(lifecycle_flags.values())
         and all(diagnostic_flags.values())
         and all(shape_flags.values())
+        and all(appendix_revision_flags.values())
     )
+    missing_appendix_revision = evidence_path.exists() and not all(appendix_revision_flags.values())
     gate.update(
         {
-            "status": "passed" if passed else "failed",
-            "evidence_status": "current_recheck_passed" if passed else "current_recheck_failed",
+            "status": "passed" if passed else "fail_in_progress",
+            "evidence_status": (
+                "current_recheck_passed"
+                if passed
+                else (
+                    "current_recheck_missing_appendix_gmm2_official_path_revision_fields"
+                    if missing_appendix_revision
+                    else "current_recheck_failed"
+                )
+            ),
             "passed": passed,
             "historical_passed_under_superseded_contract": False,
             "summary_passed": bool(summary.get("passed")),
@@ -1950,6 +2008,7 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
             "required_lifecycle_flags": lifecycle_flags,
             "required_diagnostic_flags": diagnostic_flags,
             "required_shape_flags": shape_flags,
+            "required_appendix_gmm2_official_path_revision_flags": appendix_revision_flags,
             "production_tiling_fail_closed_in_evidence": bool(
                 stage.get("production_svdq_host_tiling_fail_closed", True)
             ),
@@ -2345,6 +2404,9 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
             ],
             "residual_gmm_official_bridge_contract_recorded": source_proof[
                 "kernel_residual_gmm_official_bridge_contract_recorded"
+            ],
+            "residual_gmm_official_tiling_bridge_recorded": source_proof[
+                "kernel_residual_gmm_official_tiling_bridge_recorded"
             ],
             "residual_gmm_execution_enabled": source_proof[
                 "kernel_residual_gmm_scalar_execution_enabled"

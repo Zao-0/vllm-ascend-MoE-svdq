@@ -16,6 +16,7 @@
 #include <cstdint>
 
 #include "lowrank/svdq_fused_down_up_tiling.h"
+#include "../../dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_tiling.h"
 #include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"
 #include "../../dispatch_ffn_combine_w4_a8/op_kernel/unpermute/moe_token_unpermute_tiling.h"
 
@@ -246,9 +247,20 @@ struct SVDQFinalCombineTiling {
     MoeTokenUnpermuteTilingData moeTokenUnpermuteTilingData;
 };
 
+struct SVDQResidualW4A8BridgeTiling {
+    DispatchFFNCombineW4A8TilingData officialTiling;
+    uint64_t officialWorkspaceBytes;
+    uint32_t officialM;
+    uint32_t officialK;
+    uint32_t officialN;
+    uint32_t officialListLen;
+    bool hostExecutionFailClosed;
+};
+
 struct DispatchFFNCombineW4A8SVDQTilingData {
     DispatchFFNCombineW4A8SVDQInfo info;
     SVDQDispatchRoutingTiling dispatchRouting;
+    SVDQResidualW4A8BridgeTiling residualW4A8Bridge;
     SVDQWorkspaceRegion workspaceRegions[SVDQ_WORKSPACE_REGION_COUNT];
     SVDQSyncFlag syncFlags[SVDQ_SYNC_FLAG_COUNT];
     SVDQBF16StageShape bf16StageShapes[SVDQ_BF16_STAGE_COUNT];
