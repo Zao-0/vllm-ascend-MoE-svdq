@@ -4,8 +4,9 @@
 |---|---|---|
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
-| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Appendix GMM2 official-path remains binding for production integration; prior isolated Gate A/B/C pass evidence is not production residual GMM execution. |
-| Stage 2.3 and later | BLOCKED | Do not advance production SVDQ down, final combine, or target-model service until the official interleavable W4A8 producer path is wired and validated. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | PASS | Fresh post-reset real-device probe emitted the official-path correction revision and passed Gate A/B/C. |
+| Stage 2.3 isolated real-checkpoint composition | PASS | Existing top-k8 composition evidence is admitted after the Stage 2.2 reset gate passed. |
+| Stage 2.4+ production integration | BLOCKED | Do not enable production until residual W4A8 GMM execution is wired through the official interleavable producer path and four-NPU target-model E2E passes. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Production enable remains false and host tiling must remain fail-closed. |
 
 ## Stage 2.2 Appendix GMM2 Official-Path Reset - 2026-06-27
@@ -78,7 +79,7 @@ Validation:
 
 Result:
 
-- Current evidence is now classified as `stage2_2.status=fail_in_progress` with
+- At that point, existing evidence was classified as `stage2_2.status=fail_in_progress` with
   `evidence_status=current_recheck_missing_post_reset_official_path_correction_revision`.
 - Stage 2.3 is `blocked_by_stage2_2_official_gmm2_gate`.
 - `production_enable_allowed=false`.
@@ -113,11 +114,86 @@ Validation:
 Result:
 
 - Unit tests verify the marker is absent when Gate C is zero/failed and present only after Gate A/B/C are complete.
-- Current real evidence remains blocked:
+- Before the fresh post-reset recheck below, existing real evidence remained blocked:
   `stage2_2.status=fail_in_progress`,
   `evidence_status=current_recheck_missing_post_reset_official_path_correction_revision`,
   `stage2_3.status=blocked_by_stage2_2_official_gmm2_gate`.
 - Production remains fail-closed.
+
+## Stage 2.2 Post-Reset Real-Device Recheck Passed - 2026-06-27T07:59Z
+
+Purpose:
+
+- Ran the fresh post-reset official W4A8 GMM2 probe on exactly four visible NPUs using
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
+- Used the official `dispatch_ffn_combine_w4_a8` debug path; public `torch_npu.npu_grouped_matmul` was not used.
+- Kept production `DispatchFFNCombineW4A8SVDQ` fail-closed.
+
+Device evidence:
+
+- `npu-smi info` showed physical NPUs 0-3 as 910B4 devices with no active NPU processes.
+- `torch.npu.device_count()` reported exactly 4 visible logical NPUs, all `Ascend910B4`.
+- The custom op registration preflight reported `svdq_w4a8_gmm2_debug_readback_registered=true`; that short-lived
+  preflight process then hit a shutdown-time C++ cleanup segfault, but the real probe completed with exit code 0.
+
+Probe command:
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 \
+ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer \
+LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH:-} \
+python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py \
+  --require-npu \
+  --device-id 0 \
+  --top-k 1 \
+  --route-experts 0 \
+  --local-num-experts 8 \
+  --num-tokens 16 \
+  --max-output-size 512 \
+  --gmm2-reference-max-rows 64 \
+  --summary-name stage2/phase_stage2_gmm2_current_recheck_top1_expert0.json
+```
+
+Artifacts:
+
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_2_post_reset_gmm2_probe.log`
+- Probe exit code:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_2_post_reset_gmm2_probe.exitcode`
+- Stage 2.2 summary:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_gmm2_current_recheck_top1_expert0.json`
+- Regenerated production admission manifest:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+- Manifest regeneration log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_2_post_reset_manifest.log`
+
+Stage 2.2 result:
+
+- Probe summary: `passed=true`, `skipped=false`, probe exit code `0`.
+- `appendix_gmm2_official_path.official_path_correction_revision =
+  stage2_appendix_gmm2_official_path_mandatory_official_path_correction_20260627`.
+- Gate A: input boundary, routing identity, prefix evidence, and padded-row evidence complete.
+- Gate B: official raw accumulator/D2 boundary identified, reference-passed, and nonzero.
+- Gate C: official post-dequant output finite, nonzero, and reference-passed after Gate B was nonzero.
+- `official_gmm2_numerical_gate_passed=true`.
+- `public_grouped_matmul_used=false`.
+- `production_svdq_host_tiling_fail_closed=true`.
+
+Manifest result:
+
+- `production_admission.stage2_2_official_gmm2_gate.status=passed`
+- `production_admission.stage2_2_official_gmm2_gate.evidence_status=current_recheck_passed`
+- `production_admission.stage2_2_official_gmm2_gate_passed=true`
+- `production_admission.stage2_3_real_checkpoint_composition_gate.status=passed`
+- `production_admission.stage2_3_isolated_gate_passed=true`
+- `production_admission.production_enable_allowed=false`
+
+Remaining blockers:
+
+- `residual_w4a8_gmm_execution_enabled=false`
+- `four_npu_target_model_e2e_validated=false`
+- Production host tiling must remain fail-closed until the official interleavable W4A8 producer path is wired into
+  production and the target model passes exactly-four-NPU E2E validation.
 
 ## Stage 2.5 Low-Rank BF16 Accumulator Boundary Attempt - 2026-06-27
 

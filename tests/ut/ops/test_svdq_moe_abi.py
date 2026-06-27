@@ -3108,17 +3108,15 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert not loaded["production_admission"]["production_enable_allowed"]
     assert "stage2_2_official_gmm2_gate" in loaded["production_admission"]
     stage2_2_gate = loaded["production_admission"]["stage2_2_official_gmm2_gate"]
-    assert not loaded["production_admission"]["stage2_2_official_gmm2_gate_passed"]
-    assert stage2_2_gate["status"] == "fail_in_progress"
-    assert stage2_2_gate["evidence_status"] == (
-        "current_recheck_missing_post_reset_official_path_correction_revision"
-    )
-    assert stage2_2_gate["stage2_3_and_later_blocked"]
-    assert not stage2_2_gate["required_appendix_gmm2_official_path_revision_flags"][
+    assert loaded["production_admission"]["stage2_2_official_gmm2_gate_passed"]
+    assert stage2_2_gate["status"] == "passed"
+    assert stage2_2_gate["evidence_status"] == "current_recheck_passed"
+    assert not stage2_2_gate["stage2_3_and_later_blocked"]
+    assert stage2_2_gate["required_appendix_gmm2_official_path_revision_flags"][
         "official_path_correction_revision_matches"
     ]
     assert "stage2_3_real_checkpoint_composition_gate" in loaded["production_admission"]
-    assert not loaded["production_admission"]["stage2_3_isolated_gate_passed"]
+    assert loaded["production_admission"]["stage2_3_isolated_gate_passed"]
     assert loaded["production_admission"]["remaining_execution_requirements"] == {
         "dispatch_routing_execution_enabled": True,
         "residual_hidden_quant_execution_enabled": True,
