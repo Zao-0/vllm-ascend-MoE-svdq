@@ -6,6 +6,7 @@
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
 | Stage 2.2 modified-hidden official W4A8 GMM2 | PASS | Fresh real-device recheck emitted the current authoritative requirements marker and passed Gate A/B/C. |
 | Stage 2.3 isolated real-checkpoint composition | PASS | Existing top-k8 composition evidence is admitted again after the current Stage 2.2 marker-gated recheck passed. |
+| Stage 2.5 low-rank BF16 accumulator boundary | FAIL / IN PROGRESS | Current real-device probe launches without AICore exception, but gate/up/down accumulator-to-BF16-output checks fail. |
 | Stage 2.4+ production integration | BLOCKED | Do not enable production until residual W4A8 GMM execution is wired through the official interleavable producer path and four-NPU target-model E2E passes. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Production enable remains false and host tiling must remain fail-closed. |
 
@@ -362,6 +363,92 @@ Remaining blockers:
 - `four_npu_target_model_e2e_validated=false`
 - Production host tiling remains fail-closed until residual W4A8 GMM execution is wired through the official split
   producer path and the target model passes exactly-four-NPU end-to-end validation.
+
+## Stage 2.5 Low-Rank BF16 Current Recheck Failed - 2026-06-27T09:00Z
+
+Purpose:
+
+- Rechecked the isolated low-rank BF16 debug operator after the environment had the debug op installed and registered.
+- This is Appendix 5 / Stage 2.5 accumulator evidence only. It does not reopen public grouped matmul, W4A8 scale
+  formulas, packed W4 access, or production SVDQ host tiling.
+- Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed.
+
+Install validation:
+
+- Command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH:-} python tools/svdq_lowrank_debug_install_validate.py --require-runtime-soc-support --summary-name stage2/phase_stage2_5_lowrank_install_validate_pre_rebuild.json`
+- Summary:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_5_lowrank_install_validate_pre_rebuild.json`
+- Result: `passed=true`.
+- Runtime SOC: logical device 0 is `Ascend910B4`, normalized `ascend910b`.
+- Torch namespace: `torch.ops._C_ascend.svdq_low_rank_debug_readback` is registered; production SVDQ symbols are also
+  present in `libcust_opapi.so`.
+- Package support: debug op is advertised for `ascend910b`; production `DispatchFFNCombineW4A8SVDQ` remains unsupported
+  in the installed binary config, which is consistent with production fail-closed.
+
+Real-device probe command:
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 \
+ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer \
+LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH:-} \
+python tools/svdq_lowrank_debug_readback_probe.py \
+  --require-npu \
+  --device-id 0 \
+  --require-accumulator-readback \
+  --summary-name stage2/phase_stage2_5_lowrank_accumulator_current.json
+```
+
+Artifacts:
+
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_5_lowrank_accumulator_current_probe.log`
+- Probe exit code:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_5_lowrank_accumulator_current_probe.exitcode`
+- Probe summary:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_5_lowrank_accumulator_current.json`
+
+Result:
+
+- Probe exit code: `1`.
+- Top-level `passed=false`.
+- `producer_exception=null`: the kernel launch completed without the historical 507015/AICore/MTE exception.
+- NPU environment: `torch_npu` imported, `torch.npu.is_available()` true, visible logical NPU count `4`.
+- Copy-only consumer gate: `passed=true`; deterministic BF16 low-rank GM load/cast addressing still matches the mixed
+  AIV consumer row-major formula for gate/up and down.
+- Stage 2.5 accumulator boundary: failed.
+
+Numerical summary:
+
+- BF16 low-rank outputs remain finite and close to the unfused reference:
+  - gate L2 output max abs `1.0625086724758148e-4`, mean abs `1.7211061276611872e-5`
+  - up L2 output max abs `1.5376880764961243e-4`, mean abs `2.1592566554318182e-5`
+  - down L2 output max abs `8.129701018333435e-5`, mean abs `9.500280611973722e-6`
+- FP32 accumulator readback does not satisfy the required accumulator-to-output boundary:
+  - gate accumulator max abs `1.7756696939468384`, mean abs `0.4452377259731293`
+  - up accumulator max abs `1.7839668989181519`, mean abs `0.9088045358657837`
+  - down accumulator max abs `Infinity`, mean abs `Infinity`
+  - `aggregate_stage_errors.all_stage_outputs_finite=false`
+
+First recorded boundary mismatches from layer 0, expert 0:
+
+- Gate output: accumulator value `0.011573463678359985`, expected BF16 cast `0.0115966796875`, stored BF16
+  `0.0025634765625`, physical element offset `0`.
+- Up output: accumulator value `0.0`, expected BF16 cast `0.0`, stored BF16 `0.0203857421875`, physical element
+  offset `512`.
+- Down output: accumulator value `0.006895661819726229`, expected BF16 cast `0.00689697265625`, stored BF16
+  `-0.0026092529296875`, physical element offset `1280`.
+
+Interpretation:
+
+- This is a failed Stage 2.5 gate, not a pass.
+- The absence of an AICore exception means the immediate problem is no longer the old producer crash; the current
+  failing boundary is accumulator readback/output-region correspondence and accumulator finite-state correctness.
+- The fact that BF16 outputs are finite and close to reference while accumulator readback is mismatched, zero in some
+  up slices, or non-finite in down slices points to accumulator GM addressing, stale/aliased accumulator regions, or an
+  incomplete official BF16 L0C/Fixpipe readback lifecycle rather than to public grouped matmul or W4A8 behavior.
+- Next source work must audit and port the official BF16 GEMM/L0 lifecycle around L0C ownership, Fixpipe/L0C-to-GM,
+  final drain, and debug accumulator GM offsets before rerunning the same real-device probe.
 
 ## Stage 2.5 Low-Rank BF16 Accumulator Boundary Attempt - 2026-06-27
 
