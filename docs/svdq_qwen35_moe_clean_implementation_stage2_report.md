@@ -9,6 +9,33 @@
 | Stage 2.4 production/four-NPU admission | IN PROGRESS | Production residual W4A8 GMM execution and four-NPU target-model E2E validation remain open. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Production enable remains false and host tiling must remain fail-closed. |
 
+## Stage 2.4 Embedded Official W4A8 Tiling Pointer Resolved - 2026-06-27
+
+Purpose:
+
+- The production SVDQ kernel now derives the GM address of the embedded official
+  `DispatchFFNCombineW4A8TilingData` from the SVDQ `tilingGM` payload:
+  `residualW4A8Bridge.officialTiling`.
+- The full-lifecycle descriptor now carries this embedded official tiling pointer instead of a null placeholder.
+- Residual W4A8 GMM execution remains disabled because the production kernel still does not instantiate and invoke the
+  official `DispatchFFNCombineW4A8` wrapper. The next boundary is the actual wrapper call plus fused production
+  numerical validation.
+
+Machine-checkable source constraints:
+
+- `source_proof.kernel_residual_gmm_official_full_lifecycle_call_surface_recorded=true`
+- `production_fail_closed.residual_gmm_embedded_official_tiling_pointer_recorded=true`
+- `source_proof.kernel_residual_gmm_official_full_lifecycle_execution_enabled=false`
+- `production_fail_closed.residual_gmm_execution_enabled=false`
+- `production_admission.remaining_execution_requirements.residual_w4a8_gmm_execution_enabled=false`
+- `production_admission.production_enable_allowed=false`
+
+Validation for this edit:
+
+- `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q`
+- `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+
 ## Stage 2.4 Official W4A8 Full-Lifecycle Call Surface Recorded - 2026-06-27
 
 Purpose:

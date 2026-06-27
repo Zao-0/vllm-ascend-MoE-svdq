@@ -1067,6 +1067,10 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             "GM_ADDR tiling;" in sources["kernel_contract"]
             and "runtime_.tiling = tilingGM" in sources["kernel_contract"]
             and "struct SVDQOfficialW4A8FullLifecycleLaunch" in sources["kernel_contract"]
+            and "EmbeddedOfficialW4A8TilingGM() const" in sources["kernel_contract"]
+            and "reinterpret_cast<__gm__ DispatchFFNCombineW4A8SVDQTilingData*>(runtime_.tiling)"
+            in sources["kernel_contract"]
+            and "svdqTiling->residualW4A8Bridge.officialTiling" in sources["kernel_contract"]
             and "BuildOfficialW4A8FullLifecycleLaunch() const" in sources["kernel_contract"]
             and "runtime_.x, runtime_.residual.w1, runtime_.residual.w2, runtime_.expertId" in sources[
                 "kernel_contract"
@@ -1076,7 +1080,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "runtime_.probs, runtime_.xActiveMask, runtime_.out, runtime_.expertTokenNums" in sources[
                 "kernel_contract"
             ]
-            and "runtime_.tiling, nullptr, true, true, true" in sources["kernel_contract"]
+            and "runtime_.tiling, EmbeddedOfficialW4A8TilingGM(), true, true, true" in sources["kernel_contract"]
             and "launch.requiresOfficialWrapper && launch.requiresFullAicAivLifecycle" in sources[
                 "kernel_contract"
             ]
@@ -2482,6 +2486,9 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
                 "kernel_residual_gmm_official_tiling_bridge_consumed"
             ],
             "residual_gmm_official_full_lifecycle_call_surface_recorded": source_proof[
+                "kernel_residual_gmm_official_full_lifecycle_call_surface_recorded"
+            ],
+            "residual_gmm_embedded_official_tiling_pointer_recorded": source_proof[
                 "kernel_residual_gmm_official_full_lifecycle_call_surface_recorded"
             ],
             "residual_gmm_official_full_lifecycle_execution_enabled": source_proof[

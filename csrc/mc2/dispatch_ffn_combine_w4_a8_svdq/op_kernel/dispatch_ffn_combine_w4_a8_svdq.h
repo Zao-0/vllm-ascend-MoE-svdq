@@ -1041,12 +1041,21 @@ public:
             stageShapeMatchesOfficial && launch.listLen == bridge.officialListLen;
     }
 
+    __aicore__ inline GM_ADDR EmbeddedOfficialW4A8TilingGM() const
+    {
+        if (runtime_.tiling == nullptr) {
+            return nullptr;
+        }
+        auto svdqTiling = reinterpret_cast<__gm__ DispatchFFNCombineW4A8SVDQTilingData*>(runtime_.tiling);
+        return reinterpret_cast<GM_ADDR>(&(svdqTiling->residualW4A8Bridge.officialTiling));
+    }
+
     __aicore__ inline SVDQOfficialW4A8FullLifecycleLaunch BuildOfficialW4A8FullLifecycleLaunch() const
     {
         return {runtime_.x, runtime_.residual.w1, runtime_.residual.w2, runtime_.expertId,
             runtime_.residual.scale1, runtime_.residual.scale2, runtime_.residual.bias1, runtime_.residual.bias2,
             runtime_.probs, runtime_.xActiveMask, runtime_.out, runtime_.expertTokenNums, runtime_.workspace,
-            runtime_.tiling, nullptr, true, true, true};
+            runtime_.tiling, EmbeddedOfficialW4A8TilingGM(), true, true, true};
     }
 
     __aicore__ inline bool OfficialW4A8FullLifecycleLaunchReady(uint32_t stageId) const

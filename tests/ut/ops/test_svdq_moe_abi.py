@@ -1635,6 +1635,9 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     assert "struct SVDQOfficialW4A8FullLifecycleLaunch" in contract
     assert "GM_ADDR tiling;" in contract
     assert "runtime_.tiling = tilingGM" in contract
+    assert "EmbeddedOfficialW4A8TilingGM() const" in contract
+    assert "reinterpret_cast<__gm__ DispatchFFNCombineW4A8SVDQTilingData*>(runtime_.tiling)" in contract
+    assert "svdqTiling->residualW4A8Bridge.officialTiling" in contract
     assert "BuildOfficialW4A8FullLifecycleLaunch() const" in contract
     assert "OfficialW4A8FullLifecycleLaunchReady(uint32_t stageId) const" in contract
     assert "RunResidualDynamicQuantStage(uint32_t stageId)" in contract
@@ -1857,7 +1860,7 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         "runtime_.x, runtime_.residual.w1, runtime_.residual.w2, runtime_.expertId",
         "runtime_.residual.scale1, runtime_.residual.scale2, runtime_.residual.bias1",
         "runtime_.probs, runtime_.xActiveMask, runtime_.out, runtime_.expertTokenNums",
-        "runtime_.tiling, nullptr, true, true, true",
+        "runtime_.tiling, EmbeddedOfficialW4A8TilingGM(), true, true, true",
         "launch.officialTiling != nullptr",
         "launch.requiresOfficialWrapper && launch.requiresFullAicAivLifecycle",
     ):
@@ -2960,6 +2963,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["residual_gmm_official_tiling_bridge_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_official_tiling_bridge_consumed"]
     assert loaded["production_fail_closed"]["residual_gmm_official_full_lifecycle_call_surface_recorded"]
+    assert loaded["production_fail_closed"]["residual_gmm_embedded_official_tiling_pointer_recorded"]
     assert not loaded["production_fail_closed"]["residual_gmm_official_full_lifecycle_execution_enabled"]
     assert not loaded["production_fail_closed"]["residual_gmm_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_gmm_scalar_helpers_absent"]
