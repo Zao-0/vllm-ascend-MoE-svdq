@@ -919,7 +919,226 @@ public:
                launch.bias != nullptr && launch.expertTokenNums != nullptr;
     }
 
-    __aicore__ inline bool RunResidualDynamicQuantStage(uint32_t stageId) const
+    __aicore__ inline void CopyInResidualQuantBf16(LocalTensor<bfloat16_t> dst,
+        const GlobalTensor<bfloat16_t>& src, uint32_t offset, uint32_t count) const
+    {
+        DataCopyExtParams copyParams{1, static_cast<uint32_t>(count * sizeof(bfloat16_t)), 0, 0, 0};
+        DataCopyPad(dst, src[offset], copyParams, {false, 0, 0, 0});
+    }
+
+    __aicore__ inline void CopyOutResidualQuantScale(GlobalTensor<float>& dst, uint32_t offset,
+        LocalTensor<float> src, uint32_t count) const
+    {
+        DataCopyExtParams copyParams{1, static_cast<uint32_t>(count * sizeof(float)), 0, 0, 0};
+        DataCopyPad(dst[offset], src, copyParams);
+    }
+
+    __aicore__ inline void CopyOutResidualQuantI8(GlobalTensor<int8_t>& dst, uint32_t offset,
+        LocalTensor<int8_t> src, uint32_t count) const
+    {
+        DataCopyExtParams copyParams{1, static_cast<uint32_t>(count * sizeof(int8_t)), 0, 0, 0};
+        DataCopyPad(dst[offset], src, copyParams);
+    }
+
+    __aicore__ inline void ResidualQuantSyncMte2ToV() const
+    {
+        event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE2_V));
+        SetFlag<HardEvent::MTE2_V>(eventId);
+        WaitFlag<HardEvent::MTE2_V>(eventId);
+    }
+
+    __aicore__ inline void ResidualQuantSyncVToMte3() const
+    {
+        event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_MTE3));
+        SetFlag<HardEvent::V_MTE3>(eventId);
+        WaitFlag<HardEvent::V_MTE3>(eventId);
+    }
+
+    __aicore__ inline void ResidualQuantSyncMte3ToV() const
+    {
+        event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_V));
+        SetFlag<HardEvent::MTE3_V>(eventId);
+        WaitFlag<HardEvent::MTE3_V>(eventId);
+    }
+
+    __aicore__ inline void ResidualQuantSyncMte3ToMte2() const
+    {
+        event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_MTE2));
+        SetFlag<HardEvent::MTE3_MTE2>(eventId);
+        WaitFlag<HardEvent::MTE3_MTE2>(eventId);
+    }
+
+    __aicore__ inline void ResidualQuantSyncVToMte2() const
+    {
+        event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_MTE2));
+        SetFlag<HardEvent::V_MTE2>(eventId);
+        WaitFlag<HardEvent::V_MTE2>(eventId);
+    }
+
+    __aicore__ inline void ResidualQuantSyncVToS() const
+    {
+        event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_S));
+        SetFlag<HardEvent::V_S>(eventId);
+        WaitFlag<HardEvent::V_S>(eventId);
+    }
+
+    __aicore__ inline void ResidualQuantSyncSToV() const
+    {
+        event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::S_V));
+        SetFlag<HardEvent::S_V>(eventId);
+        WaitFlag<HardEvent::S_V>(eventId);
+    }
+
+    __aicore__ inline void PackResidualHiddenOfficialI4AIV(const SVDQResidualQuantLaunch& launch,
+        GlobalTensor<int8_t>& outputGm, uint32_t row, uint32_t column, LocalTensor<int8_t> hiddenI8,
+        LocalTensor<half> quantHalf, LocalTensor<int4b_t> hiddenHighI4, LocalTensor<int4b_t> hiddenLowI4,
+        LocalTensor<half> lowHalf, LocalTensor<half> lowHalf2, LocalTensor<int16_t> lowMask)
+    {
+        constexpr half ONE_SIXTEENTH = static_cast<half>(0.0625f);
+        constexpr half MINUS_EIGHT = static_cast<half>(-8.0f);
+        const uint32_t vectorTile = SVDQ_MIXED_EPILOGUE_VECTOR_TILE;
+        const uint32_t rowOffset = row * launch.k;
+        const uint32_t packedOffset = column / 2;
+        const uint32_t packedCount = vectorTile / 2;
+
+        Cast(quantHalf, hiddenI8, RoundMode::CAST_NONE, vectorTile);
+        PipeBarrier<PIPE_V>();
+        Muls(quantHalf, quantHalf, ONE_SIXTEENTH, vectorTile);
+        PipeBarrier<PIPE_V>();
+        Cast(hiddenHighI4, quantHalf, RoundMode::CAST_FLOOR, vectorTile);
+        PipeBarrier<PIPE_V>();
+        ResidualQuantSyncVToMte3();
+        CopyOutResidualQuantI8(outputGm, rowOffset + packedOffset,
+            hiddenHighI4.template ReinterpretCast<int8_t>(), packedCount);
+        ResidualQuantSyncMte3ToV();
+        ResidualQuantSyncMte3ToMte2();
+
+        And(lowHalf.template ReinterpretCast<int16_t>(), hiddenI8.template ReinterpretCast<int16_t>(), lowMask,
+            packedCount, 1, {1, 1, 1, 8, 8, 0});
+        PipeBarrier<PIPE_V>();
+        Cast(lowHalf2.template ReinterpretCast<half>(), lowHalf.template ReinterpretCast<int8_t>(),
+            RoundMode::CAST_NONE, vectorTile);
+        PipeBarrier<PIPE_V>();
+        Adds(quantHalf, lowHalf2, MINUS_EIGHT, vectorTile);
+        PipeBarrier<PIPE_V>();
+        Cast(hiddenLowI4, quantHalf, RoundMode::CAST_NONE, vectorTile);
+        PipeBarrier<PIPE_V>();
+        ResidualQuantSyncVToMte3();
+        CopyOutResidualQuantI8(outputGm, rowOffset + launch.k / 2 + packedOffset,
+            hiddenLowI4.template ReinterpretCast<int8_t>(), packedCount);
+        ResidualQuantSyncMte3ToV();
+        ResidualQuantSyncMte3ToMte2();
+    }
+
+    __aicore__ inline void QuantizeResidualHiddenRowAIV(const SVDQResidualQuantLaunch& launch,
+        const GlobalTensor<bfloat16_t>& inputGm, GlobalTensor<int8_t>& outputGm, GlobalTensor<float>& scaleGm,
+        uint32_t row)
+    {
+        LocalTensor<float> ub = mixedEpilogueUb_.Get<float>();
+        LocalTensor<float> hiddenFp32 = ub;
+        LocalTensor<float> absHidden = ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE];
+        LocalTensor<float> reduceTmp = ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 2];
+        LocalTensor<float> scaleLocal = ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 3];
+        LocalTensor<bfloat16_t> hiddenBf16 =
+            ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 4].template ReinterpretCast<bfloat16_t>();
+        LocalTensor<int8_t> hiddenI8 =
+            ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 5].template ReinterpretCast<int8_t>();
+        LocalTensor<int32_t> quantS32 =
+            ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 6].template ReinterpretCast<int32_t>();
+        LocalTensor<half> quantHalf =
+            ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 7].template ReinterpretCast<half>();
+        LocalTensor<int4b_t> hiddenHighI4 =
+            ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 8].template ReinterpretCast<int4b_t>();
+        LocalTensor<int4b_t> hiddenLowI4 =
+            ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 9].template ReinterpretCast<int4b_t>();
+        LocalTensor<half> lowHalf =
+            ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 10].template ReinterpretCast<half>();
+        LocalTensor<half> lowHalf2 =
+            ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 11].template ReinterpretCast<half>();
+        LocalTensor<int16_t> lowMask =
+            ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 12].template ReinterpretCast<int16_t>();
+
+        float maxAbs = 0.0f;
+        for (uint32_t column = 0; column < launch.k; column += SVDQ_MIXED_EPILOGUE_VECTOR_TILE) {
+            CopyInResidualQuantBf16(hiddenBf16, inputGm, row * launch.k + column,
+                SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+            ResidualQuantSyncMte2ToV();
+            Cast(hiddenFp32, hiddenBf16, RoundMode::CAST_NONE, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+            PipeBarrier<PIPE_V>();
+            ResidualQuantSyncVToMte2();
+            Abs(absHidden, hiddenFp32, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+            PipeBarrier<PIPE_V>();
+            ReduceMax(reduceTmp, absHidden, scaleLocal, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+            ResidualQuantSyncVToS();
+            const float chunkMax = reduceTmp.GetValue(0);
+            if (chunkMax > maxAbs) {
+                maxAbs = chunkMax;
+            }
+            ResidualQuantSyncSToV();
+        }
+
+        const float scale = maxAbs / 127.0f;
+        scaleLocal.SetValue(0, scale);
+        ResidualQuantSyncVToMte3();
+        CopyOutResidualQuantScale(scaleGm, row, scaleLocal, 1);
+        ResidualQuantSyncMte3ToV();
+        Duplicate(lowMask, static_cast<int16_t>(0x0F0F), 128);
+        PipeBarrier<PIPE_V>();
+        for (uint32_t column = 0; column < launch.k; column += SVDQ_MIXED_EPILOGUE_VECTOR_TILE) {
+            if (scale == 0.0f) {
+                Duplicate<float>(hiddenFp32, 0.0f, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+            } else {
+                CopyInResidualQuantBf16(hiddenBf16, inputGm, row * launch.k + column,
+                    SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                ResidualQuantSyncMte2ToV();
+                Cast(hiddenFp32, hiddenBf16, RoundMode::CAST_NONE, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                ResidualQuantSyncVToMte2();
+                Muls(hiddenFp32, hiddenFp32, 1.0f / scale, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                Maxs(hiddenFp32, hiddenFp32, -127.0f, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                Mins(hiddenFp32, hiddenFp32, 127.0f, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+            }
+            PipeBarrier<PIPE_V>();
+            Cast(quantS32, hiddenFp32, RoundMode::CAST_RINT, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+            PipeBarrier<PIPE_V>();
+            SetDeqScale(static_cast<half>(1.0f));
+            Cast(quantHalf, quantS32, RoundMode::CAST_RINT, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+            PipeBarrier<PIPE_V>();
+            Cast(hiddenI8, quantHalf, RoundMode::CAST_RINT, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+            PipeBarrier<PIPE_V>();
+            PackResidualHiddenOfficialI4AIV(launch, outputGm, row, column, hiddenI8, quantHalf, hiddenHighI4,
+                hiddenLowI4, lowHalf, lowHalf2, lowMask);
+        }
+    }
+
+    __aicore__ inline bool RunResidualHiddenQuantAIV(const SVDQResidualQuantLaunch& launch)
+    {
+        if (g_coreType == AIC) {
+            return true;
+        }
+        if (launch.usesRouting || launch.scaleElements != launch.m || launch.k == 0 ||
+            launch.k % SVDQ_MIXED_EPILOGUE_VECTOR_TILE != 0) {
+            return false;
+        }
+
+        GlobalTensor<bfloat16_t> inputGm;
+        GlobalTensor<int8_t> outputGm;
+        GlobalTensor<float> scaleGm;
+        inputGm.SetGlobalBuffer((__gm__ bfloat16_t*)launch.input);
+        outputGm.SetGlobalBuffer((__gm__ int8_t*)launch.output);
+        scaleGm.SetGlobalBuffer((__gm__ float*)launch.activationScale);
+
+        const uint32_t blockIdx = GetBlockIdx();
+        const uint32_t blockNum = GetBlockNum();
+        for (uint32_t row = blockIdx; row < launch.m; row += blockNum) {
+            QuantizeResidualHiddenRowAIV(launch, inputGm, outputGm, scaleGm, row);
+        }
+        return true;
+    }
+
+    __aicore__ inline bool RunResidualDynamicQuantStage(uint32_t stageId)
     {
         SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
         if (plan.opKind != SVDQ_RESIDUAL_OP_DYNAMIC_QUANT || !ResidualQuantLaunchReady(stageId)) {
@@ -934,8 +1153,7 @@ public:
                 routingTiling.initRoutingQuantTilingKey);
             return true;
         }
-        // Non-routing residual quantization must be implemented by the production AIV path.
-        return false;
+        return RunResidualHiddenQuantAIV(launch);
     }
 
     __aicore__ inline bool RunResidualGmmStage(uint32_t stageId) const
@@ -948,7 +1166,7 @@ public:
         return false;
     }
 
-    __aicore__ inline bool RunResidualStage(uint32_t stageId) const
+    __aicore__ inline bool RunResidualStage(uint32_t stageId)
     {
         SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
         if (plan.opKind == SVDQ_RESIDUAL_OP_DYNAMIC_QUANT) {
@@ -960,7 +1178,7 @@ public:
         return false;
     }
 
-    __aicore__ inline bool RunW4A8ResidualStages() const
+    __aicore__ inline bool RunW4A8ResidualStages()
     {
         for (uint32_t stageId = 0; stageId < SVDQ_RESIDUAL_STAGE_COUNT; ++stageId) {
             if (!RunResidualStage(stageId)) {

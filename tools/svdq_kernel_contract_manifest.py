@@ -778,7 +778,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
     )
     dispatch_source = sources["kernel_contract"][dispatch_start:dispatch_end] if dispatch_start >= 0 else ""
     residual_quant_start = sources["kernel_contract"].find(
-        "__aicore__ inline bool RunResidualDynamicQuantStage(uint32_t stageId) const"
+        "__aicore__ inline bool RunResidualDynamicQuantStage(uint32_t stageId)"
     )
     residual_quant_end = sources["kernel_contract"].find(
         "__aicore__ inline bool RunResidualGmmStage", residual_quant_start
@@ -1063,6 +1063,27 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "ClampInt8QuantValue(rounded)" in sources["kernel_contract"]
             and "launch.scaleElements != launch.m" in sources["kernel_contract"]
         ),
+        "kernel_residual_hidden_quant_aiv_execution_enabled": (
+            "RunResidualHiddenQuantAIV(const SVDQResidualQuantLaunch& launch)" in sources["kernel_contract"]
+            and "QuantizeResidualHiddenRowAIV" in sources["kernel_contract"]
+            and "PackResidualHiddenOfficialI4AIV" in sources["kernel_contract"]
+            and "if (g_coreType == AIC)" in sources["kernel_contract"]
+            and "CopyInResidualQuantBf16(hiddenBf16, inputGm, row * launch.k + column,"
+            in sources["kernel_contract"]
+            and "ReduceMax(reduceTmp, absHidden, scaleLocal, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)"
+            in sources["kernel_contract"]
+            and "const float scale = maxAbs / 127.0f" in sources["kernel_contract"]
+            and "CopyOutResidualQuantScale(scaleGm, row, scaleLocal, 1)" in sources["kernel_contract"]
+            and "SetDeqScale(static_cast<half>(1.0f))" in sources["kernel_contract"]
+            and "Cast(hiddenI8, quantHalf, RoundMode::CAST_RINT, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)"
+            in sources["kernel_contract"]
+            and "const uint32_t rowOffset = row * launch.k" in sources["kernel_contract"]
+            and "CopyOutResidualQuantI8(outputGm, rowOffset + packedOffset,"
+            in sources["kernel_contract"]
+            and "CopyOutResidualQuantI8(outputGm, rowOffset + launch.k / 2 + packedOffset,"
+            in sources["kernel_contract"]
+            and "return RunResidualHiddenQuantAIV(launch);" in sources["kernel_contract"]
+        ),
         "kernel_residual_hidden_quant_scalar_helpers_absent": (
             "RunResidualScalarDynamicQuantStage" not in sources["kernel_contract"]
             and "LoadResidualQuantInputBF16" not in sources["kernel_contract"]
@@ -1072,9 +1093,9 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "ClampInt8QuantValue" not in sources["kernel_contract"]
         ),
         "kernel_residual_execution_dispatch_enabled": (
-            "RunW4A8ResidualStages() const" in sources["kernel_contract"]
+            "RunW4A8ResidualStages()" in sources["kernel_contract"]
             and "RunResidualStage(stageId)" in sources["kernel_contract"]
-            and "RunResidualDynamicQuantStage(uint32_t stageId) const" in sources["kernel_contract"]
+            and "RunResidualDynamicQuantStage(uint32_t stageId)" in sources["kernel_contract"]
             and "RunResidualGmmStage(uint32_t stageId) const" in sources["kernel_contract"]
             and "RunMixedEpilogueStages()" in sources["kernel_contract"]
         ),
@@ -2288,7 +2309,7 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
                 "kernel_residual_routed_input_quant_execution_enabled"
             ],
             "residual_hidden_quant_execution_enabled": source_proof[
-                "kernel_residual_hidden_quant_scalar_execution_enabled"
+                "kernel_residual_hidden_quant_aiv_execution_enabled"
             ],
             "residual_hidden_quant_scalar_helpers_absent": source_proof[
                 "kernel_residual_hidden_quant_scalar_helpers_absent"
@@ -2329,7 +2350,7 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
             "w4a8_residual_execution_fail_closed": (
                 "production tiling is fail-closed" in host_tiling_source
                 or not source_proof["kernel_residual_routed_input_quant_execution_enabled"]
-                or not source_proof["kernel_residual_hidden_quant_scalar_execution_enabled"]
+                or not source_proof["kernel_residual_hidden_quant_aiv_execution_enabled"]
                 or not source_proof["kernel_residual_gmm_scalar_execution_enabled"]
             ),
             "mixed_epilogue_execution_fail_closed": (
@@ -2357,7 +2378,7 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
             "remaining_execution_requirements": {
                 "dispatch_routing_execution_enabled": source_proof["kernel_dispatch_routing_execution_enabled"],
                 "residual_hidden_quant_execution_enabled": source_proof[
-                    "kernel_residual_hidden_quant_scalar_execution_enabled"
+                    "kernel_residual_hidden_quant_aiv_execution_enabled"
                 ],
                 "residual_w4a8_gmm_execution_enabled": source_proof[
                     "kernel_residual_gmm_scalar_execution_enabled"

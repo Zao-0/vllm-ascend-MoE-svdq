@@ -78,6 +78,45 @@ Official-vs-debug state table checkpoint:
 | `BlockEpilogue2` input state | `CombineV2` passes `gmCGMM2`, `gmC2`, `gmPerTokenScale2`, W2 aux, tile coords, group, `preSumBeforeRank` at `1511-1512`. | `BlockEpilogue2::operator()` dequantizes and writes peer output. | Constructed at `1325-1339` or debug readback at `996-1009`. | `gmC2`, `gmPerTokenScale2`, `ptrMAux2`, remote peer memory `offsetD`. | `actualBlockShape.m()/2` after high/low merge. | UB events inside `BlockEpilogue2`. | After C2V wait. | Internal MTE/V waits at `block_epilogue_w4a8post_pertoken_v2.hpp:182-190` and `265-270`. | `Finalize()` waits all UB stages at `132-140`. | Gate C must validate this output only after Gate B is nonzero. |
 | FP32 post-dequant debug tap | `BlockEpilogue2` debug branch writes `gmTileGMM2` after high/low merge and scale at `block_epilogue_w4a8post_pertoken_v2.hpp:258-262`. | Host probe reads debug GM. | Debug GM is optional through `ptrDebugGMM2`. | `workspaceInfo.ptrCGMM2` or external debug pointer at `1620-1627`. | FP32 row-major active tile. | Debug uses `EVENT_ID7` MTE3/V guard. | During BlockEpilogue2. | Debug waits `EVENT_ID7`. | `Finalize()` waits debug event under `W4A8_DEBUG`. | Prior all-zero readbacks are insufficient; Gate B and Gate C must be separated and interpreted as specified by the appendix. |
 
+## Stage 2.4 Production Hidden Quant AIV Source Boundary - 2026-06-27
+
+Latest code state:
+
+- Added production AIV hidden quantization source helpers in `dispatch_ffn_combine_w4_a8_svdq.h`.
+- The non-routing residual quant stage now dispatches `RunResidualHiddenQuantAIV` for
+  `SVDQ_RESIDUAL_STAGE_QUANT_HIDDEN`; routed input quantization still uses the existing official
+  `moe_init_routing_quant_v2` path.
+- `RunResidualHiddenQuantAIV` reads BF16 hidden from `SVDQ_REGION_HIDDEN`, computes one FP32 scale per active routed
+  row with vector `Abs/ReduceMax`, writes the scale to `SVDQ_REGION_HIDDEN_SCALE`, quantizes BF16 hidden with vector
+  casts/clamps, and packs the result into the official high/low INT4 byte layout in `SVDQ_REGION_HIDDEN_Q`.
+- The packing path follows the same high/low layout proven by the isolated mixed-epilogue debug readback:
+  high nibbles at `row * k + column / 2`, low nibbles at `row * k + k / 2 + column / 2`.
+- No public `torch_npu.npu_grouped_matmul` path, scalar W4A8 GEMM, host-unpacked substitute, or guessed scale formula
+  was added.
+- Residual W4A8 GMM1/GMM2 production execution remains fail-closed until it is wired through the official W4A8
+  AIC/AIV lifecycle. Production host tiling still returns `GRAPH_FAILED`.
+
+Regenerated manifest:
+
+- Command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+- Resulting key state:
+  `production_fail_closed.residual_hidden_quant_execution_enabled=true`,
+  `source_proof.kernel_residual_hidden_quant_aiv_execution_enabled=true`,
+  `source_proof.kernel_residual_hidden_quant_scalar_execution_enabled=false`,
+  `production_admission.remaining_execution_requirements.residual_hidden_quant_execution_enabled=true`,
+  `production_admission.remaining_execution_requirements.residual_w4a8_gmm_execution_enabled=false`, and
+  `production_admission.production_enable_allowed=false`.
+- Remaining source execution gaps:
+  residual W4A8 GMM1/GMM2 production execution and four-NPU target-model E2E validation.
+
+Validation:
+
+- `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+- `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+- `git diff --check -- csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq.h tools/svdq_kernel_contract_manifest.py tests/ut/ops/test_svdq_moe_abi.py docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q` -> `46 passed, 16 warnings`
+
 ## Stage 2.4 Production Mixed AIV Epilogue Source Boundary - 2026-06-27
 
 Latest binding constraint reread:

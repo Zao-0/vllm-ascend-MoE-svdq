@@ -1610,7 +1610,7 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     assert "RunResidualDynamicQuantStage(uint32_t stageId)" in contract
     assert "RunResidualGmmStage(uint32_t stageId)" in contract
     assert "RunResidualStage(uint32_t stageId)" in contract
-    assert "RunW4A8ResidualStages() const" in contract
+    assert "RunW4A8ResidualStages()" in contract
 
     for slot in (
         "SVDQ_RESIDUAL_WEIGHT1_SLOT = 1",
@@ -1824,7 +1824,7 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     )
     assert "DispatchQuantRoutingTempWorkspace() const" in contract
     residual_quant_source = contract[
-        contract.index("__aicore__ inline bool RunResidualDynamicQuantStage(uint32_t stageId) const") : contract.index(
+        contract.index("__aicore__ inline bool RunResidualDynamicQuantStage(uint32_t stageId)") : contract.index(
             "__aicore__ inline bool RunResidualGmmStage"
         )
     ]
@@ -1839,10 +1839,26 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         "launch.workspace",
         "&routingTiling.moeInitRoutingQuantV2TilingData",
         "routingTiling.initRoutingQuantTilingKey",
-        "Non-routing residual quantization must be implemented by the production AIV path.",
-        "return false;",
+        "return RunResidualHiddenQuantAIV(launch);",
     ):
         assert token in residual_quant_source
+
+    for token in (
+        "RunResidualHiddenQuantAIV(const SVDQResidualQuantLaunch& launch)",
+        "QuantizeResidualHiddenRowAIV",
+        "PackResidualHiddenOfficialI4AIV",
+        "if (g_coreType == AIC)",
+        "CopyInResidualQuantBf16(hiddenBf16, inputGm, row * launch.k + column,",
+        "ReduceMax(reduceTmp, absHidden, scaleLocal, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
+        "const float scale = maxAbs / 127.0f",
+        "CopyOutResidualQuantScale(scaleGm, row, scaleLocal, 1)",
+        "SetDeqScale(static_cast<half>(1.0f))",
+        "Cast(hiddenI8, quantHalf, RoundMode::CAST_RINT, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
+        "const uint32_t rowOffset = row * launch.k",
+        "CopyOutResidualQuantI8(outputGm, rowOffset + packedOffset,",
+        "CopyOutResidualQuantI8(outputGm, rowOffset + launch.k / 2 + packedOffset,",
+    ):
+        assert token in contract
 
     for token in (
         "RunResidualScalarDynamicQuantStage",
@@ -2857,7 +2873,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["lowrank_is_implemented_uses_complete_contract"]
     assert loaded["production_fail_closed"]["dispatch_routing_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_routed_input_quant_execution_enabled"]
-    assert not loaded["production_fail_closed"]["residual_hidden_quant_execution_enabled"]
+    assert loaded["production_fail_closed"]["residual_hidden_quant_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_hidden_quant_scalar_helpers_absent"]
     assert loaded["production_fail_closed"]["residual_quant_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_launch_descriptor_recorded"]
@@ -2886,7 +2902,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_admission"]["stage2_3_isolated_gate_passed"]
     assert loaded["production_admission"]["remaining_execution_requirements"] == {
         "dispatch_routing_execution_enabled": True,
-        "residual_hidden_quant_execution_enabled": False,
+        "residual_hidden_quant_execution_enabled": True,
         "residual_w4a8_gmm_execution_enabled": False,
         "mixed_swiglu_epilogue_execution_enabled": True,
         "mixed_output_epilogue_execution_enabled": True,
@@ -2910,6 +2926,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert not loaded["source_proof"]["kernel_residual_gmm_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_gmm_scalar_helpers_absent"]
     assert loaded["source_proof"]["kernel_residual_routed_input_quant_execution_enabled"]
+    assert loaded["source_proof"]["kernel_residual_hidden_quant_aiv_execution_enabled"]
     assert not loaded["source_proof"]["kernel_residual_hidden_quant_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_hidden_quant_scalar_helpers_absent"]
     assert loaded["source_proof"]["kernel_residual_execution_dispatch_enabled"]
