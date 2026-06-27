@@ -8,10 +8,150 @@
 | Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 official GMM2 lifecycle and strict numerical gates. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
 
+## Stage 2.2 FP16-Scale / ULP Diagnostic and Official-Path Table - 2026-06-27T02:24Z
+
+This section is the latest authoritative handoff. It supersedes the `2026-06-27T02:13Z` loop-stats section by
+adding the new mandatory official-path appendix requirements, an updated official-vs-debug state table for the
+current normal official-lifecycle probe, and a fresh real-device run from the exact probe code now in the tree.
+No kernel behavior, V2C/C2V flag, workspace offset, packed W4 layout, production host tiling, tolerance, or public
+`torch_npu.npu_grouped_matmul` path was changed.
+
+New binding appendix read:
+
+- `/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md`
+
+Files changed:
+
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+- `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+
+Exact probe change:
+
+- Added diagnostic-only `low32_value_fp16` scale candidates to the post-dequant and actual-D2 comparator variant
+  maps.
+- Added FP16 ULP-distance metrics to the actual-D2-from-accumulator variants.
+- The change only expands evidence for the unresolved Fixpipe/D2 boundary. It is not a behavioral patch and does
+  not count as a substitute reference or Stage 2.2 pass.
+
+Official source locations inspected for this handoff:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h:280-344`:
+  W4A8 types, D2 layout, `BlockEpilogue2`, and kernel parameter wiring.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:250-275`:
+  normal AIC/AIV roles use `GMM2(params)` and `DispatchAndCombine(params)` when `gmm2OnlyFromPacked=false`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:287-318`:
+  official bindings for `cumsumMM`, `gmA2I4_I8`, `gmPerTokenScale2`, `tokenPerExpert`, and `preSumBeforeRank`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:687-793`:
+  official `GMM2` loop state, `SYNCFLAGV2C` wait, packed W2/scale access, MMAD call, accumulator debug tap, and
+  final AIC drain.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1323-1412`:
+  official `DispatchAndCombine` constructs `BlockEpilogue2`, runs the official producer, overlays only external
+  GMM2 hidden/scale when requested, emits `SYNCFLAGV2C`, then calls `CombineV2`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1448-1520`:
+  `CombineV2` waits `SYNCFLAGC2V` and invokes `BlockEpilogue2` on official D2 state.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1554-1588`:
+  official workspace offsets through `ptrC2`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp:114-142`:
+  `BlockEpilogue2` token layout, event initialization, and finalization.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp:147-266`:
+  D2 high/low reads, raw debug taps, high*16+low, aux addition, hidden-scale multiply, FP32 debug tap, and final
+  cast.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp:277-307`:
+  final D routing through `tokenPerExpert`, `preSumBeforeRank`, and peer output offset.
+
+Official-vs-current-debug state table:
+
+| State or region | Official producer | Official consumer | Official initialization point | Physical GM/workspace address and offset | Row/tile stride | Flag or event | Signal timing | Wait timing | Final drain | Current debug behavior |
+|---|---|---|---|---|---|---|---|---|---|---|
+| packed hidden `gmA2I4_I8` | `BlockEpilogue1` inside `DispatchAndCombine`; external override is allowed only after the official producer point. | `GMM2` A matrix through `params.layoutA2`. | `initBuffer` binds `workspaceInfo.ptrA2Int4`; `DispatchAndCombine` overlays per `dequantSum`. | `workspaceInfo.ptrA2Int4`, after first packed hidden region; see kernel lines 293-301 and workspace order lines 1554-1588. | INT4 packed stride `problemShape.n()/2`, D1/A2 row-major offsets. | `SYNCFLAGV2C`. | AIV emits after producer/override work for each sync slice. | `GMM2` waits before group tiles. | Normal path continues through `CombineV2`, then token reset/status cleanup. | Normal Stage 2.2 probe now uses official `DispatchAndCombine` and overlays only validated external packed hidden. Historical GMM2-only helper remains but is not acceptance evidence. |
+| hidden scale `gmPerTokenScale2` | `BlockEpilogue1`; external override at the same official point. | `BlockEpilogue2` per-row multiply. | `initBuffer` binds `workspaceInfo.ptrPerTokenScale2`. | `ptrPerTokenScale2`, after `ptrPerTokenScale + maxOutputSize * sizeof(float)`. | One float per active routed row. | `SYNCFLAGV2C` with packed hidden; UB events inside epilogue. | AIV emits after scale is available. | GMM2 waits V2C; `BlockEpilogue2` consumes after C2V. | `BlockEpilogue2::Finalize`. | Readback is exact against Stage 2.1 scale; finite/nonzero. |
+| `tokenPerExpert` | Official routing/MC2 state. | `GMM2`, `CombineV2`, `BlockEpilogue2`. | `initBuffer` binds `shmem()+peermemInfo.offsetPeerTokenPerExpert`. | Peer shared memory, `tokenPerExpertLayout = Layout3D(AlignUp(EP * expertPerRank + 1, 128), expertPerRank)`. | Layout3D by dst EP/rank/expert. | Official shared-memory and C2V/V2C lifecycle. | Produced before GMM2/epilogue. | GMM2 and `BlockEpilogue2` read during group processing. | `ResetTokenPerExpert` after combine. | Normal probe preserves official lifecycle; row identity/padded-row evidence still needs fuller report fields beyond top-1 EP=1. |
+| `cumsumMM` | `GetCumsumForMMAIV` / official routing state. | `GMM2` and `CombineV2` group loops. | `initBuffer` binds `workspaceInfo.ptrcumsumMM`. | After expanded row index workspace. | `EP * EP * expertPerRank` int32 region. | Official V2C/C2V group protocol. | Before GMM2 group loops. | GMM2 and CombineV2 read at group start. | No separate drain. | Loop-stats relaunch validates total loops=8 and active tiles=8 for top-1 expert 0. |
+| `preSumBeforeRank` | Official cross-rank prefix path. | `BlockEpilogue2` final D placement. | `initBuffer` binds `workspaceInfo.ptrSumBeforeRank`. | Later workspace prefix region; after debug GMM regions. | `EP * expertPerRank` int32. | Official routing state. | Before final D routing. | `BlockEpilogue2` reads per destination EP. | Normal cleanup after combine. | Normal probe preserves official state; EP=1 top-1 case does not yet prove multi-EP prefixes. |
+| GMM2 AIC input tile state | Official `GMM2`. | `BlockMmad`. | Per group after V2C wait. | `gmA2I4_I8`, W2 `ptrB2`, scale `ptrScale2`, output `gmC2`. | `L1TileShape` scheduler; M is doubled for INT4 high/low rows. | `SYNCFLAGV2C`. | AIV emits after official producer/override. | AIC waits before group tiles. | `blockMmad.SynchronizeBlock()` and `Finalize`. | Official `GMM2` is used; Gate B int32 accumulator exact-match passes. |
+| GMM2 accumulator / D2 region | `BlockMmad` and Fixpipe. | `BlockEpilogue2`. | Inside `GMM2` tile loop. | `gmC2`; debug accumulator via `ptrDebugGMM2Accumulator`; FP32 tap via `ptrDebugGMM2`. | D2 high/low halves separated by `n2`; even accumulator rows feed high, odd rows feed low. | `SYNCFLAGC2V`. | AIC finalizes after tile groups. | `CombineV2` waits before epilogue. | CombineV2 drains remaining flags and finalizes epilogue. | Raw int32 Gate B is finite, nonzero, exact-match; actual D2 mismatch is within 2 FP16 ULP for tested variants but Gate C still fails. |
+| C2V handoff state | `BlockMmad::Finalize(..., SYNCFLAGC2V)`. | `CombineV2`. | GMM2 group completion. | Cross-core flag state. | Per sync group. | `SYNCFLAGC2V`. | After AIC GMM2 group tiles finish. | `CombineV2` waits before `BlockEpilogue2`. | CombineV2 drains through `BlockEpilogue2::Finalize`. | `official_gmm2_c2v_handoff_verified=true` because post-dequant is finite/nonzero after C2V. |
+| `BlockEpilogue2` input state | Official D2 high/low, `gmPerTokenScale2`, MAux2, token state. | `BlockEpilogue2`. | Constructed in `DispatchAndCombine` before `CombineV2`. | `gmC2`, `gmCGMM2`, scale GM, MAux2, shmem `offsetD`. | 32-row AIV split; high/low D2 row offset separated by `n2`. | UB events plus C2V waits. | After C2V wait. | Event waits inside epilogue. | `BlockEpilogue2::Finalize`. | Actual high/low D2 readbacks are captured through raw debug modes and compared to accumulator-derived variants. |
+| FP32 post-dequant debug tap | `BlockEpilogue2` W4A8_DEBUG path. | Host probe summary. | After high*16+low, aux, hidden-scale multiply. | `ptrDebugGMM2` / workspace debug GMM2 area. | `maxOutputSize * n2` float. | `EVENT_ID7`. | During epilogue debug copy. | Host observes after op completion. | Epilogue finalization. | Finite/nonzero but strict reference fails: max abs `0.00037679076194763184`, mean abs `1.82786079676589e-05`. |
+
+Validation commands:
+
+- Syntax and whitespace:
+  `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+  `git diff --check -- tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+- Real-device preflight used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3` and selected logical NPU 0.
+- Probe command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH:-} python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py --require-npu --top-k 1 --route-experts 0 --local-num-experts 8 --summary-name phase_stage2_gmm2_fp16_scale_ulp_schemafix_true_top1_expert0.json`
+
+Evidence paths:
+
+- NPU preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_fp16_scale_ulp_schemafix_preflight_npus.log`
+- Python logical-device preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_fp16_scale_ulp_schemafix_preflight_python.log`
+- Active process preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_fp16_scale_ulp_schemafix_preflight_processes.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_fp16_scale_ulp_schemafix_true_top1_expert0.log`
+- Probe exit code:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_fp16_scale_ulp_schemafix_true_top1_expert0.exitcode`
+  contains `1`, expected because Stage 2.2 still fails strict Gate C.
+- Probe summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_fp16_scale_ulp_schemafix_true_top1_expert0.json`
+
+Validated status fields from `stage.checks`:
+
+- `gate_a_input_boundary_passed: true`
+- `official_gmm2_aic_raw_output_finite: true`
+- `official_gmm2_aic_raw_output_nonzero: true`
+- `official_gmm2_aic_reference_passed: true`
+- `official_gmm2_accumulator_int32_reference_passed: true`
+- `official_gmm2_c2v_handoff_verified: true`
+- `official_gmm2_post_dequant_finite: true`
+- `official_gmm2_post_dequant_nonzero: true`
+- `official_gmm2_post_dequant_reference_passed: false`
+- `official_gmm2_numerical_gate_passed: false`
+- `official_gmm2_loop_stats_valid: true`
+- `official_gmm2_loop_count: 8`
+- `official_gmm2_active_tile_count: 8`
+- `official_gmm2_active_tile_count_nonzero: true`
+
+Numerical result:
+
+- Gate A: passes; hidden packed and hidden scale post-override readbacks are exact.
+- Gate B: passes; int32 accumulator actual shape `[32, 2048]`, nonzero, exact mismatch count `0`.
+- Gate C: fails strict post-dequant reference tolerance but is finite/nonzero; active shape `[16, 2048]`,
+  max abs `0.00037679076194763184`, mean abs `1.82786079676589e-05`, NaN count `0`, Inf count `0`.
+- Best post-dequant diagnostic variant remains `scale_low32_fp16_toward_zero` with key
+  `[0.00023069977760314941, 1.006269667414017e-05, 20]`.
+- FP16-scale narrowing is rejected:
+  `scale_low32_value_fp16_fp16_toward_zero` is worse at max abs `0.00037679076194763184`,
+  mean abs `1.8746879504760727e-05`; `scale_low32_value_fp16_fp16_nearest_even` is worse at max abs
+  `0.0004030466079711914`, mean abs `1.732285090838559e-05`.
+- Actual-D2 high half best remains `scale_low32_fp16_toward_zero`:
+  max abs `0.00048828125`, mean abs `2.2813444957137108e-05`, best-key failed count `1136`,
+  FP16 ULP max `2`, FP16 ULP mean `0.22271728515625`, ULP greater-than-one count `6`.
+- Actual-D2 low half best remains `scale_low32_fp16_toward_zero`:
+  max abs `0.001953125`, mean abs `7.748615462332964e-05`, best-key failed count `5221`,
+  FP16 ULP max `2`, FP16 ULP mean `0.244598388671875`, ULP greater-than-one count `7`.
+
+Confirmed interpretation:
+
+1. The normal Stage 2.2 probe is on the official `DispatchAndCombine` lifecycle with external hidden/scale overlay,
+   not the historical synthetic GMM2-only lifecycle.
+2. The latest failure is not all-zero output: Gate C output is finite and nonzero, but it still fails strict
+   numerical tolerance.
+3. FP16-narrowing the low32 scale value does not explain the mismatch.
+4. The remaining unresolved boundary is the source-backed Fixpipe/D2 value contract between exact int32
+   accumulation and strict `BlockEpilogue2` post-dequant agreement.
+5. Stage 2.2 remains `FAIL / IN PROGRESS`; Stage 2.3+, SVDQ down composition, final combine, and production host
+   tiling remain blocked.
+
 ## Stage 2.2 Official-Lifecycle Loop Stats Diagnostic - 2026-06-27T02:13Z
 
-This section is the latest authoritative handoff. It supersedes the `2026-06-27` official-lifecycle constraint
-handoff by adding a source-backed loop/tile diagnostic to the normal Stage 2.2 probe and validating it on real
+Historical section. Superseded by the `2026-06-27T02:24Z` FP16-scale / ULP diagnostic and official-path table.
+It previously superseded the `2026-06-27` official-lifecycle constraint handoff by adding a source-backed
+loop/tile diagnostic to the normal Stage 2.2 probe and validating it on real
 Ascend 910B4 hardware. The change does not alter kernel behavior, V2C/C2V flags, workspace offsets, packed W4
 format, scale formulas, tolerances, production host tiling, or the public grouped-matmul path.
 

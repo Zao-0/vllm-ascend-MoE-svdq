@@ -1134,6 +1134,7 @@ def _official_gmm2_d2_half_variant_diagnostics(
     unpacked_weight = _unpack_postloaded_w4_columns_zN(weight, output_columns)
     scale_variants = {
         "low32": _scale_bits_to_fp32(weight_scale, word="low32"),
+        "low32_value_fp16": _scale_bits_to_fp32(weight_scale, word="low32").to(torch.float16).float(),
         "high32": _scale_bits_to_fp32(weight_scale, word="high32"),
     }
     rounding_modes = ("nearest_even", "toward_zero", "floor", "ceil", "none")
@@ -1219,6 +1220,7 @@ def _official_gmm2_post_dequant_variant_diagnostics(
     bias = scale_bias.detach().cpu().float().contiguous()
     scale_variants = {
         "low32": _scale_bits_to_fp32(weight_scale, word="low32"),
+        "low32_value_fp16": _scale_bits_to_fp32(weight_scale, word="low32").to(torch.float16).float(),
         "high32": _scale_bits_to_fp32(weight_scale, word="high32"),
     }
     rounding_modes = ("nearest_even", "toward_zero", "floor", "ceil", "none")
@@ -1313,6 +1315,14 @@ def _official_gmm2_post_dequant_variant_diagnostics(
                 "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/"
                 "block_epilogue_w4a8post_pertoken_v2.hpp:224"
             ),
+        },
+        "scale_precision_candidates": {
+            "low32": "float32 value reconstructed from the low 32 bits of the postloaded int64 scale word",
+            "low32_value_fp16": (
+                "diagnostic-only candidate where that low32 value is first rounded to FP16, to test whether "
+                "the VDEQF16 boundary behaves as if the scale operand is narrowed before multiplication"
+            ),
+            "high32": "float32 value reconstructed from the high 32 bits of the postloaded int64 scale word",
         },
         "group_counts": counts,
         "best_variant": best_name,
@@ -1495,6 +1505,7 @@ def _official_gmm2_actual_d2_from_accumulator_diagnostics(
     }
     scale_variants = {
         "low32": _scale_bits_to_fp32(weight_scale, word="low32"),
+        "low32_value_fp16": _scale_bits_to_fp32(weight_scale, word="low32").to(torch.float16).float(),
         "high32": _scale_bits_to_fp32(weight_scale, word="high32"),
     }
     rounding_modes = ("nearest_even", "toward_zero", "floor", "ceil", "none")
@@ -1522,6 +1533,7 @@ def _official_gmm2_actual_d2_from_accumulator_diagnostics(
                     torch.cat(outputs, dim=0) if outputs else torch.empty((0, output_columns), dtype=torch.float32)
                 )
                 error = _compact_tensor_error(actual, reference, max_abs_tol=max_abs_tol)
+                error.update(_fp16_bit_distance_diagnostics(actual, reference))
                 name = f"scale_{scale_name}_fp16_{rounding_mode}"
                 variant_reports[name] = {
                     "scale_word": scale_name,
@@ -1578,6 +1590,14 @@ def _official_gmm2_actual_d2_from_accumulator_diagnostics(
                 "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/"
                 "block_epilogue_w4a8post_pertoken_v2.hpp:212"
             ),
+        },
+        "scale_precision_candidates": {
+            "low32": "float32 value reconstructed from the low 32 bits of the postloaded int64 scale word",
+            "low32_value_fp16": (
+                "diagnostic-only candidate where that low32 value is first rounded to FP16, to test whether "
+                "the VDEQF16 boundary behaves as if the scale operand is narrowed before multiplication"
+            ),
+            "high32": "float32 value reconstructed from the high 32 bits of the postloaded int64 scale word",
         },
         "row_mapping": "even accumulator rows feed high D2; odd accumulator rows feed low D2",
         "group_counts": counts,
