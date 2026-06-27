@@ -1,5 +1,95 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Stage 2.2 Post-Dequant Variant Diagnostic Added - 2026-06-27T02:35Z
+
+This section is the latest authoritative handoff. It supersedes the `2026-06-27T02:20Z` status-field section by
+adding a diagnostic-only post-dequant variant comparator built from the official GMM2 int32 accumulator readback.
+No kernel behavior, lifecycle flag, V2C/C2V protocol, workspace state, tolerance, production host tiling, public
+grouped-matmul path, scale formula, or packed-weight format was changed.
+
+| Stage | Status | Current gate |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Gate A and int32 accumulator Gate B pass for top-1 expert 0; Gate C remains finite/nonzero but fails strict max-abs tolerance. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 Gate C strict numerical match and unresolved D2/Fixpipe/AIV contract detail. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
+
+Files changed:
+
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+
+Exact behavior implemented:
+
+- Added `gmm2.post_dequant_variant_diagnostics` to the normal Stage 2.2 Gate C summary.
+- The diagnostic starts from the official `gmm2_accumulator_int32` readback, then applies packed scale-bit variants,
+  FP16 D2 storage rounding candidates, W4A8 aux bias, and hidden per-token scale before comparing with the official
+  W4A8_DEBUG post-dequant AIV tap.
+- The diagnostic is explicitly marked as comparator-only. It does not change `passed`, strict tolerances, or the
+  official kernel path.
+
+Official source locations tied to this diagnostic:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h:218-231`:
+  `QuantTileCopy` selects `CopyL0CToGm<..., PER_CHANNEL>`.
+- `csrc/mc2/dispatch_ffn_combine/op_kernel/utils/copy_l0c_to_gm_custom.hpp:10-43`:
+  the per-channel row-major specialization sets `FixpipeParamsV220`, including `quantPre`, then calls
+  `AscendC::Fixpipe<ElementDst, ElementSrc, AscendC::CFG_ROW_MAJOR>`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp:224-262`:
+  `BlockEpilogue2` performs high*16+low, aux addition, hidden-scale multiplication, and W4A8_DEBUG FP32 tap.
+
+Validation commands:
+
+- Syntax check:
+  `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+- Real-device normal Gate C probe:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH:-} python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py --require-npu --top-k 1 --route-experts 0 --local-num-experts 8 --summary-name phase_stage2_gmm2_post_dequant_variants_true_top1_expert0.json`
+
+Evidence paths:
+
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_post_dequant_variants_true_top1_expert0.log`
+- Probe exit code:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_post_dequant_variants_true_top1_expert0.exitcode`
+  contains `1`, expected because Stage 2.2 still fails strict Gate C.
+- Probe summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_post_dequant_variants_true_top1_expert0.json`
+
+Validated status fields from the new summary:
+
+- `gate_a_input_boundary_passed: true`
+- `official_gmm2_aic_raw_output_finite: true`
+- `official_gmm2_aic_raw_output_nonzero: true`
+- `official_gmm2_aic_reference_passed: true`
+- `official_gmm2_accumulator_int32_reference_passed: true`
+- `official_gmm2_c2v_handoff_verified: true`
+- `official_gmm2_post_dequant_finite: true`
+- `official_gmm2_post_dequant_nonzero: true`
+- `official_gmm2_post_dequant_reference_passed: false`
+- `official_gmm2_numerical_gate_passed: false`
+
+Numerical result:
+
+- Strict current Gate C reference remains unchanged and fails max tolerance:
+  max abs `0.00037679076194763184`, mean abs `1.82786079676589e-05`.
+- `post_dequant_variant_diagnostics.enabled: true`.
+- Best diagnostic variant:
+  `scale_low32_fp16_toward_zero`, best key `[0.00023069977760314941, 1.006269667414017e-05, 20]`.
+- The current nearest-even reference matches the old strict error:
+  `scale_low32_fp16_nearest_even` max abs `0.00037679076194763184`, mean abs `1.82786079676589e-05`.
+- High32 scale variants are rejected by magnitude:
+  max abs `0.3963119685649872`, mean abs `0.05269600450992584`.
+
+Current interpretation:
+
+1. The post-dequant comparator now proves the official packed scale word is the low 32 bits; high 32 bits are not
+   plausible for this path.
+2. A simple FP16 `toward_zero` candidate is closer than nearest-even but still fails strict max tolerance
+   (`0.00023069977760314941 > 0.0002`), so Stage 2.2 still fails.
+3. The unresolved boundary is narrower: exact int32 accumulator plus low32 scale is correct; the remaining mismatch
+   is in the precise Fixpipe VDEQF16/FP16 storage behavior or in a still-missing detail of the AIV post-dequant
+   comparator. Do not relax the gate or move to Stage 2.3.
+
 ## Stage 2.2 Required Status Fields Added to Gate C Probe - 2026-06-27T02:20Z
 
 This section is the latest authoritative handoff. It supersedes the `2026-06-27T02:05Z` report-only appendix

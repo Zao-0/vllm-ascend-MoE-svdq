@@ -1103,6 +1103,97 @@ def _official_gmm2_d2_half_variant_diagnostics(
     }
 
 
+def _official_gmm2_post_dequant_variant_diagnostics(
+    *,
+    actual: torch.Tensor,
+    accumulator_int32: torch.Tensor | None,
+    hidden_x_scale: torch.Tensor,
+    weight_scale: torch.Tensor,
+    scale_bias: torch.Tensor,
+    expert_token_nums: torch.Tensor,
+    output_columns: int,
+    max_rows: int,
+    max_abs_tol: float,
+) -> dict[str, Any]:
+    if accumulator_int32 is None:
+        return {"enabled": False, "reason": "debug op did not return gmm2_accumulator_int32"}
+
+    row_count = min(int(actual.shape[0]), int(hidden_x_scale.shape[0]), int(accumulator_int32.shape[0] // 2), int(max_rows))
+    if row_count <= 0:
+        return {"enabled": False, "reason": "no rows available for post-dequant variant diagnostics"}
+
+    counts = _clip_group_counts_for_limit(expert_token_nums, row_count)
+    accumulator_cpu = accumulator_int32.detach().cpu()[: row_count * 2, :output_columns].to(torch.int32)
+    high_acc = accumulator_cpu[0::2].float()
+    low_acc = accumulator_cpu[1::2].float()
+    hidden_scale_cpu = hidden_x_scale.detach().cpu().float()[:row_count]
+    bias = scale_bias.detach().cpu().float().contiguous()
+    scale_variants = {
+        "low32": _scale_bits_to_fp32(weight_scale, word="low32"),
+        "high32": _scale_bits_to_fp32(weight_scale, word="high32"),
+    }
+    rounding_modes = ("nearest_even", "toward_zero", "floor", "ceil", "none")
+
+    variant_reports: dict[str, Any] = {}
+    best_name: str | None = None
+    best_key: tuple[float, float, int] | None = None
+    for scale_name, scale_fp32 in scale_variants.items():
+        for rounding_mode in rounding_modes:
+            outputs: list[torch.Tensor] = []
+            row_start = 0
+            for expert_id, count in enumerate(counts):
+                count = int(count)
+                if count <= 0:
+                    continue
+                row_end = row_start + count
+                scale_e = scale_fp32[expert_id].reshape(1, -1)
+                high = _fp32_to_fp16_mode(high_acc[row_start:row_end] * scale_e, mode=rounding_mode)
+                low = _fp32_to_fp16_mode(low_acc[row_start:row_end] * scale_e, mode=rounding_mode)
+                combined = high * 16.0 + low + bias[expert_id].reshape(1, -1)
+                outputs.append(combined * hidden_scale_cpu[row_start:row_end].reshape(-1, 1))
+                row_start = row_end
+            reference = torch.cat(outputs, dim=0) if outputs else torch.empty((0, output_columns), dtype=torch.float32)
+            actual_slice = actual[: reference.shape[0], : reference.shape[1]]
+            error = _tensor_error(actual_slice, reference)
+            error.update(_threshold_error_counts(actual_slice, reference, max_abs_tol=max_abs_tol))
+            name = f"scale_{scale_name}_fp16_{rounding_mode}"
+            variant_reports[name] = {
+                "scale_word": scale_name,
+                "fp16_rounding_mode": rounding_mode,
+                "error": error,
+            }
+            key = (
+                float(error["max_abs"]),
+                float(error["mean_abs"]),
+                int(error["failed_element_count_abs_gt_tolerance"]),
+            )
+            if best_key is None or key < best_key:
+                best_key = key
+                best_name = name
+
+    return {
+        "enabled": True,
+        "diagnostic_only": (
+            "Compares the normal W4A8_DEBUG post-dequant tap against variants built from the official "
+            "GMM2 int32 accumulator readback, packed per-channel scale bits, FP16 D2 storage rounding "
+            "candidates, W4A8 aux bias, and hidden per-token scale. This does not alter the strict gate "
+            "or replace the official kernel path."
+        ),
+        "source_boundary": "official gmm2_accumulator_int32 readback plus BlockEpilogue2 post-dequant formula",
+        "source_locations": {
+            "fixpipe": "csrc/mc2/dispatch_ffn_combine/op_kernel/utils/copy_l0c_to_gm_custom.hpp:10",
+            "block_epilogue2": (
+                "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/"
+                "block_epilogue_w4a8post_pertoken_v2.hpp:224"
+            ),
+        },
+        "group_counts": counts,
+        "best_variant": best_name,
+        "best_key": list(best_key) if best_key is not None else None,
+        "variants": variant_reports,
+    }
+
+
 def _round_up(value: int, align: int) -> int:
     return ((int(value) + int(align) - 1) // int(align)) * int(align)
 
@@ -2284,6 +2375,17 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         and post_dequant_nonzero
         and gmm2_reference_passed
     )
+    post_dequant_variant_diagnostics = _official_gmm2_post_dequant_variant_diagnostics(
+        actual=actual,
+        accumulator_int32=gmm2_accumulator_int32,
+        hidden_x_scale=hidden_x_scale[:active_rows],
+        weight_scale=layer.w2_weight_scale,
+        scale_bias=layer.w2_scale_bias,
+        expert_token_nums=external_expert_token_nums,
+        output_columns=spec.hidden_size,
+        max_rows=args.gmm2_reference_max_rows,
+        max_abs_tol=args.gmm2_reference_max_abs_tol,
+    )
     return {
         "stage": "stage2_modified_hidden_official_w4a8_gmm2",
         "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback -> aclnnSVDQW4A8GMM2DebugReadback",
@@ -2336,6 +2438,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                 "max_abs_tolerance": args.gmm2_reference_max_abs_tol,
                 "mean_abs_tolerance": args.gmm2_reference_mean_abs_tol,
             },
+            "post_dequant_variant_diagnostics": post_dequant_variant_diagnostics,
             "int32_accumulator_readback_reference": accumulator_int32_report,
         },
         "checks": {
