@@ -24,6 +24,9 @@ STAGE2_3_REAL_COMPOSITION_EVIDENCE = Path(
 STAGE2_2_GMM2_OFFICIAL_PATH_APPENDIX = (
     "/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md"
 )
+STAGE2_2_GMM2_OFFICIAL_PATH_RESET_REVISION = (
+    "stage2_appendix_gmm2_official_path_mandatory_official_path_correction_20260627"
+)
 
 OP_ROOT = Path("csrc/mc2/dispatch_ffn_combine_w4_a8_svdq")
 OP_CMAKE = OP_ROOT / "op_host/CMakeLists.txt"
@@ -2019,13 +2022,14 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
             "stage2_appendix_gmm2_official_path_requires_explicit_official_lifecycle_state_table_"
             "and_gate_a_b_c_evidence"
         ),
+        "required_official_path_correction_revision": STAGE2_2_GMM2_OFFICIAL_PATH_RESET_REVISION,
         "effective_status_for_production": "pending_current_recheck",
         "reason": (
             "The Stage 2 appendix keeps modified-hidden official W4A8 GMM2 in FAIL / IN PROGRESS "
             "until evidence records the official-vs-debug state table, exact routed-row identity, "
             "Gate A input boundary, Gate B AIC raw/D2 output, and Gate C BlockEpilogue2/CombineV2 "
-            "post-dequant readback. Older current-recheck summaries are retained only as historical "
-            "evidence unless they explicitly carry the appendix revision fields."
+            "post-dequant readback. Existing current-recheck summaries are retained only as historical "
+            "evidence unless they explicitly carry the post-reset official-path correction revision field."
         ),
         "required_gate_a": (
             "same routed-row identity with canonical hidden BF16, hidden INT8, packed INT4, "
@@ -2136,7 +2140,10 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
         "intermediate_size_is_512": int(shape.get("intermediate_size", -1)) == 512,
     }
     appendix_revision = stage.get("appendix_gmm2_official_path", {})
+    observed_reset_revision = appendix_revision.get("official_path_correction_revision")
+    post_reset_revision_passed = observed_reset_revision == STAGE2_2_GMM2_OFFICIAL_PATH_RESET_REVISION
     appendix_revision_flags = {
+        "official_path_correction_revision_matches": post_reset_revision_passed,
         "official_vs_debug_state_table_complete": bool(
             appendix_revision.get("official_vs_debug_state_table_complete")
         ),
@@ -2182,13 +2189,18 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
                 "current_recheck_passed"
                 if passed
                 else (
-                    "current_recheck_missing_appendix_gmm2_official_path_revision_fields"
-                    if missing_appendix_revision
-                    else "current_recheck_failed"
+                    "current_recheck_missing_post_reset_official_path_correction_revision"
+                    if not post_reset_revision_passed
+                    else (
+                        "current_recheck_missing_appendix_gmm2_official_path_revision_fields"
+                        if missing_appendix_revision
+                        else "current_recheck_failed"
+                    )
                 )
             ),
             "passed": passed,
             "historical_passed_under_superseded_contract": False,
+            "observed_official_path_correction_revision": observed_reset_revision,
             "summary_passed": bool(summary.get("passed")),
             "stage_passed": bool(stage.get("passed")),
             "shape": shape,

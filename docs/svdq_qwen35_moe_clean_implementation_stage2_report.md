@@ -45,10 +45,43 @@ Required interpretation for the rebuilt environment:
 - Mandatory gates are Gate A input-boundary/routing identity, Gate B AIC raw accumulator/Fixpipe/D2 readback, and Gate C
   AIV post-dequant output. Stage 2.2 passes only when Gate B and Gate C are finite, nonzero, and strict-reference
   matched on real device after the Gate A routing evidence is complete.
+- The production-admission manifest must treat existing Stage 2.2/2.3 JSON evidence as historical unless a fresh
+  post-reset run emits `official_path_correction_revision =
+  stage2_appendix_gmm2_official_path_mandatory_official_path_correction_20260627` together with the Gate A/B/C fields.
 - All work must continue to use exactly `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`; production host tiling remains
   fail-closed until all isolated and production real-device numerical gates pass.
 - The Stage 2.5 low-rank accumulator work recorded below is not the active next gate under this appendix. It remains a
   failed, unrebuilt isolated attempt and must not be used to advance production before Stage 2.2 is resolved again.
+
+## Stage 2.2 Post-Reset Manifest Admission Guard - 2026-06-27
+
+Purpose:
+
+- Enforced the new Appendix GMM2 official-path reset in `tools/svdq_kernel_contract_manifest.py`.
+- Existing Stage 2.2 and Stage 2.3 JSON evidence is now preserved as historical evidence unless a fresh post-reset
+  run emits `official_path_correction_revision =
+  stage2_appendix_gmm2_official_path_mandatory_official_path_correction_20260627`.
+- The manifest still requires the full Gate A/B/C fields after that revision marker is present.
+
+Files changed:
+
+- `tools/svdq_kernel_contract_manifest.py`
+- `tests/ut/ops/test_svdq_moe_abi.py`
+- `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+
+Validation:
+
+- `python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /tmp/svdq_manifest_check_after_reset.json`
+- `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+- `git diff --check -- tools/svdq_kernel_contract_manifest.py tests/ut/ops/test_svdq_moe_abi.py docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q`
+
+Result:
+
+- Current evidence is now classified as `stage2_2.status=fail_in_progress` with
+  `evidence_status=current_recheck_missing_post_reset_official_path_correction_revision`.
+- Stage 2.3 is `blocked_by_stage2_2_official_gmm2_gate`.
+- `production_enable_allowed=false`.
 
 ## Stage 2.5 Low-Rank BF16 Accumulator Boundary Attempt - 2026-06-27
 

@@ -3051,12 +3051,18 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_admission"]["host_tiling_must_remain_fail_closed"]
     assert not loaded["production_admission"]["production_enable_allowed"]
     assert "stage2_2_official_gmm2_gate" in loaded["production_admission"]
-    assert loaded["production_admission"]["stage2_2_official_gmm2_gate_passed"]
-    assert loaded["production_admission"]["stage2_2_official_gmm2_gate"]["status"] == "passed"
-    assert loaded["production_admission"]["stage2_2_official_gmm2_gate"]["evidence_status"] == "current_recheck_passed"
-    assert not loaded["production_admission"]["stage2_2_official_gmm2_gate"]["stage2_3_and_later_blocked"]
+    stage2_2_gate = loaded["production_admission"]["stage2_2_official_gmm2_gate"]
+    assert not loaded["production_admission"]["stage2_2_official_gmm2_gate_passed"]
+    assert stage2_2_gate["status"] == "fail_in_progress"
+    assert stage2_2_gate["evidence_status"] == (
+        "current_recheck_missing_post_reset_official_path_correction_revision"
+    )
+    assert stage2_2_gate["stage2_3_and_later_blocked"]
+    assert not stage2_2_gate["required_appendix_gmm2_official_path_revision_flags"][
+        "official_path_correction_revision_matches"
+    ]
     assert "stage2_3_real_checkpoint_composition_gate" in loaded["production_admission"]
-    assert loaded["production_admission"]["stage2_3_isolated_gate_passed"]
+    assert not loaded["production_admission"]["stage2_3_isolated_gate_passed"]
     assert loaded["production_admission"]["remaining_execution_requirements"] == {
         "dispatch_routing_execution_enabled": True,
         "residual_hidden_quant_execution_enabled": True,
@@ -3705,7 +3711,7 @@ def test_svdq_kernel_contract_manifest_blocks_superseded_stage2_2_recheck_and_st
     stage2_3 = manifest["production_admission"]["stage2_3_real_checkpoint_composition_gate"]
 
     assert stage2_2["status"] == "fail_in_progress"
-    assert stage2_2["evidence_status"] == "current_recheck_missing_appendix_gmm2_official_path_revision_fields"
+    assert stage2_2["evidence_status"] == "current_recheck_missing_post_reset_official_path_correction_revision"
     assert not stage2_2["historical_passed_under_superseded_contract"]
     assert not stage2_2["passed"]
     assert stage2_2["stage2_3_and_later_blocked"]
@@ -3728,6 +3734,23 @@ def test_svdq_kernel_contract_manifest_blocks_superseded_stage2_2_recheck_and_st
         "gate_c_validated_after_gate_b_nonzero": True,
         "active_failure_all_zero_post_dequant_resolved": True,
     }
+    stage2_2_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    still_blocked = build_manifest(REPO_ROOT, evidence_dir=tmp_path)
+    still_blocked_stage2_2 = still_blocked["production_admission"]["stage2_2_official_gmm2_gate"]
+    assert still_blocked_stage2_2["status"] == "fail_in_progress"
+    assert still_blocked_stage2_2["evidence_status"] == (
+        "current_recheck_missing_post_reset_official_path_correction_revision"
+    )
+    assert not still_blocked_stage2_2["required_appendix_gmm2_official_path_revision_flags"][
+        "official_path_correction_revision_matches"
+    ]
+    assert not still_blocked["production_admission"]["stage2_2_official_gmm2_gate_passed"]
+
+    summary = json.loads(stage2_2_path.read_text(encoding="utf-8"))
+    summary["stage"]["appendix_gmm2_official_path"]["official_path_correction_revision"] = (
+        "stage2_appendix_gmm2_official_path_mandatory_official_path_correction_20260627"
+    )
     stage2_2_path.write_text(json.dumps(summary), encoding="utf-8")
 
     admitted = build_manifest(REPO_ROOT, evidence_dir=tmp_path)
