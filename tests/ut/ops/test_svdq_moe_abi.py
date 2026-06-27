@@ -1054,6 +1054,7 @@ def test_svdq_w4a8_tap_mixed_epilogue_probe_uses_official_taps_and_records_limit
         "build_svdq_final_combine_reference",
         "_run_real_final_combine",
         "torch_npu.npu_moe_token_unpermute",
+        "official_token_major_output_slots_to_permuted_input_rows",
         "pack_official_hidden_i4_reference",
         "stage2_3_real_checkpoint_same_route_w4a8_svdq_composition",
         "official_gmm2_from_svdq_hidden",
@@ -3177,7 +3178,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
 def test_svdq_kernel_contract_manifest_accepts_stage2_3_topk8_evidence(tmp_path):
     from tools.svdq_kernel_contract_manifest import build_manifest
 
-    evidence_path = tmp_path / "stage2/phase_stage2_real_composition_topk8_finalcombine_experts0_7.json"
+    evidence_path = tmp_path / "stage2/phase_stage2_real_composition_topk8_finalcombine_fixedidx_experts0_7.json"
     evidence_path.parent.mkdir(parents=True)
     zero_error = {
         "actual_finite": True,
@@ -3251,6 +3252,7 @@ def test_svdq_kernel_contract_manifest_accepts_stage2_3_topk8_evidence(tmp_path)
                     "real_final_combine": {
                         "official_surface": "torch_npu.npu_moe_token_unpermute",
                         "reference": "build_svdq_final_combine_reference",
+                        "index_semantics": "official_token_major_output_slots_to_permuted_input_rows",
                         "passed": True,
                     },
                 },

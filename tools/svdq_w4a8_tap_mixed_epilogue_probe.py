@@ -525,20 +525,28 @@ def _final_combine_inputs(
     top_k: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     counts_list = [int(v) for v in counts.detach().cpu().to(torch.int64).flatten().tolist()]
-    route_slot_by_expert = {int(expert): slot for slot, expert in enumerate(routed_experts)}
-    expanded = torch.empty((int(num_tokens) * int(top_k),), dtype=torch.int32)
-    cursor = 0
+    if len(routed_experts) != int(top_k):
+        raise ValueError(f"final-combine routed expert count {len(routed_experts)} != top_k {top_k}.")
+    prefixes: list[int] = []
+    running = 0
+    for count in counts_list:
+        prefixes.append(running)
+        running += count
+    active_rows = int(num_tokens) * int(top_k)
+    if running != active_rows:
+        raise ValueError(f"final-combine active row count {running} != expected {active_rows}.")
     for expert_id, count in enumerate(counts_list):
-        topk_slot = route_slot_by_expert.get(expert_id)
-        if topk_slot is None:
-            continue
-        for expert_local_offset in range(count):
-            expanded[cursor] = int(expert_local_offset * int(top_k) + topk_slot)
+        expected = int(num_tokens) if expert_id in set(int(expert) for expert in routed_experts) else 0
+        if count != expected:
+            raise ValueError(f"final-combine expert {expert_id} count {count} != expected {expected}.")
+    sorted_indices = torch.empty((active_rows,), dtype=torch.int32)
+    cursor = 0
+    for source_token in range(int(num_tokens)):
+        for topk_slot, expert_id in enumerate(routed_experts):
+            sorted_indices[cursor] = int(prefixes[int(expert_id)] + source_token)
             cursor += 1
-    if cursor != int(num_tokens) * int(top_k):
-        raise ValueError(f"final-combine expanded row index count {cursor} != active rows {num_tokens * top_k}.")
     topk_weights = torch.full((int(num_tokens), int(top_k)), 1.0 / float(top_k), dtype=torch.float32)
-    return expanded.contiguous(), topk_weights.contiguous()
+    return sorted_indices.contiguous(), topk_weights.contiguous()
 
 
 def _run_real_final_combine(
@@ -584,6 +592,7 @@ def _run_real_final_combine(
         "stage": "real_checkpoint_final_combine_token_unpermute",
         "official_surface": "torch_npu.npu_moe_token_unpermute",
         "reference": "build_svdq_final_combine_reference",
+        "index_semantics": "official_token_major_output_slots_to_permuted_input_rows",
         "input_shape": list(peer_output.shape),
         "input_dtype": str(peer_output.dtype),
         "expanded_row_idx": expanded_row_idx,

@@ -17,7 +17,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_EVIDENCE_DIR = Path("/root/workspace/lza/svdq_clean_evidence")
 STAGE2_3_REAL_COMPOSITION_EVIDENCE = Path(
-    "stage2/phase_stage2_real_composition_topk8_finalcombine_experts0_7.json"
+    "stage2/phase_stage2_real_composition_topk8_finalcombine_fixedidx_experts0_7.json"
 )
 
 OP_ROOT = Path("csrc/mc2/dispatch_ffn_combine_w4_a8_svdq")
@@ -1773,6 +1773,9 @@ def _stage2_3_real_composition_gate(evidence_dir: Path) -> dict[str, Any]:
         ),
         "real_final_combine_uses_reference": (
             final_combine.get("reference") == "build_svdq_final_combine_reference"
+        ),
+        "real_final_combine_uses_official_index_semantics": (
+            final_combine.get("index_semantics") == "official_token_major_output_slots_to_permuted_input_rows"
         ),
     }
     passed = bool(

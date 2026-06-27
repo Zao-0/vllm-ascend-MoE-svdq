@@ -402,6 +402,35 @@ def test_svdq_final_combine_reference_matches_weighted_token_sum():
     assert reference["all_finite"]
 
 
+def test_svdq_final_combine_reference_uses_official_sorted_indices_semantics():
+    routed_output = torch.tensor(
+        [
+            [10.0],
+            [30.0],
+            [50.0],
+            [20.0],
+            [40.0],
+            [60.0],
+        ],
+        dtype=torch.bfloat16,
+    )
+    topk_weights = torch.ones((3, 2), dtype=torch.float32)
+    expanded_row_idx = torch.tensor([0, 3, 1, 4, 2, 5], dtype=torch.int32)
+
+    reference = build_svdq_final_combine_reference(
+        routed_output=routed_output,
+        topk_weights=topk_weights,
+        expanded_row_idx=expanded_row_idx,
+    )
+
+    torch.testing.assert_close(
+        reference["stages"]["combined_output"],
+        torch.tensor([[30.0], [70.0], [110.0]], dtype=torch.float32),
+    )
+    assert torch.equal(reference["resolved_token_indices"], torch.tensor([0, 1, 2, 0, 1, 2]))
+    assert torch.equal(reference["resolved_topk_indices"], torch.tensor([0, 0, 0, 1, 1, 1]))
+
+
 def test_svdq_final_combine_reference_accepts_explicit_token_and_topk_indices():
     routed_output = torch.tensor([[2.0, 4.0], [8.0, 16.0], [32.0, 64.0]], dtype=torch.float32)
     topk_weights = torch.tensor([[0.125, 0.25], [0.5, 0.75]], dtype=torch.float32)

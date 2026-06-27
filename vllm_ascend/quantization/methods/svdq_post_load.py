@@ -495,9 +495,10 @@ def build_svdq_final_combine_reference(
 ) -> dict[str, Any]:
     """Build the final routed-output combine reference.
 
-    The default index mode mirrors the all-gather token-combine surface, where
-    ``expanded_row_idx`` addresses flattened ``[token, top_k]`` slots and
-    ``topk_weights`` supplies the per-route probabilities.
+    The default index mode mirrors the official token-unpermute surface, where
+    ``expanded_row_idx`` is laid out in flattened ``[token, top_k]`` order and
+    each entry points to the input row in ``routed_output`` to gather for that
+    route. ``topk_weights`` supplies the per-route probabilities.
     """
     if routed_output.ndim != 2:
         raise ValueError(f"routed_output must be rank-2 [rows, hidden], got {tuple(routed_output.shape)}.")
@@ -517,21 +518,47 @@ def build_svdq_final_combine_reference(
         if num_tokens != weights_num_tokens:
             raise ValueError(f"num_tokens {num_tokens} must match topk_weights tokens {weights_num_tokens}.")
 
-    resolved_token_indices, resolved_topk_indices = _resolve_final_combine_indices(
-        num_rows=num_rows,
-        num_tokens=num_tokens,
-        top_k=top_k,
-        expanded_row_idx=expanded_row_idx,
-        token_indices=token_indices,
-        topk_indices=topk_indices,
-    )
-
     routed_output_fp32 = routed_output.detach().float().cpu()
     topk_weights_fp32 = topk_weights.detach().float().cpu()
-    row_weights = topk_weights_fp32[resolved_token_indices, resolved_topk_indices]
-    weighted_expert_output = routed_output_fp32 * row_weights[:, None]
     combined_output = torch.zeros((num_tokens, hidden_size), dtype=torch.float32)
-    if num_rows:
+
+    if expanded_row_idx is not None:
+        if token_indices is not None or topk_indices is not None:
+            raise ValueError("expanded_row_idx cannot be combined with token_indices/topk_indices.")
+        if expanded_row_idx.ndim != 1:
+            raise ValueError(f"expanded_row_idx must be rank-1, got {tuple(expanded_row_idx.shape)}.")
+        if int(expanded_row_idx.shape[0]) != num_rows:
+            raise ValueError(f"expanded_row_idx length {expanded_row_idx.shape[0]} does not match rows {num_rows}.")
+        sorted_indices = expanded_row_idx.detach().long().cpu()
+        if sorted_indices.numel():
+            min_index = int(sorted_indices.min().item())
+            max_index = int(sorted_indices.max().item())
+            if min_index < 0:
+                raise ValueError(f"expanded_row_idx contains negative input row index {min_index}.")
+            if max_index >= num_rows:
+                raise ValueError(f"expanded_row_idx contains input row index {max_index} outside [0, {num_rows}).")
+        sorted_token_indices = torch.div(torch.arange(num_rows, dtype=torch.long), top_k, rounding_mode="floor")
+        sorted_topk_indices = torch.arange(num_rows, dtype=torch.long).remainder(top_k)
+        row_weights = topk_weights_fp32[sorted_token_indices, sorted_topk_indices]
+        weighted_expert_output = routed_output_fp32[sorted_indices] * row_weights[:, None]
+        if num_rows:
+            combined_output.index_add_(0, sorted_token_indices, weighted_expert_output)
+        resolved_token_indices = torch.empty(num_rows, dtype=torch.long)
+        resolved_topk_indices = torch.empty(num_rows, dtype=torch.long)
+        if num_rows:
+            resolved_token_indices[sorted_indices] = sorted_token_indices
+            resolved_topk_indices[sorted_indices] = sorted_topk_indices
+    else:
+        resolved_token_indices, resolved_topk_indices = _resolve_final_combine_indices(
+            num_rows=num_rows,
+            num_tokens=num_tokens,
+            top_k=top_k,
+            expanded_row_idx=None,
+            token_indices=token_indices,
+            topk_indices=topk_indices,
+        )
+        row_weights = topk_weights_fp32[resolved_token_indices, resolved_topk_indices]
+        weighted_expert_output = routed_output_fp32 * row_weights[:, None]
         combined_output.index_add_(0, resolved_token_indices, weighted_expert_output)
 
     stages = {

@@ -6,9 +6,100 @@
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
 | Stage 2.2 modified-hidden official W4A8 GMM2 | PASS | Single-device real-checkpoint official-lifecycle top-1 expert-0 probe passes Gate A, Gate B, C2V, and strict Gate C with max/mean abs `0.0`. |
 | Stage 2.3 same-routing two-stage composition | PASS | Single-device real-checkpoint top-k 8 experts 0-7 probe still passes first mixed epilogue, official GMM2 from SVDQ hidden, actual SVDQ down, final mixed down/output, and same-routing manifest with max/mean abs `0.0`. |
-| Stage 2.3 final-combine token unpermute | BLOCKED | Real-checkpoint peer-output validation reaches `torch_npu.npu_moe_token_unpermute`, but strict exact-zero comparison fails with max abs `7.703783921897411e-07`; tolerance was not relaxed. |
-| Stage 2.4 and later | IN PROGRESS | Production fused-op integration and four-NPU end-to-end validation remain blocked on the final-combine gate. |
+| Stage 2.3 final-combine token unpermute | PASS | Real-checkpoint peer-output validation uses the official token-major output-slot to permuted-input-row index convention and passes with max/mean abs `0.0`. |
+| Stage 2.4 and later | IN PROGRESS | Production fused-op integration and four-NPU end-to-end validation remain open. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
+
+## Stage 2.3 Final-Combine Gate Passed - 2026-06-27T03:24Z
+
+This is the latest authoritative Stage 2.3 handoff. The previous final-combine failure was caused by using the
+wrong index convention in the probe/oracle: it passed an expert-contiguous input-row to flattened `[token, top_k]`
+slot map. The official `KernelMoeTokenUnpermute` path consumes the inverse convention: flattened token-major output
+slots point to input rows in the permuted/expert-contiguous peer-output buffer.
+
+Files changed:
+
+- `vllm_ascend/quantization/methods/svdq_post_load.py`
+- `tools/svdq_w4a8_tap_mixed_epilogue_probe.py`
+- `tools/svdq_kernel_contract_manifest.py`
+- `tests/ut/quantization/test_svdq_post_load.py`
+- `tests/ut/ops/test_svdq_moe_abi.py`
+- `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+
+Exact behavior added:
+
+- `build_svdq_final_combine_reference(..., expanded_row_idx=...)` now mirrors the official token-unpermute
+  chunk-gather convention used by
+  `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/unpermute/moe_token_unpermute.h`.
+- The explicit `token_indices/topk_indices` reference mode remains available for row-to-token references.
+- The real Stage 2.3 tap/mixed probe now constructs final-combine indices as token-major output slots to
+  permuted input rows and records
+  `index_semantics=official_token_major_output_slots_to_permuted_input_rows`.
+- The production-admission manifest now consumes
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_real_composition_topk8_finalcombine_fixedidx_experts0_7.json`
+  and requires the official final-combine index semantics in addition to exact-zero final-combine output.
+
+Validation commands:
+
+- Syntax and whitespace:
+  `python -m py_compile vllm_ascend/quantization/methods/svdq_post_load.py tools/svdq_w4a8_tap_mixed_epilogue_probe.py`
+  `git diff --check -- vllm_ascend/quantization/methods/svdq_post_load.py tools/svdq_w4a8_tap_mixed_epilogue_probe.py tests/ut/quantization/test_svdq_post_load.py`
+- Focused static regressions:
+  `python -m pytest tests/ut/quantization/test_svdq_post_load.py tests/ut/ops/test_svdq_moe_abi.py -q`
+  passed with `56 passed, 16 warnings`.
+- A tiny NPU convention probe with `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3` confirmed that
+  `torch_npu.npu_moe_token_unpermute` gathers by token-major chunks of input-row indices.
+- Real-device top-k 8 final-combine probe command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH:-} python tools/svdq_w4a8_tap_mixed_epilogue_probe.py --require-npu --top-k 8 --route-experts 0 1 2 3 4 5 6 7 --local-num-experts 8 --num-tokens 4 --max-output-size 64 --summary-name stage2/phase_stage2_real_composition_topk8_finalcombine_fixedidx_experts0_7.json`
+
+Evidence paths:
+
+- Top-k 8 fixed-index final-combine NPU preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_real_composition_topk8_finalcombine_fixedidx_preflight_npus.log`
+- Top-k 8 fixed-index final-combine Python logical-device preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_real_composition_topk8_finalcombine_fixedidx_preflight_python.log`
+- Top-k 8 fixed-index final-combine active process preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_real_composition_topk8_finalcombine_fixedidx_preflight_processes.log`
+- Top-k 8 fixed-index final-combine probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_real_composition_topk8_finalcombine_fixedidx_experts0_7.log`
+- Top-k 8 fixed-index final-combine probe exit code:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_real_composition_topk8_finalcombine_fixedidx_experts0_7.exitcode`
+  contains `0`.
+- Top-k 8 fixed-index final-combine probe summary:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_real_composition_topk8_finalcombine_fixedidx_experts0_7.json`
+- Updated production admission manifest:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+- Updated production admission manifest log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_4_production_admission_manifest_fixedidx.log`
+
+Real-device result:
+
+- Overall probe: `passed: true`.
+- Shape: `num_tokens=4`, `top_k=8`, `active_rows=32`, `hidden_size=2048`, `intermediate_size=512`.
+- Stage flags all true:
+  `first_mixed_epilogue`, `official_gmm2_from_svdq_hidden`, `gate_mixed`, `up_mixed`, `hidden_bf16`,
+  `hidden_scale`, `hidden_q`, `down_mixed`, `out_bf16`, `final_combine_output`, and `same_routing_identity`.
+- Same-routing manifest checks all true, including
+  `final_combine_consumes_mixed_down_peer_output=true`,
+  `final_combine_output_validated=true`, and
+  `same_source_token_payload_across_topk_slots_proven=true`.
+- Final-combine error:
+  active shape `[4, 2048]`, actual dtype `torch.bfloat16`, expected dtype `torch.bfloat16`,
+  finite actual/expected/diff, max abs `0.0`, mean abs `0.0`.
+- Updated production admission gate:
+  `status=passed`, `passed=true`, `stage2_3_isolated_gate_passed=true`,
+  `exact_numerical_flags.final_combine_output_error_zero=true`,
+  `required_final_combine_flags.real_final_combine_uses_official_index_semantics=true`,
+  `production_enable_allowed=false`, and `host_tiling_must_remain_fail_closed=true`.
+
+Current interpretation:
+
+1. Stage 2.3 now validates the complete isolated real-checkpoint path through final combine:
+   official W4A8 GMM1, actual SVDQ BF16 gate/up, mixed AIV SwiGLU, official W4A8 GMM2 from SVDQ-modified hidden,
+   actual SVDQ BF16 down, final mixed output, and official probability-weighted token unpermute.
+2. Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed. The next required work is production fused-operator
+   integration and then four-NPU target-model validation.
+3. The public `torch_npu.npu_grouped_matmul` path remains out of scope for W4A8 GMM semantics.
 
 ## Stage 2.3 Final-Combine Gate Blocked - 2026-06-27T03:12Z
 
