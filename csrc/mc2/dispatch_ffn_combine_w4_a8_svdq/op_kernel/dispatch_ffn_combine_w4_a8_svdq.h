@@ -31,6 +31,8 @@ constexpr uint32_t SVDQ_RESIDUAL_SCALE1_SLOT = 4;
 constexpr uint32_t SVDQ_RESIDUAL_SCALE2_SLOT = 5;
 constexpr uint32_t SVDQ_RESIDUAL_BIAS1_SLOT = 6;
 constexpr uint32_t SVDQ_RESIDUAL_BIAS2_SLOT = 7;
+constexpr uint32_t SVDQ_MIXED_EPILOGUE_VECTOR_TILE = 64;
+constexpr uint32_t SVDQ_MIXED_EPILOGUE_UB_BYTES = 196352;
 
 template <class DTYPE_X = bfloat16_t>
 __aicore__ inline void svdq_moe_init_routing_v2(
@@ -338,6 +340,7 @@ public:
         tilingData_ = tilingData;
 
         ResolveWorkspaceAddresses();
+        pipe_.InitBuffer(mixedEpilogueUb_, SVDQ_MIXED_EPILOGUE_UB_BYTES);
     }
 
     __aicore__ inline void Process()
@@ -1033,16 +1036,214 @@ public:
                shape.upColumnOffset == SVDQ_INVALID_ID;
     }
 
-    __aicore__ inline bool RunMixedEpilogueStage(uint32_t epilogueId) const
+    __aicore__ inline void MixedEpilogueSyncMte2ToV() const
+    {
+        event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE2_V));
+        SetFlag<HardEvent::MTE2_V>(eventId);
+        WaitFlag<HardEvent::MTE2_V>(eventId);
+    }
+
+    __aicore__ inline void MixedEpilogueSyncVToMte3() const
+    {
+        event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::V_MTE3));
+        SetFlag<HardEvent::V_MTE3>(eventId);
+        WaitFlag<HardEvent::V_MTE3>(eventId);
+    }
+
+    __aicore__ inline void MixedEpilogueSyncMte3ToV() const
+    {
+        event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_V));
+        SetFlag<HardEvent::MTE3_V>(eventId);
+        WaitFlag<HardEvent::MTE3_V>(eventId);
+    }
+
+    __aicore__ inline void MixedEpilogueSyncMte3ToMte2() const
+    {
+        event_t eventId = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_MTE2));
+        SetFlag<HardEvent::MTE3_MTE2>(eventId);
+        WaitFlag<HardEvent::MTE3_MTE2>(eventId);
+    }
+
+    __aicore__ inline void CopyInMixedEpilogueBf16(LocalTensor<bfloat16_t> dst,
+        const GlobalTensor<bfloat16_t>& src, uint32_t offset, uint32_t count) const
+    {
+        DataCopyExtParams copyParams{1, static_cast<uint32_t>(count * sizeof(bfloat16_t)), 0, 0, 0};
+        DataCopyPad(dst, src[offset], copyParams, {false, 0, 0, 0});
+    }
+
+    __aicore__ inline void CopyOutMixedEpilogueBf16(GlobalTensor<bfloat16_t>& dst, uint32_t offset,
+        LocalTensor<bfloat16_t> src, uint32_t count) const
+    {
+        DataCopyExtParams copyParams{1, static_cast<uint32_t>(count * sizeof(bfloat16_t)), 0, 0, 0};
+        DataCopyPad(dst[offset], src, copyParams);
+    }
+
+    __aicore__ inline bool RunMixedOutputEpilogueAIV(const SVDQMixedEpilogueLaunch& launch)
+    {
+        if (g_coreType == AIC) {
+            return true;
+        }
+        if (launch.appliesSwiGLU || launch.residualColumns != launch.outputColumns ||
+            launch.lowRankColumns != launch.outputColumns || launch.outputColumns == 0 ||
+            launch.outputColumns % SVDQ_MIXED_EPILOGUE_VECTOR_TILE != 0) {
+            return false;
+        }
+
+        GlobalTensor<bfloat16_t> residualGm;
+        GlobalTensor<bfloat16_t> lowRankGm;
+        GlobalTensor<bfloat16_t> outputGm;
+        residualGm.SetGlobalBuffer((__gm__ bfloat16_t*)launch.residualAccumulator);
+        lowRankGm.SetGlobalBuffer((__gm__ bfloat16_t*)launch.lowRankOutput);
+        outputGm.SetGlobalBuffer((__gm__ bfloat16_t*)launch.output);
+
+        LocalTensor<float> ub = mixedEpilogueUb_.Get<float>();
+        LocalTensor<float> residual = ub;
+        LocalTensor<float> lowRank = ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE];
+        LocalTensor<bfloat16_t> bf16Ub =
+            ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 2].template ReinterpretCast<bfloat16_t>();
+        LocalTensor<bfloat16_t> residualBf16 = bf16Ub;
+        LocalTensor<bfloat16_t> lowRankBf16 = bf16Ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE];
+        LocalTensor<bfloat16_t> outputBf16 = bf16Ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 2];
+
+        const uint32_t blockIdx = GetBlockIdx();
+        const uint32_t blockNum = GetBlockNum();
+        for (uint32_t row = blockIdx; row < launch.m; row += blockNum) {
+            for (uint32_t column = 0; column < launch.outputColumns;
+                 column += SVDQ_MIXED_EPILOGUE_VECTOR_TILE) {
+                const uint32_t offset = row * launch.outputColumns + column;
+                CopyInMixedEpilogueBf16(residualBf16, residualGm, offset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                MixedEpilogueSyncMte2ToV();
+                CopyInMixedEpilogueBf16(lowRankBf16, lowRankGm, offset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                MixedEpilogueSyncMte2ToV();
+                Cast(residual, residualBf16, RoundMode::CAST_NONE, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                Cast(lowRank, lowRankBf16, RoundMode::CAST_NONE, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                Add(residual, residual, lowRank, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                Cast(outputBf16, residual, RoundMode::CAST_RINT, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                MixedEpilogueSyncVToMte3();
+                CopyOutMixedEpilogueBf16(outputGm, offset, outputBf16, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                MixedEpilogueSyncMte3ToV();
+                MixedEpilogueSyncMte3ToMte2();
+            }
+        }
+        return true;
+    }
+
+    __aicore__ inline bool RunMixedSwiGLUEpilogueAIV(const SVDQMixedEpilogueLaunch& launch)
+    {
+        if (g_coreType == AIC) {
+            return true;
+        }
+        if (!launch.appliesSwiGLU || launch.residualColumns != launch.outputColumns * 2 ||
+            launch.lowRankColumns != launch.outputColumns * 2 || launch.gateColumnOffset != 0 ||
+            launch.upColumnOffset != launch.outputColumns ||
+            launch.outputColumns % SVDQ_MIXED_EPILOGUE_VECTOR_TILE != 0) {
+            return false;
+        }
+
+        GlobalTensor<bfloat16_t> residualGm;
+        GlobalTensor<bfloat16_t> lowRankGm;
+        GlobalTensor<bfloat16_t> outputGm;
+        residualGm.SetGlobalBuffer((__gm__ bfloat16_t*)launch.residualAccumulator);
+        lowRankGm.SetGlobalBuffer((__gm__ bfloat16_t*)launch.lowRankOutput);
+        outputGm.SetGlobalBuffer((__gm__ bfloat16_t*)launch.output);
+
+        LocalTensor<float> ub = mixedEpilogueUb_.Get<float>();
+        LocalTensor<float> gate = ub;
+        LocalTensor<float> up = ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE];
+        LocalTensor<float> tmp = ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 2];
+        LocalTensor<float> hidden = ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 3];
+        LocalTensor<bfloat16_t> bf16Ub =
+            ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 4].template ReinterpretCast<bfloat16_t>();
+        LocalTensor<bfloat16_t> residualGateBf16 = bf16Ub;
+        LocalTensor<bfloat16_t> lowRankGateBf16 = bf16Ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE];
+        LocalTensor<bfloat16_t> residualUpBf16 = bf16Ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 2];
+        LocalTensor<bfloat16_t> lowRankUpBf16 = bf16Ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 3];
+        LocalTensor<bfloat16_t> hiddenBf16 = bf16Ub[SVDQ_MIXED_EPILOGUE_VECTOR_TILE * 4];
+
+        const uint32_t blockIdx = GetBlockIdx();
+        const uint32_t blockNum = GetBlockNum();
+        for (uint32_t row = blockIdx; row < launch.m; row += blockNum) {
+            for (uint32_t column = 0; column < launch.outputColumns;
+                 column += SVDQ_MIXED_EPILOGUE_VECTOR_TILE) {
+                const uint32_t gateOffset = row * launch.residualColumns + launch.gateColumnOffset + column;
+                const uint32_t upOffset = row * launch.residualColumns + launch.upColumnOffset + column;
+                const uint32_t outputOffset = row * launch.outputColumns + column;
+
+                CopyInMixedEpilogueBf16(residualGateBf16, residualGm, gateOffset,
+                    SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                MixedEpilogueSyncMte2ToV();
+                CopyInMixedEpilogueBf16(lowRankGateBf16, lowRankGm, gateOffset,
+                    SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                MixedEpilogueSyncMte2ToV();
+                Cast(gate, residualGateBf16, RoundMode::CAST_NONE, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                Cast(tmp, lowRankGateBf16, RoundMode::CAST_NONE, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                Add(gate, gate, tmp, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+
+                CopyInMixedEpilogueBf16(residualUpBf16, residualGm, upOffset,
+                    SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                MixedEpilogueSyncMte2ToV();
+                CopyInMixedEpilogueBf16(lowRankUpBf16, lowRankGm, upOffset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                MixedEpilogueSyncMte2ToV();
+                Cast(up, residualUpBf16, RoundMode::CAST_NONE, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                Cast(tmp, lowRankUpBf16, RoundMode::CAST_NONE, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                Add(up, up, tmp, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+
+                if (launch.swigluLimit > 0.0f) {
+                    Maxs(gate, gate, -launch.swigluLimit, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                    PipeBarrier<PIPE_V>();
+                    Mins(gate, gate, launch.swigluLimit, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                    PipeBarrier<PIPE_V>();
+                    Maxs(up, up, -launch.swigluLimit, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                    PipeBarrier<PIPE_V>();
+                    Mins(up, up, launch.swigluLimit, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                    PipeBarrier<PIPE_V>();
+                }
+
+                Muls(tmp, gate, -1.0f, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                Exp(tmp, tmp, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                Adds(tmp, tmp, 1.0f, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                Div(hidden, gate, tmp, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                Mul(hidden, hidden, up, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                Cast(hiddenBf16, hidden, RoundMode::CAST_RINT, SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                PipeBarrier<PIPE_V>();
+                MixedEpilogueSyncVToMte3();
+                CopyOutMixedEpilogueBf16(outputGm, outputOffset, hiddenBf16,
+                    SVDQ_MIXED_EPILOGUE_VECTOR_TILE);
+                MixedEpilogueSyncMte3ToV();
+                MixedEpilogueSyncMte3ToMte2();
+            }
+        }
+        return true;
+    }
+
+    __aicore__ inline bool RunMixedEpilogueStage(uint32_t epilogueId)
     {
         if (!MixedEpilogueReady(epilogueId)) {
             return false;
         }
-        // Mixed residual/low-rank epilogues require an AIV implementation before production use.
-        return false;
+        SVDQMixedEpilogueLaunch launch = BuildMixedEpilogueLaunch(epilogueId);
+        if (launch.appliesSwiGLU) {
+            return RunMixedSwiGLUEpilogueAIV(launch);
+        }
+        return RunMixedOutputEpilogueAIV(launch);
     }
 
-    __aicore__ inline bool RunMixedEpilogueStages() const
+    __aicore__ inline bool RunMixedEpilogueStages()
     {
         for (uint32_t epilogueId = 0; epilogueId < SVDQ_MIXED_EPILOGUE_COUNT; ++epilogueId) {
             if (!RunMixedEpilogueStage(epilogueId)) {
@@ -1122,6 +1323,8 @@ private:
     SVDQRuntimeGM runtime_;
     SVDQWorkspaceGM workspace_;
     DispatchFFNCombineW4A8SVDQTilingData tilingData_;
+    TPipe pipe_;
+    TBuf<> mixedEpilogueUb_;
 };
 
 }  // namespace DispatchFFNCombineW4A8SVDQImpl

@@ -1076,7 +1076,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "RunResidualStage(stageId)" in sources["kernel_contract"]
             and "RunResidualDynamicQuantStage(uint32_t stageId) const" in sources["kernel_contract"]
             and "RunResidualGmmStage(uint32_t stageId) const" in sources["kernel_contract"]
-            and "RunMixedEpilogueStages() const" in sources["kernel_contract"]
+            and "RunMixedEpilogueStages()" in sources["kernel_contract"]
         ),
         "kernel_records_mixed_epilogue_contracts": (
             "SVDQMixedEpilogueContract" in sources["kernel_contract"]
@@ -1149,6 +1149,48 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "SVDQ_REGION_ACCUMULATOR_1, offset, routedRows * gateUpSize * BF16_BYTES" in sources[
                 "host_tiling"
             ]
+        ),
+        "kernel_mixed_output_epilogue_aiv_execution_enabled": (
+            "SVDQ_MIXED_EPILOGUE_VECTOR_TILE = 64" in sources["kernel_contract"]
+            and "SVDQ_MIXED_EPILOGUE_UB_BYTES = 196352" in sources["kernel_contract"]
+            and "RunMixedOutputEpilogueAIV(const SVDQMixedEpilogueLaunch& launch)"
+            in sources["kernel_contract"]
+            and "if (g_coreType == AIC)" in sources["kernel_contract"]
+            and "GlobalTensor<bfloat16_t> residualGm" in sources["kernel_contract"]
+            and "GlobalTensor<bfloat16_t> lowRankGm" in sources["kernel_contract"]
+            and "GlobalTensor<bfloat16_t> outputGm" in sources["kernel_contract"]
+            and "CopyInMixedEpilogueBf16(residualBf16, residualGm, offset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)"
+            in sources["kernel_contract"]
+            and "CopyInMixedEpilogueBf16(lowRankBf16, lowRankGm, offset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)"
+            in sources["kernel_contract"]
+            and "Add(residual, residual, lowRank, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)"
+            in sources["kernel_contract"]
+            and "CopyOutMixedEpilogueBf16(outputGm, offset, outputBf16, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)"
+            in sources["kernel_contract"]
+            and "return RunMixedOutputEpilogueAIV(launch);" in sources["kernel_contract"]
+        ),
+        "kernel_mixed_swiglu_epilogue_aiv_execution_enabled": (
+            "RunMixedSwiGLUEpilogueAIV(const SVDQMixedEpilogueLaunch& launch)" in sources["kernel_contract"]
+            and "launch.gateColumnOffset != 0" in sources["kernel_contract"]
+            and "launch.upColumnOffset != launch.outputColumns" in sources["kernel_contract"]
+            and "const uint32_t gateOffset = row * launch.residualColumns + launch.gateColumnOffset + column"
+            in sources["kernel_contract"]
+            and "const uint32_t upOffset = row * launch.residualColumns + launch.upColumnOffset + column"
+            in sources["kernel_contract"]
+            and "CopyInMixedEpilogueBf16(residualGateBf16, residualGm, gateOffset,"
+            in sources["kernel_contract"]
+            and "CopyInMixedEpilogueBf16(lowRankGateBf16, lowRankGm, gateOffset,"
+            in sources["kernel_contract"]
+            and "CopyInMixedEpilogueBf16(residualUpBf16, residualGm, upOffset,"
+            in sources["kernel_contract"]
+            and "CopyInMixedEpilogueBf16(lowRankUpBf16, lowRankGm, upOffset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)"
+            in sources["kernel_contract"]
+            and "Exp(tmp, tmp, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)" in sources["kernel_contract"]
+            and "Div(hidden, gate, tmp, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)" in sources["kernel_contract"]
+            and "Mul(hidden, hidden, up, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)" in sources["kernel_contract"]
+            and "CopyOutMixedEpilogueBf16(outputGm, outputOffset, hiddenBf16,"
+            in sources["kernel_contract"]
+            and "return RunMixedSwiGLUEpilogueAIV(launch);" in sources["kernel_contract"]
         ),
         "kernel_mixed_epilogue_scalar_helpers_absent": (
             "RunMixedOutputEpilogueStage" not in sources["kernel_contract"]
@@ -1234,7 +1276,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "AccumulateFinalCombineOutput" not in sources["kernel_contract"]
         ),
         "kernel_mixed_final_execution_dispatch_enabled": (
-            "RunMixedEpilogueStages() const" in sources["kernel_contract"]
+            "RunMixedEpilogueStages()" in sources["kernel_contract"]
             and "MixedEpilogueReady(epilogueId)" in sources["kernel_contract"]
             and "RunFinalCombine() const" in sources["kernel_contract"]
             and "FinalCombineReady()" in sources["kernel_contract"]
@@ -2267,10 +2309,10 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
                 "kernel_mixed_epilogue_launch_descriptor_recorded"
             ],
             "mixed_output_epilogue_execution_enabled": source_proof[
-                "kernel_mixed_output_epilogue_scalar_execution_enabled"
+                "kernel_mixed_output_epilogue_aiv_execution_enabled"
             ],
             "mixed_swiglu_epilogue_execution_enabled": source_proof[
-                "kernel_mixed_swiglu_epilogue_scalar_execution_enabled"
+                "kernel_mixed_swiglu_epilogue_aiv_execution_enabled"
             ],
             "mixed_epilogue_scalar_helpers_absent": source_proof[
                 "kernel_mixed_epilogue_scalar_helpers_absent"
@@ -2292,8 +2334,8 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
             ),
             "mixed_epilogue_execution_fail_closed": (
                 "production tiling is fail-closed" in host_tiling_source
-                or not source_proof["kernel_mixed_output_epilogue_scalar_execution_enabled"]
-                or not source_proof["kernel_mixed_swiglu_epilogue_scalar_execution_enabled"]
+                or not source_proof["kernel_mixed_output_epilogue_aiv_execution_enabled"]
+                or not source_proof["kernel_mixed_swiglu_epilogue_aiv_execution_enabled"]
             ),
             "final_combine_execution_fail_closed": "production tiling is fail-closed" in host_tiling_source,
             "w4a8_residual_contract_recorded": True,
@@ -2321,10 +2363,10 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
                     "kernel_residual_gmm_scalar_execution_enabled"
                 ],
                 "mixed_swiglu_epilogue_execution_enabled": source_proof[
-                    "kernel_mixed_swiglu_epilogue_scalar_execution_enabled"
+                    "kernel_mixed_swiglu_epilogue_aiv_execution_enabled"
                 ],
                 "mixed_output_epilogue_execution_enabled": source_proof[
-                    "kernel_mixed_output_epilogue_scalar_execution_enabled"
+                    "kernel_mixed_output_epilogue_aiv_execution_enabled"
                 ],
                 "final_combine_execution_enabled": source_proof[
                     "kernel_final_combine_official_unpermute_execution_enabled"

@@ -78,6 +78,57 @@ Official-vs-debug state table checkpoint:
 | `BlockEpilogue2` input state | `CombineV2` passes `gmCGMM2`, `gmC2`, `gmPerTokenScale2`, W2 aux, tile coords, group, `preSumBeforeRank` at `1511-1512`. | `BlockEpilogue2::operator()` dequantizes and writes peer output. | Constructed at `1325-1339` or debug readback at `996-1009`. | `gmC2`, `gmPerTokenScale2`, `ptrMAux2`, remote peer memory `offsetD`. | `actualBlockShape.m()/2` after high/low merge. | UB events inside `BlockEpilogue2`. | After C2V wait. | Internal MTE/V waits at `block_epilogue_w4a8post_pertoken_v2.hpp:182-190` and `265-270`. | `Finalize()` waits all UB stages at `132-140`. | Gate C must validate this output only after Gate B is nonzero. |
 | FP32 post-dequant debug tap | `BlockEpilogue2` debug branch writes `gmTileGMM2` after high/low merge and scale at `block_epilogue_w4a8post_pertoken_v2.hpp:258-262`. | Host probe reads debug GM. | Debug GM is optional through `ptrDebugGMM2`. | `workspaceInfo.ptrCGMM2` or external debug pointer at `1620-1627`. | FP32 row-major active tile. | Debug uses `EVENT_ID7` MTE3/V guard. | During BlockEpilogue2. | Debug waits `EVENT_ID7`. | `Finalize()` waits debug event under `W4A8_DEBUG`. | Prior all-zero readbacks are insufficient; Gate B and Gate C must be separated and interpreted as specified by the appendix. |
 
+## Stage 2.4 Production Mixed AIV Epilogue Source Boundary - 2026-06-27
+
+Latest binding constraint reread:
+
+- Reread `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` before this source patch.
+- No official GMM2 lifecycle, V2C/C2V flag protocol, packed W4 layout, W4A8 scale formula, or public
+  `torch_npu.npu_grouped_matmul` path was changed or reinterpreted.
+- This source patch depends on the current Stage 2.2 Gate A/B/C recheck evidence listed above. It does not claim
+  production admission and does not enable production host tiling.
+
+Latest code state:
+
+- Added production AIV source helpers for the two mixed epilogues in
+  `dispatch_ffn_combine_w4_a8_svdq.h`.
+- Stage 0, `RunMixedSwiGLUEpilogueAIV`, reads BF16 W4A8 residual gate/up output from
+  `SVDQ_REGION_ACCUMULATOR_1` and BF16 low-rank gate/up output from `SVDQ_REGION_PROJECTION_1`, adds them in FP32,
+  applies optional SwiGLU clamping and vector `Exp/Div/Mul`, then writes BF16 hidden to `SVDQ_REGION_HIDDEN`.
+- Stage 1, `RunMixedOutputEpilogueAIV`, reads BF16 W4A8 residual down output from `SVDQ_REGION_ACCUMULATOR_2` and
+  BF16 low-rank down output from `SVDQ_REGION_PROJECTION_2`, adds them in FP32, and writes BF16 peer output to
+  `SVDQ_REGION_PEER_OUTPUT`.
+- Both helpers return true without vector work on AIC cores and do the vector work only on AIV cores.
+- The forbidden scalar helper family remains absent:
+  `RunMixedOutputEpilogueStage`, `RunMixedSwiGLUEpilogueStage`, `LoadMixedEpilogueResidualBF16`,
+  `LoadMixedEpilogueLowRankBF16`, `StoreMixedEpilogueOutputBF16`, `SiluFloat`, and `ExpApproxFloat`.
+- Residual hidden quantization and residual W4A8 GMM1/GMM2 production execution remain fail-closed.
+- Production host tiling remains fail-closed with `GRAPH_FAILED`; four-NPU target-model E2E validation remains open.
+
+Regenerated manifest:
+
+- Command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+- Resulting key state:
+  `production_fail_closed.mixed_output_epilogue_execution_enabled=true`,
+  `production_fail_closed.mixed_swiglu_epilogue_execution_enabled=true`,
+  `source_proof.kernel_mixed_output_epilogue_aiv_execution_enabled=true`,
+  `source_proof.kernel_mixed_swiglu_epilogue_aiv_execution_enabled=true`,
+  `source_proof.kernel_mixed_output_epilogue_scalar_execution_enabled=false`,
+  `source_proof.kernel_mixed_swiglu_epilogue_scalar_execution_enabled=false`,
+  `production_admission.production_enable_allowed=false`, and
+  `production_admission.host_tiling_must_remain_fail_closed=true`.
+- Remaining source execution gaps:
+  residual hidden quant, residual W4A8 GMM1/GMM2 production execution, and four-NPU target-model E2E validation.
+
+Validation:
+
+- `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+- `git diff --check -- csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq.h tools/svdq_kernel_contract_manifest.py tests/ut/ops/test_svdq_moe_abi.py docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q` -> `46 passed, 16 warnings`
+- Manifest regeneration command above passed and wrote
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`.
+
 ## Stage 2.4 Production Final Combine Source Boundary - 2026-06-27
 
 Latest code state:

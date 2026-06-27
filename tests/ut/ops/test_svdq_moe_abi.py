@@ -1882,6 +1882,8 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
 
     for token in (
         "SVDQ_MIXED_EPILOGUE_COUNT = 2",
+        "SVDQ_MIXED_EPILOGUE_VECTOR_TILE = 64",
+        "SVDQ_MIXED_EPILOGUE_UB_BYTES = 196352",
         "SVDQMixedEpilogueShape",
         "SVDQMixedEpilogueContract",
         "SVDQMixedEpilogueLaunch",
@@ -1890,7 +1892,7 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
         "MixedEpilogueContract(uint32_t epilogueId)",
         "MixedEpilogueReady(uint32_t epilogueId)",
         "RunMixedEpilogueStage(uint32_t epilogueId)",
-        "RunMixedEpilogueStages() const",
+        "RunMixedEpilogueStages()",
         "SVDQ_STAGE_MIXED_EPILOGUE_1",
         "SVDQ_REGION_ACCUMULATOR_1",
         "SVDQ_REGION_PROJECTION_1",
@@ -1959,8 +1961,21 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
         "shape.gateColumnOffset == SVDQ_INVALID_ID",
         "shape.upColumnOffset == SVDQ_INVALID_ID",
         "if (!MixedEpilogueReady(epilogueId))",
-        "Mixed residual/low-rank epilogues require an AIV implementation before production use.",
-        "return false;",
+        "RunMixedOutputEpilogueAIV(const SVDQMixedEpilogueLaunch& launch)",
+        "RunMixedSwiGLUEpilogueAIV(const SVDQMixedEpilogueLaunch& launch)",
+        "CopyInMixedEpilogueBf16(residualBf16, residualGm, offset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
+        "CopyInMixedEpilogueBf16(lowRankBf16, lowRankGm, offset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
+        "Add(residual, residual, lowRank, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
+        "CopyOutMixedEpilogueBf16(outputGm, offset, outputBf16, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
+        "CopyInMixedEpilogueBf16(residualGateBf16, residualGm, gateOffset,",
+        "CopyInMixedEpilogueBf16(lowRankGateBf16, lowRankGm, gateOffset,",
+        "CopyInMixedEpilogueBf16(residualUpBf16, residualGm, upOffset,",
+        "CopyInMixedEpilogueBf16(lowRankUpBf16, lowRankGm, upOffset, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
+        "Exp(tmp, tmp, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
+        "Div(hidden, gate, tmp, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
+        "Mul(hidden, hidden, up, SVDQ_MIXED_EPILOGUE_VECTOR_TILE)",
+        "return RunMixedSwiGLUEpilogueAIV(launch);",
+        "return RunMixedOutputEpilogueAIV(launch);",
     ):
         assert token in epilogue_source
 
@@ -2849,8 +2864,8 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert not loaded["production_fail_closed"]["residual_gmm_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_gmm_scalar_helpers_absent"]
     assert loaded["production_fail_closed"]["mixed_epilogue_launch_descriptor_recorded"]
-    assert not loaded["production_fail_closed"]["mixed_output_epilogue_execution_enabled"]
-    assert not loaded["production_fail_closed"]["mixed_swiglu_epilogue_execution_enabled"]
+    assert loaded["production_fail_closed"]["mixed_output_epilogue_execution_enabled"]
+    assert loaded["production_fail_closed"]["mixed_swiglu_epilogue_execution_enabled"]
     assert loaded["production_fail_closed"]["mixed_epilogue_scalar_helpers_absent"]
     assert loaded["production_fail_closed"]["final_combine_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["final_combine_execution_enabled"]
@@ -2873,8 +2888,8 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "dispatch_routing_execution_enabled": True,
         "residual_hidden_quant_execution_enabled": False,
         "residual_w4a8_gmm_execution_enabled": False,
-        "mixed_swiglu_epilogue_execution_enabled": False,
-        "mixed_output_epilogue_execution_enabled": False,
+        "mixed_swiglu_epilogue_execution_enabled": True,
+        "mixed_output_epilogue_execution_enabled": True,
         "final_combine_execution_enabled": True,
         "four_npu_target_model_e2e_validated": False,
     }
@@ -2900,6 +2915,8 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_residual_execution_dispatch_enabled"]
     assert loaded["source_proof"]["kernel_records_mixed_epilogue_contracts"]
     assert loaded["source_proof"]["kernel_mixed_epilogue_launch_descriptor_recorded"]
+    assert loaded["source_proof"]["kernel_mixed_output_epilogue_aiv_execution_enabled"]
+    assert loaded["source_proof"]["kernel_mixed_swiglu_epilogue_aiv_execution_enabled"]
     assert not loaded["source_proof"]["kernel_mixed_output_epilogue_scalar_execution_enabled"]
     assert not loaded["source_proof"]["kernel_mixed_swiglu_epilogue_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_mixed_epilogue_scalar_helpers_absent"]
