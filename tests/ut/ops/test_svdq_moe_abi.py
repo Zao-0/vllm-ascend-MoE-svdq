@@ -3559,6 +3559,33 @@ def test_svdq_kernel_contract_manifest_blocks_superseded_stage2_2_recheck_and_st
     assert not manifest["production_admission"]["production_enable_allowed"]
     assert manifest["production_admission"]["host_tiling_must_remain_fail_closed"]
 
+    summary = json.loads(stage2_2_path.read_text(encoding="utf-8"))
+    summary["stage"]["appendix_gmm2_official_path"] = {
+        "official_vs_debug_state_table_complete": True,
+        "gate_a_routing_identity_complete": True,
+        "gate_a_prefix_and_padded_row_evidence_complete": True,
+        "gate_b_exact_aic_raw_or_d2_boundary_identified": True,
+        "gate_b_aic_raw_output_reference_passed": True,
+        "gate_c_validated_after_gate_b_nonzero": True,
+        "active_failure_all_zero_post_dequant_resolved": True,
+    }
+    stage2_2_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    admitted = build_manifest(REPO_ROOT, evidence_dir=tmp_path)
+    admitted_stage2_2 = admitted["production_admission"]["stage2_2_official_gmm2_gate"]
+    admitted_stage2_3 = admitted["production_admission"]["stage2_3_real_checkpoint_composition_gate"]
+
+    assert admitted_stage2_2["status"] == "passed"
+    assert admitted_stage2_2["evidence_status"] == "current_recheck_passed"
+    assert admitted_stage2_2["passed"]
+    assert not admitted_stage2_2["stage2_3_and_later_blocked"]
+    assert admitted_stage2_3["status"] == "passed"
+    assert admitted_stage2_3["passed"]
+    assert admitted_stage2_3["blocking_gate"] is None
+    assert admitted["production_admission"]["stage2_2_official_gmm2_gate_passed"]
+    assert admitted["production_admission"]["stage2_3_isolated_gate_passed"]
+    assert not admitted["production_admission"]["production_enable_allowed"]
+
 
 def test_svdq_bf16_routing_stage_probe_cpu_golden_uses_official_count_layout():
     from tools.svdq_bf16_routing_stage_probe import _cpu_routing_golden

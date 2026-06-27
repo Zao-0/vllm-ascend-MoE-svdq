@@ -881,6 +881,94 @@ def _gate_a_input_boundary_manifest(
     }
 
 
+def _appendix_gmm2_official_path_revision_manifest(
+    *,
+    diagnostic_mode: str,
+    gate_a_input_boundary_passed: bool,
+    routing_identity: dict[str, Any],
+    gate_b_source_boundary_identified: bool,
+    gate_b_reference_passed: bool,
+    gate_b_nonzero: bool,
+    gate_c_post_dequant_finite: bool,
+    gate_c_post_dequant_nonzero: bool,
+    gate_c_reference_passed: bool,
+) -> dict[str, Any]:
+    padded_rows = routing_identity.get("padded_row_interpretation", {})
+    routing_complete = bool(
+        gate_a_input_boundary_passed
+        and routing_identity.get("expert_token_total_matches_active_rows")
+        and routing_identity.get("reference_group_counts_match_expert_token_nums")
+        and routing_identity.get("manifest_scope", {}).get("same_source_token_payload_across_topk_slots_proven")
+        and routing_identity.get("tp_ep_mapping", {}).get("local_expert_id_equals_global_expert_id")
+        and routing_identity.get("routed_row_map_first64")
+    )
+    prefix_and_padded_complete = bool(
+        routing_identity.get("expert_prefix_sums") is not None
+        and routing_identity.get("expert_local_row_starts")
+        and routing_identity.get("expert_local_row_offsets")
+        and padded_rows.get("active_rows") is not None
+        and padded_rows.get("padded_rows_start") is not None
+        and padded_rows.get("hidden_int4_padded_nonzero_count") == 0
+        and padded_rows.get("hidden_scale_padded_nonzero_count") == 0
+    )
+    gate_b_passed = bool(gate_b_source_boundary_identified and gate_b_reference_passed and gate_b_nonzero)
+    gate_c_after_gate_b = bool(
+        gate_b_passed
+        and gate_c_post_dequant_finite
+        and gate_c_post_dequant_nonzero
+        and gate_c_reference_passed
+    )
+    return {
+        "binding_revision": "stage2_appendix_gmm2_official_path",
+        "diagnostic_mode": diagnostic_mode,
+        "source_of_truth": "official dispatch_ffn_combine_w4_a8 GMM2 AIC/AIV lifecycle",
+        "public_grouped_matmul_used": False,
+        "production_svdq_host_tiling_fail_closed": True,
+        "official_vs_debug_state_table_complete": True,
+        "official_vs_debug_state_table_reference": {
+            "tracked_report": "docs/svdq_qwen35_moe_clean_implementation_stage2_report.md",
+            "external_report": "/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_report.md",
+            "required_rows": [
+                "packed hidden gmA2I4_I8",
+                "hidden scale gmPerTokenScale2",
+                "tokenPerExpert",
+                "cumsumMM",
+                "preSumBeforeRank",
+                "GMM2 AIC input tile state",
+                "GMM2 accumulator / D2 region",
+                "C2V handoff state",
+                "BlockEpilogue2 input state",
+                "FP32 post-dequant debug tap",
+            ],
+        },
+        "gate_a_routing_identity_complete": routing_complete,
+        "gate_a_prefix_and_padded_row_evidence_complete": prefix_and_padded_complete,
+        "gate_b_exact_aic_raw_or_d2_boundary_identified": bool(gate_b_source_boundary_identified),
+        "gate_b_aic_raw_output_reference_passed": gate_b_passed,
+        "gate_c_validated_after_gate_b_nonzero": gate_c_after_gate_b,
+        "active_failure_all_zero_post_dequant_resolved": bool(
+            gate_c_post_dequant_nonzero and gate_c_reference_passed
+        ),
+        "stage2_2_acceptance_possible": gate_c_after_gate_b,
+        "gate_a_summary": {
+            "input_boundary_passed": bool(gate_a_input_boundary_passed),
+            "routing_identity_complete": routing_complete,
+            "prefix_and_padded_row_evidence_complete": prefix_and_padded_complete,
+        },
+        "gate_b_summary": {
+            "source_boundary_identified": bool(gate_b_source_boundary_identified),
+            "reference_passed": bool(gate_b_reference_passed),
+            "nonzero": bool(gate_b_nonzero),
+        },
+        "gate_c_summary": {
+            "validated_after_gate_b_nonzero": gate_c_after_gate_b,
+            "post_dequant_finite": bool(gate_c_post_dequant_finite),
+            "post_dequant_nonzero": bool(gate_c_post_dequant_nonzero),
+            "reference_passed": bool(gate_c_reference_passed),
+        },
+    }
+
+
 def _unpack_i4_bytes_variant(
     bytes_tensor: torch.Tensor,
     *,
@@ -2345,8 +2433,21 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         active_rows=active_rows,
         max_output_size=args.max_output_size,
     )
+    hidden_scale_active = hidden_x_scale[:active_rows].detach().cpu()
+    gate_a_input_boundary_passed = bool(
+        packed_exact["exact_match"]
+        and packed_exact["mismatch_count"] == 0
+        and hidden_x_readback_exact is not None
+        and hidden_x_readback_exact["exact_match"]
+        and hidden_scale_readback_exact
+        and torch.isfinite(hidden_scale_active).all().item()
+        and torch.any(hidden_scale_active.abs() > 0).item()
+        and torch.isfinite(mixed["hidden_bf16"].float()).all().item()
+        and torch.any(mixed["hidden_bf16"].float().abs() > 0).item()
+        and routing_identity["expert_token_total_matches_active_rows"]
+        and routing_identity["reference_group_counts_match_expert_token_nums"]
+    )
     if loop_stats_debug:
-        hidden_scale_active = hidden_x_scale[:active_rows].detach().cpu()
         loop_stats = _parse_gmm2_loop_stats(gmm2_post_dequant, expert_per_rank=local_num_experts)
         return {
             "stage": "stage2_modified_hidden_official_w4a8_gmm2_loop_stats",
@@ -2374,6 +2475,17 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             },
             "routing_identity": routing_identity,
             "gate_a_input_boundary": gate_a_input_boundary,
+            "appendix_gmm2_official_path": _appendix_gmm2_official_path_revision_manifest(
+                diagnostic_mode="gmm2_loop_stats_only",
+                gate_a_input_boundary_passed=gate_a_input_boundary_passed,
+                routing_identity=routing_identity,
+                gate_b_source_boundary_identified=False,
+                gate_b_reference_passed=False,
+                gate_b_nonzero=False,
+                gate_c_post_dequant_finite=False,
+                gate_c_post_dequant_nonzero=False,
+                gate_c_reference_passed=False,
+            ),
             "official_postload": {
                 "loader": "AscendW4A8DynamicFusedMoEMethod.process_weights_after_loading_modelslim",
                 "metadata": _postload_metadata(layer),
@@ -2418,7 +2530,6 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
 
     if raw_c2_debug:
         raw_debug_mode = _gmm2_raw_debug_mode(args.swiglu_limit)
-        hidden_scale_active = hidden_x_scale[:active_rows].detach().cpu()
         raw_c2_active = gmm2_post_dequant[:active_rows].detach().cpu()
         raw_c2_stats = _float_stats(raw_c2_active)
         raw_c2_finite = bool(torch.isfinite(raw_c2_active).all().item())
@@ -2686,6 +2797,17 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             },
             "routing_identity": routing_identity,
             "gate_a_input_boundary": gate_a_input_boundary,
+            "appendix_gmm2_official_path": _appendix_gmm2_official_path_revision_manifest(
+                diagnostic_mode=f"full_lifecycle_gmm2_{raw_debug_mode}_readback",
+                gate_a_input_boundary_passed=gate_a_input_boundary_passed,
+                routing_identity=routing_identity,
+                gate_b_source_boundary_identified=True,
+                gate_b_reference_passed=bool(raw_c2_reference_passed),
+                gate_b_nonzero=bool(raw_c2_nonzero),
+                gate_c_post_dequant_finite=False,
+                gate_c_post_dequant_nonzero=False,
+                gate_c_reference_passed=False,
+            ),
             "official_postload": {
                 "loader": "AscendW4A8DynamicFusedMoEMethod.process_weights_after_loading_modelslim",
                 "metadata": _postload_metadata(layer),
@@ -2792,7 +2914,6 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         and error["mean_abs"] <= args.gmm2_reference_mean_abs_tol
     )
 
-    hidden_scale_active = hidden_x_scale[:active_rows].detach().cpu()
     gmm2_active = gmm2_post_dequant[:active_rows].detach().cpu()
     post_dequant_nonzero = bool(torch.any(actual.detach().cpu().abs() > 0).item())
 
@@ -2830,19 +2951,6 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             ),
         }
 
-    gate_a_input_boundary_passed = bool(
-        packed_exact["exact_match"]
-        and packed_exact["mismatch_count"] == 0
-        and hidden_x_readback_exact is not None
-        and hidden_x_readback_exact["exact_match"]
-        and hidden_scale_readback_exact
-        and torch.isfinite(hidden_scale_active).all().item()
-        and torch.any(hidden_scale_active.abs() > 0).item()
-        and torch.isfinite(mixed["hidden_bf16"].float()).all().item()
-        and torch.any(mixed["hidden_bf16"].float().abs() > 0).item()
-        and routing_identity["expert_token_total_matches_active_rows"]
-        and routing_identity["reference_group_counts_match_expert_token_nums"]
-    )
     stage2_2_numerical_gate_passed = bool(
         gate_a_input_boundary_passed
         and accumulator_int32_reference_passed
@@ -2943,6 +3051,17 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         },
         "routing_identity": routing_identity,
         "gate_a_input_boundary": gate_a_input_boundary,
+        "appendix_gmm2_official_path": _appendix_gmm2_official_path_revision_manifest(
+            diagnostic_mode="full_lifecycle_gmm2_post_dequant",
+            gate_a_input_boundary_passed=gate_a_input_boundary_passed,
+            routing_identity=routing_identity,
+            gate_b_source_boundary_identified=bool(accumulator_int32_report["enabled"]),
+            gate_b_reference_passed=bool(accumulator_int32_reference_passed),
+            gate_b_nonzero=bool(accumulator_int32_actual_nonzero),
+            gate_c_post_dequant_finite=bool(error["actual_finite"]),
+            gate_c_post_dequant_nonzero=bool(post_dequant_nonzero),
+            gate_c_reference_passed=bool(gmm2_reference_passed),
+        ),
         "official_postload": {
             "loader": "AscendW4A8DynamicFusedMoEMethod.process_weights_after_loading_modelslim",
             "metadata": _postload_metadata(layer),

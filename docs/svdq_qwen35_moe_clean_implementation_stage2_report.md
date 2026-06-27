@@ -35,6 +35,50 @@ Current code-state note:
   not enable residual W4A8 GMM execution and does not satisfy Stage 2.2 Gate B or Gate C.
 - Older sections that describe isolated PASS evidence are historical and superseded by this status reset for admission.
 
+## Stage 2.2 Appendix Evidence Fields Added to Probe - 2026-06-27
+
+Purpose:
+
+- The Stage 2.2 manifest was already fail-closed unless evidence contained explicit Appendix GMM2 official-path revision
+  fields. The real-device probe did not yet emit those fields, so future runs could not distinguish a missing-evidence
+  state from an actual Gate A/B/C failure.
+- Added `appendix_gmm2_official_path` emission to `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`.
+- This is evidence plumbing only. It does not change the official W4A8 kernel, synchronization, C2V/V2C flags,
+  packed-W4 access, scale formulas, BF16 producers, or production SVDQ host tiling.
+
+Fields now emitted by each probe mode:
+
+- `official_vs_debug_state_table_complete`
+- `gate_a_routing_identity_complete`
+- `gate_a_prefix_and_padded_row_evidence_complete`
+- `gate_b_exact_aic_raw_or_d2_boundary_identified`
+- `gate_b_aic_raw_output_reference_passed`
+- `gate_c_validated_after_gate_b_nonzero`
+- `active_failure_all_zero_post_dequant_resolved`
+
+Gate behavior:
+
+- Loop-stats mode can record Gate A context but keeps Gate B and Gate C false.
+- Raw-C2/D2 mode can record Gate B source-boundary and reference status, but keeps Gate C false.
+- Normal post-dequant mode marks Gate C true only after Gate B is identified, nonzero, and reference-passed, and the
+  official `BlockEpilogue2` / `CombineV2` post-dequant output is finite, nonzero, and reference-passed.
+- The current committed evidence remains blocked because it predates these new fields:
+  `stage2_2_official_gmm2_gate.status=fail_in_progress`,
+  `stage2_2_official_gmm2_gate_passed=false`, and `stage2_3_isolated_gate_passed=false`.
+
+Validation:
+
+- `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py tools/svdq_kernel_contract_manifest.py`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q`
+- `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+
+Next unresolved boundary:
+
+- Rerun the real-device Stage 2.2 probe with `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3` so the new appendix fields are
+  populated from actual device execution. If Gate B is zero, continue in official GMM2 AIC input/state/tiling/lifecycle.
+  If Gate B is nonzero and Gate C is zero or mismatched, continue in C2V, D2 source mapping, `BlockEpilogue2`, or AIV
+  readback. Do not advance Stage 2.3+ until Stage 2.2 passes under these fields.
+
 ## Stage 2.2 Historical Official-Path Recheck - 2026-06-27
 
 Latest binding requirement:
