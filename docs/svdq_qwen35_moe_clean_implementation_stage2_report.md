@@ -1,5 +1,89 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Stage 2.2 Required Status Fields Added to Gate C Probe - 2026-06-27T02:20Z
+
+This section is the latest authoritative handoff. It supersedes the `2026-06-27T02:05Z` report-only appendix
+application by adding and validating the appendix-required status fields in the normal Stage 2.2 post-dequant probe.
+No kernel behavior, tolerance, scale formula, packing formula, public grouped-matmul path, lifecycle flag, or
+production SVDQ path was changed.
+
+| Stage | Status | Current gate |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Gate A and int32 accumulator Gate B pass for top-1 expert 0; Gate C remains finite/nonzero but fails strict max-abs tolerance. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 Gate C strict numerical match and unresolved D2/Fixpipe/AIV contract detail. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
+
+Files changed:
+
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+
+Exact behavior implemented:
+
+- The normal post-dequant Stage 2.2 probe now reports the appendix-required fields:
+  `official_gmm2_entry_reached`, `official_gmm2_loop_count`, `official_gmm2_active_tile_count`,
+  `official_gmm2_aic_raw_output_finite`, `official_gmm2_aic_raw_output_nonzero`,
+  `official_gmm2_aic_reference_passed`, `official_gmm2_c2v_handoff_verified`,
+  `official_gmm2_post_dequant_finite`, `official_gmm2_post_dequant_nonzero`,
+  `official_gmm2_post_dequant_reference_passed`, and `official_gmm2_numerical_gate_passed`.
+- The normal post-dequant summary now also records `gate_a_input_boundary_passed` and an
+  `int32_accumulator_readback_reference` block, so the normal Gate C run carries the same Gate B accumulator proof
+  that the raw-D2 diagnostic already exposed.
+- The top-level `passed` decision now depends on Gate A, the int32 accumulator Gate B proof, finite/nonzero
+  post-dequant output, and the strict Gate C reference comparison. Because Gate C still fails strict max-abs
+  tolerance, the probe correctly remains failed.
+
+Validation commands:
+
+- Syntax check:
+  `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+- Four-visible-NPU preflight with `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3` showed four logical `Ascend910B4` devices.
+- Real-device normal Gate C probe:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH:-} python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py --require-npu --top-k 1 --route-experts 0 --local-num-experts 8 --summary-name phase_stage2_gmm2_status_fields_true_top1_expert0.json`
+
+Evidence paths:
+
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_status_fields_true_top1_expert0.log`
+- Probe exit code:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_status_fields_true_top1_expert0.exitcode`
+  contains `1`, expected because Stage 2.2 still fails strict Gate C.
+- Probe summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_status_fields_true_top1_expert0.json`
+
+Validated status fields from the new summary:
+
+- `gate_a_input_boundary_passed: true`
+- `official_gmm2_entry_reached: true`
+- `official_gmm2_loop_count: null`
+- `official_gmm2_active_tile_count: null`
+- `official_gmm2_aic_raw_output_finite: true`
+- `official_gmm2_aic_raw_output_nonzero: true`
+- `official_gmm2_aic_reference_passed: true`
+- `official_gmm2_accumulator_int32_reference_passed: true`
+- `official_gmm2_c2v_handoff_verified: true`
+- `official_gmm2_post_dequant_finite: true`
+- `official_gmm2_post_dequant_nonzero: true`
+- `official_gmm2_post_dequant_reference_passed: false`
+- `official_gmm2_numerical_gate_passed: false`
+
+Numerical result:
+
+- Gate B int32 accumulator remains exact and nonzero:
+  `int32_accumulator_readback_reference.passed: true`, `actual_nonzero: true`, mismatch count `0`.
+- Gate C remains finite/nonzero but fails the strict max-abs tolerance:
+  max abs `0.00037679076194763184`, mean abs `1.82786079676589e-05`,
+  tolerance max abs `0.0002`, mean abs `2e-05`.
+
+Current interpretation:
+
+1. The probe evidence schema now satisfies the appendix status-field requirement for the normal Gate C run.
+2. Stage 2.2 still fails. The unresolved boundary is still downstream of the exact int32 accumulator, in the
+   official D2/Fixpipe/AIV post-dequant contract or the host comparator for that contract.
+3. The next behavioral patch must continue from the official Fixpipe/D2/AIV contract. Do not alter lifecycle flags,
+   token state, workspace state, or production `DispatchFFNCombineW4A8SVDQ`.
+
 ## Stage 2.2 Official-Path Appendix Applied - 2026-06-27T02:05Z
 
 This section is the latest authoritative handoff. It applies

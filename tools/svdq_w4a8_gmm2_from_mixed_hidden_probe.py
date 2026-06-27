@@ -2227,6 +2227,63 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
 
     hidden_scale_active = hidden_x_scale[:active_rows].detach().cpu()
     gmm2_active = gmm2_post_dequant[:active_rows].detach().cpu()
+    post_dequant_nonzero = bool(torch.any(actual.detach().cpu().abs() > 0).item())
+
+    accumulator_int32_reference_passed = False
+    accumulator_int32_actual_nonzero = False
+    accumulator_int32_report: dict[str, Any] = {
+        "enabled": False,
+        "reason": "debug op did not return gmm2_accumulator_int32",
+    }
+    if gmm2_accumulator_int32 is not None:
+        accumulator_reference, accumulator_contract = _official_gmm2_int32_accumulator_reference(
+            hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
+            weight=layer.w2_weight,
+            expert_token_nums=external_expert_token_nums,
+            output_columns=spec.hidden_size,
+            max_rows=args.gmm2_reference_max_rows,
+        )
+        accumulator_actual = gmm2_accumulator_int32.detach().cpu()[
+            : accumulator_reference.shape[0], : accumulator_reference.shape[1]
+        ]
+        accumulator_int32_exact = _tensor_int32_exact(accumulator_actual, accumulator_reference)
+        accumulator_int32_reference_passed = bool(accumulator_int32_exact["exact_match"])
+        accumulator_int32_actual_nonzero = bool(torch.any(accumulator_actual != 0).item())
+        accumulator_int32_report = {
+            "enabled": True,
+            "passed": accumulator_int32_reference_passed,
+            "contract": accumulator_contract,
+            "exact_reference": accumulator_int32_exact,
+            "actual_nonzero": accumulator_int32_actual_nonzero,
+            "actual_shape": list(accumulator_actual.shape),
+            "actual_dtype": str(accumulator_actual.dtype),
+            "diagnostic_only": (
+                "Pre-Fixpipe accumulator readback from the official GMM2 producer. This is a Gate B "
+                "status field for the normal post-dequant run, not an alternative GMM2 implementation."
+            ),
+        }
+
+    gate_a_input_boundary_passed = bool(
+        packed_exact["exact_match"]
+        and packed_exact["mismatch_count"] == 0
+        and hidden_x_readback_exact is not None
+        and hidden_x_readback_exact["exact_match"]
+        and hidden_scale_readback_exact
+        and torch.isfinite(hidden_scale_active).all().item()
+        and torch.any(hidden_scale_active.abs() > 0).item()
+        and torch.isfinite(mixed["hidden_bf16"].float()).all().item()
+        and torch.any(mixed["hidden_bf16"].float().abs() > 0).item()
+        and routing_identity["expert_token_total_matches_active_rows"]
+        and routing_identity["reference_group_counts_match_expert_token_nums"]
+    )
+    stage2_2_numerical_gate_passed = bool(
+        gate_a_input_boundary_passed
+        and accumulator_int32_reference_passed
+        and accumulator_int32_actual_nonzero
+        and error["actual_finite"]
+        and post_dequant_nonzero
+        and gmm2_reference_passed
+    )
     return {
         "stage": "stage2_modified_hidden_official_w4a8_gmm2",
         "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback -> aclnnSVDQW4A8GMM2DebugReadback",
@@ -2279,9 +2336,22 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                 "max_abs_tolerance": args.gmm2_reference_max_abs_tol,
                 "mean_abs_tolerance": args.gmm2_reference_mean_abs_tol,
             },
+            "int32_accumulator_readback_reference": accumulator_int32_report,
         },
         "checks": {
-            "official_gmm2_kernel_launched": True,
+            "official_gmm2_entry_reached": True,
+            "official_gmm2_loop_count": None,
+            "official_gmm2_active_tile_count": None,
+            "official_gmm2_aic_raw_output_finite": bool(accumulator_int32_report["enabled"]),
+            "official_gmm2_aic_raw_output_nonzero": bool(accumulator_int32_actual_nonzero),
+            "official_gmm2_aic_reference_passed": bool(accumulator_int32_reference_passed),
+            "official_gmm2_accumulator_int32_reference_passed": bool(accumulator_int32_reference_passed),
+            "official_gmm2_c2v_handoff_verified": bool(error["actual_finite"] and post_dequant_nonzero),
+            "official_gmm2_post_dequant_finite": bool(error["actual_finite"]),
+            "official_gmm2_post_dequant_nonzero": bool(post_dequant_nonzero),
+            "official_gmm2_post_dequant_reference_passed": bool(gmm2_reference_passed),
+            "official_gmm2_numerical_gate_passed": bool(stage2_2_numerical_gate_passed),
+            "gate_a_input_boundary_passed": bool(gate_a_input_boundary_passed),
             "hidden_packed_exact": packed_exact["exact_match"],
             "hidden_packed_mismatch_count_zero": packed_exact["mismatch_count"] == 0,
             "hidden_post_override_readback_exact": (
@@ -2294,18 +2364,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             "canonical_hidden_nonzero": bool(torch.any(mixed["hidden_bf16"].float().abs() > 0).item()),
             "gmm2_reference_passed": bool(gmm2_reference_passed),
         },
-        "passed": bool(
-            packed_exact["exact_match"]
-            and packed_exact["mismatch_count"] == 0
-            and hidden_x_readback_exact is not None
-            and hidden_x_readback_exact["exact_match"]
-            and hidden_scale_readback_exact
-            and torch.isfinite(hidden_scale_active).all().item()
-            and torch.any(hidden_scale_active.abs() > 0).item()
-            and torch.isfinite(mixed["hidden_bf16"].float()).all().item()
-            and torch.any(mixed["hidden_bf16"].float().abs() > 0).item()
-            and gmm2_reference_passed
-        ),
+        "passed": bool(stage2_2_numerical_gate_passed),
     }
 
 
