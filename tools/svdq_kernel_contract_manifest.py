@@ -16,7 +16,9 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_EVIDENCE_DIR = Path("/root/workspace/lza/svdq_clean_evidence")
-STAGE2_3_REAL_COMPOSITION_EVIDENCE = Path("stage2/phase_stage2_real_composition_topk8_experts0_7.json")
+STAGE2_3_REAL_COMPOSITION_EVIDENCE = Path(
+    "stage2/phase_stage2_real_composition_topk8_finalcombine_experts0_7.json"
+)
 
 OP_ROOT = Path("csrc/mc2/dispatch_ffn_combine_w4_a8_svdq")
 OP_CMAKE = OP_ROOT / "op_host/CMakeLists.txt"
@@ -1709,6 +1711,8 @@ def _stage2_3_real_composition_gate(evidence_dir: Path) -> dict[str, Any]:
     stage_errors = stage.get("stage_errors", {})
     down_error = stage_errors.get("down_mixed", {})
     out_error = stage_errors.get("out_bf16", {})
+    final_combine_error = stage_errors.get("final_combine_output", {})
+    final_combine = stage.get("real_final_combine", {})
     required_stage_flags = {
         name: bool(stage_passed.get(name))
         for name in (
@@ -1721,6 +1725,7 @@ def _stage2_3_real_composition_gate(evidence_dir: Path) -> dict[str, Any]:
             "hidden_q",
             "down_mixed",
             "out_bf16",
+            "final_combine_output",
             "same_routing_identity",
         )
     }
@@ -1731,6 +1736,8 @@ def _stage2_3_real_composition_gate(evidence_dir: Path) -> dict[str, Any]:
             "same_canonical_hidden_feeds_svdq_down_and_w4a8_hidden_quant",
             "official_gmm2_output_feeds_final_mixed_residual_down",
             "final_mixed_output_is_final_combine_input",
+            "final_combine_consumes_mixed_down_peer_output",
+            "final_combine_output_validated",
             "same_source_token_payload_across_topk_slots_proven",
         )
     }
@@ -1756,6 +1763,17 @@ def _stage2_3_real_composition_gate(evidence_dir: Path) -> dict[str, Any]:
         "official_gmm2_error_zero": _zero_error(gmm2_error),
         "final_down_mixed_error_zero": _zero_error(down_error),
         "final_out_bf16_error_zero": _zero_error(out_error),
+        "final_combine_output_error_zero": _zero_error(final_combine_error),
+    }
+    final_combine_flags = {
+        "real_final_combine_present": bool(final_combine),
+        "real_final_combine_passed": bool(final_combine.get("passed")),
+        "real_final_combine_uses_token_unpermute": (
+            final_combine.get("official_surface") == "torch_npu.npu_moe_token_unpermute"
+        ),
+        "real_final_combine_uses_reference": (
+            final_combine.get("reference") == "build_svdq_final_combine_reference"
+        ),
     }
     passed = bool(
         summary.get("passed")
@@ -1765,6 +1783,7 @@ def _stage2_3_real_composition_gate(evidence_dir: Path) -> dict[str, Any]:
         and all(required_gmm2_flags.values())
         and all(shape_passed.values())
         and all(exact_numerics.values())
+        and all(final_combine_flags.values())
         and not bool(stage.get("public_grouped_matmul_used", False))
         and bool(stage.get("production_svdq_host_tiling_fail_closed", True))
     )
@@ -1780,6 +1799,7 @@ def _stage2_3_real_composition_gate(evidence_dir: Path) -> dict[str, Any]:
             "required_official_gmm2_flags": required_gmm2_flags,
             "required_shape_flags": shape_passed,
             "exact_numerical_flags": exact_numerics,
+            "required_final_combine_flags": final_combine_flags,
             "rank_metadata": stage.get("rank_metadata"),
             "production_tiling_fail_closed_in_evidence": bool(
                 stage.get("production_svdq_host_tiling_fail_closed", True)

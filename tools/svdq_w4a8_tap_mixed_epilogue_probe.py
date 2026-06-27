@@ -62,6 +62,7 @@ from svdq_w4a8_debug_readback_real_checkpoint_probe import (  # noqa: E402
 )
 
 from vllm_ascend.quantization.methods.svdq_post_load import (  # noqa: E402
+    build_svdq_final_combine_reference,
     build_svdq_mixed_epilogue_reference,
     pack_official_hidden_i4_reference,
 )
@@ -398,6 +399,7 @@ def _stage2_3_same_routing_manifest(
     official_gmm2: dict[str, Any],
     down_lowrank: torch.Tensor,
     final_mixed: dict[str, torch.Tensor],
+    final_combine: dict[str, Any],
     expert_token_nums: torch.Tensor,
     routed_experts: list[int],
     num_tokens: int,
@@ -460,6 +462,10 @@ def _stage2_3_same_routing_manifest(
         "svdq_down_lowrank_all": _tensor_sha256(down_lowrank[:active_rows]),
         "final_mixed_down_all": _tensor_sha256(final_mixed["down_mixed"][:active_rows]),
         "final_out_bf16_all": _tensor_sha256(final_mixed["out_bf16"][:active_rows]),
+        "final_combine_input": _tensor_sha256(final_mixed["down_mixed"][:active_rows]),
+        "final_combine_expanded_row_idx": _tensor_sha256(final_combine["expanded_row_idx"]),
+        "final_combine_topk_weights": _tensor_sha256(final_combine["topk_weights"]),
+        "final_combine_output_all": _tensor_sha256(final_combine["output"]),
     }
     checks = {
         "expert_token_total_matches_active_rows": sum(counts) == active_rows,
@@ -474,6 +480,10 @@ def _stage2_3_same_routing_manifest(
         "final_mixed_output_is_final_combine_input": (
             boundary_hashes["final_mixed_down_all"] == _tensor_sha256(final_mixed["down_mixed"][:active_rows])
         ),
+        "final_combine_consumes_mixed_down_peer_output": (
+            boundary_hashes["final_mixed_down_all"] == boundary_hashes["final_combine_input"]
+        ),
+        "final_combine_output_validated": bool(final_combine["passed"]),
         "same_source_token_payload_across_topk_slots_proven": bool(same_source_token_payload),
     }
     return {
@@ -504,6 +514,89 @@ def _stage2_3_same_routing_manifest(
         "boundary_hashes": boundary_hashes,
         "checks": checks,
         "passed": all(bool(value) for value in checks.values()),
+    }
+
+
+def _final_combine_inputs(
+    *,
+    counts: torch.Tensor,
+    routed_experts: list[int],
+    num_tokens: int,
+    top_k: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    counts_list = [int(v) for v in counts.detach().cpu().to(torch.int64).flatten().tolist()]
+    route_slot_by_expert = {int(expert): slot for slot, expert in enumerate(routed_experts)}
+    expanded = torch.empty((int(num_tokens) * int(top_k),), dtype=torch.int32)
+    cursor = 0
+    for expert_id, count in enumerate(counts_list):
+        topk_slot = route_slot_by_expert.get(expert_id)
+        if topk_slot is None:
+            continue
+        for expert_local_offset in range(count):
+            expanded[cursor] = int(expert_local_offset * int(top_k) + topk_slot)
+            cursor += 1
+    if cursor != int(num_tokens) * int(top_k):
+        raise ValueError(f"final-combine expanded row index count {cursor} != active rows {num_tokens * top_k}.")
+    topk_weights = torch.full((int(num_tokens), int(top_k)), 1.0 / float(top_k), dtype=torch.float32)
+    return expanded.contiguous(), topk_weights.contiguous()
+
+
+def _run_real_final_combine(
+    *,
+    peer_output: torch.Tensor,
+    counts: torch.Tensor,
+    routed_experts: list[int],
+    num_tokens: int,
+    top_k: int,
+    device: torch.device,
+) -> dict[str, Any]:
+    import torch_npu  # type: ignore[import-untyped]
+
+    expanded_row_idx, topk_weights = _final_combine_inputs(
+        counts=counts,
+        routed_experts=routed_experts,
+        num_tokens=num_tokens,
+        top_k=top_k,
+    )
+    reference = build_svdq_final_combine_reference(
+        routed_output=peer_output.to(torch.bfloat16).contiguous(),
+        topk_weights=topk_weights,
+        expanded_row_idx=expanded_row_idx,
+    )
+    expected = reference["stages"]["combined_output"].to(torch.bfloat16)
+    actual = torch_npu.npu_moe_token_unpermute(
+        permuted_tokens=peer_output.to(device=device, dtype=torch.bfloat16).contiguous(),
+        sorted_indices=expanded_row_idx.to(device=device),
+        probs=topk_weights.to(device=device),
+    )
+    torch.npu.synchronize()
+    actual_cpu = actual.detach().cpu()
+    error = _tensor_error(actual_cpu, expected)
+    passed = (
+        actual_cpu.shape == expected.shape
+        and bool(error["actual_finite"])
+        and bool(error["expected_finite"])
+        and bool(error["diff_finite"])
+        and float(error["max_abs"]) == 0.0
+        and float(error["mean_abs"]) == 0.0
+    )
+    return {
+        "stage": "real_checkpoint_final_combine_token_unpermute",
+        "official_surface": "torch_npu.npu_moe_token_unpermute",
+        "reference": "build_svdq_final_combine_reference",
+        "input_shape": list(peer_output.shape),
+        "input_dtype": str(peer_output.dtype),
+        "expanded_row_idx": expanded_row_idx,
+        "topk_weights": topk_weights,
+        "expanded_row_idx_shape": list(expanded_row_idx.shape),
+        "topk_weights_shape": list(topk_weights.shape),
+        "topk_weights_uniform": True,
+        "oracle_stage_shapes": reference["stage_shapes"],
+        "output": actual_cpu,
+        "expected": expected,
+        "output_error": error,
+        "max_abs_tolerance": 0.0,
+        "passed": passed,
     }
 
 
@@ -867,6 +960,14 @@ def _run_combined_probe(args: argparse.Namespace, group: str) -> dict[str, Any]:
         down_lowrank=down_lowrank.to(torch.bfloat16),
         swiglu_limit=args.swiglu_limit,
     )
+    final_combine = _run_real_final_combine(
+        peer_output=mixed_actual["down_mixed"][:active_rows].to(torch.bfloat16),
+        counts=counts,
+        routed_experts=routed_experts,
+        num_tokens=args.num_tokens,
+        top_k=args.top_k,
+        device=device,
+    )
     stage_errors = {
         "gate_mixed": _tensor_error(mixed_actual["gate_mixed"], mixed_reference["stages"]["gate_mixed"]),
         "up_mixed": _tensor_error(mixed_actual["up_mixed"], mixed_reference["stages"]["up_mixed"]),
@@ -874,6 +975,7 @@ def _run_combined_probe(args: argparse.Namespace, group: str) -> dict[str, Any]:
         "hidden_scale": _tensor_error(mixed_actual["hidden_scale"], mixed_reference["stages"]["hidden_scale"]),
         "down_mixed": _tensor_error(mixed_actual["down_mixed"], mixed_reference["stages"]["down_mixed"]),
         "out_bf16": _tensor_error(mixed_actual["out_bf16"], mixed_reference["stages"]["down_mixed"].to(torch.bfloat16)),
+        "final_combine_output": final_combine["output_error"],
     }
     q_diff = (mixed_actual["hidden_q"].to(torch.int16) - mixed_reference["stages"]["hidden_q"].to(torch.int16)).abs()
     hidden_q_mismatch_count = int((q_diff != 0).sum().item())
@@ -917,6 +1019,7 @@ def _run_combined_probe(args: argparse.Namespace, group: str) -> dict[str, Any]:
             max_abs_tol=args.mixed_max_abs_tol,
             mean_abs_tol=args.mixed_mean_abs_tol,
         ),
+        "final_combine_output": bool(final_combine["passed"]),
     }
     same_routing_manifest = _stage2_3_same_routing_manifest(
         routed_x=routed_x_grouped,
@@ -926,6 +1029,7 @@ def _run_combined_probe(args: argparse.Namespace, group: str) -> dict[str, Any]:
         official_gmm2=official_gmm2,
         down_lowrank=down_lowrank,
         final_mixed=mixed_actual,
+        final_combine=final_combine,
         expert_token_nums=taps["expert_token_nums"],
         routed_experts=routed_experts,
         num_tokens=args.num_tokens,
@@ -948,6 +1052,11 @@ def _run_combined_probe(args: argparse.Namespace, group: str) -> dict[str, Any]:
             key: value for key, value in official_gmm2.items() if key != "post_dequant"
         },
         "stage2_3_same_routing_manifest": same_routing_manifest,
+        "real_final_combine": {
+            key: value
+            for key, value in final_combine.items()
+            if key not in {"output", "expected", "expanded_row_idx", "topk_weights"}
+        },
         "mixed_epilogue_evaluated": True,
         "mixed_epilogue_skip_reason": None,
         "stage_errors": stage_errors,

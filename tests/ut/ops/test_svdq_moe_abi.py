@@ -1051,12 +1051,19 @@ def test_svdq_w4a8_tap_mixed_epilogue_probe_uses_official_taps_and_records_limit
         "torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback",
         "_has_registered_gmm2_debug_op",
         "build_svdq_mixed_epilogue_reference",
+        "build_svdq_final_combine_reference",
+        "_run_real_final_combine",
+        "torch_npu.npu_moe_token_unpermute",
         "pack_official_hidden_i4_reference",
         "stage2_3_real_checkpoint_same_route_w4a8_svdq_composition",
         "official_gmm2_from_svdq_hidden",
         "stage2_3_same_routing_manifest",
         "same_canonical_hidden_feeds_svdq_down_and_w4a8_hidden_quant",
         "same_source_token_payload_across_topk_slots_proven",
+        "final_combine_consumes_mixed_down_peer_output",
+        "final_combine_output_validated",
+        "final_combine_output",
+        "real_final_combine",
         "source_for_mixed_epilogue",
         "bf16_lowrank_output_readback",
         "bf16_output_used_for_mixed_epilogue",
@@ -3170,7 +3177,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
 def test_svdq_kernel_contract_manifest_accepts_stage2_3_topk8_evidence(tmp_path):
     from tools.svdq_kernel_contract_manifest import build_manifest
 
-    evidence_path = tmp_path / "stage2/phase_stage2_real_composition_topk8_experts0_7.json"
+    evidence_path = tmp_path / "stage2/phase_stage2_real_composition_topk8_finalcombine_experts0_7.json"
     evidence_path.parent.mkdir(parents=True)
     zero_error = {
         "actual_finite": True,
@@ -3211,6 +3218,7 @@ def test_svdq_kernel_contract_manifest_accepts_stage2_3_topk8_evidence(tmp_path)
                         "hidden_q": True,
                         "down_mixed": True,
                         "out_bf16": True,
+                        "final_combine_output": True,
                         "same_routing_identity": True,
                     },
                     "stage2_3_same_routing_manifest": {
@@ -3219,6 +3227,8 @@ def test_svdq_kernel_contract_manifest_accepts_stage2_3_topk8_evidence(tmp_path)
                             "same_canonical_hidden_feeds_svdq_down_and_w4a8_hidden_quant": True,
                             "official_gmm2_output_feeds_final_mixed_residual_down": True,
                             "final_mixed_output_is_final_combine_input": True,
+                            "final_combine_consumes_mixed_down_peer_output": True,
+                            "final_combine_output_validated": True,
                             "same_source_token_payload_across_topk_slots_proven": True,
                         }
                     },
@@ -3236,6 +3246,12 @@ def test_svdq_kernel_contract_manifest_accepts_stage2_3_topk8_evidence(tmp_path)
                     "stage_errors": {
                         "down_mixed": zero_error,
                         "out_bf16": zero_error,
+                        "final_combine_output": zero_error,
+                    },
+                    "real_final_combine": {
+                        "official_surface": "torch_npu.npu_moe_token_unpermute",
+                        "reference": "build_svdq_final_combine_reference",
+                        "passed": True,
                     },
                 },
             }

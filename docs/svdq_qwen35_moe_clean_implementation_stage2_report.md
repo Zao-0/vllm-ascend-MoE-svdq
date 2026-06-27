@@ -5,9 +5,111 @@
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
 | Stage 2.2 modified-hidden official W4A8 GMM2 | PASS | Single-device real-checkpoint official-lifecycle top-1 expert-0 probe passes Gate A, Gate B, C2V, and strict Gate C with max/mean abs `0.0`. |
-| Stage 2.3 same-routing two-stage composition | PASS | Single-device real-checkpoint top-k 8 experts 0-7 probe passes first mixed epilogue, official GMM2 from SVDQ hidden, actual SVDQ down, final mixed down/output, and same-routing manifest with max/mean abs `0.0`. |
-| Stage 2.4 and later | IN PROGRESS | Production fused-op integration and four-NPU end-to-end validation remain open. |
+| Stage 2.3 same-routing two-stage composition | PASS | Single-device real-checkpoint top-k 8 experts 0-7 probe still passes first mixed epilogue, official GMM2 from SVDQ hidden, actual SVDQ down, final mixed down/output, and same-routing manifest with max/mean abs `0.0`. |
+| Stage 2.3 final-combine token unpermute | BLOCKED | Real-checkpoint peer-output validation reaches `torch_npu.npu_moe_token_unpermute`, but strict exact-zero comparison fails with max abs `7.703783921897411e-07`; tolerance was not relaxed. |
+| Stage 2.4 and later | IN PROGRESS | Production fused-op integration and four-NPU end-to-end validation remain blocked on the final-combine gate. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
+
+## Stage 2.3 Final-Combine Gate Blocked - 2026-06-27T03:12Z
+
+This is the latest handoff before the environment rebuild. It extends the Stage 2.3 real-checkpoint top-k 8 probe
+with the actual final unpermute/combine boundary that consumes the mixed down peer output. It does not change the
+previous W4A8 GMM2 or mixed AIV result: those remain exact-zero against their references. The new final-combine
+boundary is finite and close, but it fails the strict exact-zero gate, so it must not be reported as passed.
+
+Files changed:
+
+- `tools/svdq_w4a8_tap_mixed_epilogue_probe.py`
+- `tools/svdq_kernel_contract_manifest.py`
+- `tests/ut/ops/test_svdq_moe_abi.py`
+- `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+
+Exact behavior added:
+
+- The tap/mixed probe now builds expert-contiguous `expanded_row_idx` for the real top-k 8 routed rows and validates
+  the final mixed down peer output through `torch_npu.npu_moe_token_unpermute`.
+- The comparison oracle is `build_svdq_final_combine_reference`; the probe records `real_final_combine`,
+  `stage_errors.final_combine_output`, and same-routing checks for the final-combine input/output boundary.
+- The production-admission manifest now consumes
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_real_composition_topk8_finalcombine_experts0_7.json`
+  and requires `final_combine_output`, `final_combine_consumes_mixed_down_peer_output`,
+  `final_combine_output_validated`, and exact-zero `final_combine_output_error_zero`.
+- Production admission remains fail-closed and now fails on the final-combine gate instead of passing on the older
+  pre-final-combine Stage 2.3 evidence.
+
+Validation commands:
+
+- Syntax and whitespace:
+  `python -m py_compile tools/svdq_w4a8_tap_mixed_epilogue_probe.py tools/svdq_kernel_contract_manifest.py`
+  `git diff --check -- tools/svdq_w4a8_tap_mixed_epilogue_probe.py tools/svdq_kernel_contract_manifest.py tests/ut/ops/test_svdq_moe_abi.py`
+- Focused static ABI regression:
+  `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q`
+  passed with `45 passed, 16 warnings`.
+- Real-device preflight used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`; Python preflight reported four visible
+  Ascend910B4 logical devices and selected logical NPU 0.
+- Top-k 8 final-combine probe command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH:-} python tools/svdq_w4a8_tap_mixed_epilogue_probe.py --require-npu --top-k 8 --route-experts 0 1 2 3 4 5 6 7 --local-num-experts 8 --num-tokens 4 --max-output-size 64 --summary-name stage2/phase_stage2_real_composition_topk8_finalcombine_experts0_7.json`
+- Production admission manifest regeneration:
+  `python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+
+Evidence paths:
+
+- Top-k 8 final-combine NPU preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_real_composition_topk8_finalcombine_preflight_npus.log`
+- Top-k 8 final-combine Python logical-device preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_real_composition_topk8_finalcombine_preflight_python.log`
+- Top-k 8 final-combine active process preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_real_composition_topk8_finalcombine_preflight_processes.log`
+- Top-k 8 final-combine probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_real_composition_topk8_finalcombine_experts0_7.log`
+- Top-k 8 final-combine probe exit code:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_real_composition_topk8_finalcombine_experts0_7.exitcode`
+  contains `1`.
+- Top-k 8 final-combine probe summary:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_real_composition_topk8_finalcombine_experts0_7.json`
+- Updated production admission manifest:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+- Updated production admission manifest log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_4_production_admission_manifest_finalcombine.log`
+
+Real-device result:
+
+- Overall probe: `passed: false`.
+- Shape: `num_tokens=4`, `top_k=8`, `active_rows=32`, `hidden_size=2048`, `intermediate_size=512`.
+- Still passing exact-zero stages:
+  `first_mixed_epilogue`, `official_gmm2_from_svdq_hidden`, `gate_mixed`, `up_mixed`, `hidden_bf16`,
+  `hidden_scale`, `hidden_q`, `down_mixed`, and `out_bf16`.
+- Final-combine failing stage:
+  `stage_passed.final_combine_output=false`.
+- Final-combine error:
+  active shape `[4, 2048]`, actual dtype `torch.bfloat16`, expected dtype `torch.bfloat16`,
+  finite actual/expected/diff, max abs `7.703783921897411e-07`, mean abs `1.5680409148899344e-07`.
+- Same-routing checks still true through the input boundary:
+  `expert_token_total_matches_active_rows=true`,
+  `same_canonical_hidden_feeds_svdq_down_and_w4a8_hidden_quant=true`,
+  `official_gmm2_output_feeds_final_mixed_residual_down=true`,
+  `final_mixed_output_is_final_combine_input=true`,
+  `final_combine_consumes_mixed_down_peer_output=true`,
+  and `same_source_token_payload_across_topk_slots_proven=true`.
+- Same-routing final-combine validation is false:
+  `final_combine_output_validated=false`, therefore `same_routing_identity=false`.
+- Updated production admission gate:
+  `status=failed`, `passed=false`, `stage2_3_isolated_gate_passed=false`,
+  `exact_numerical_flags.final_combine_output_error_zero=false`,
+  `required_final_combine_flags.real_final_combine_passed=false`,
+  `production_enable_allowed=false`, and `host_tiling_must_remain_fail_closed=true`.
+
+Current interpretation:
+
+1. The W4A8 GMM2 official lifecycle and both mixed AIV additions remain validated with exact-zero error.
+2. The new active blocker is the final weighted token-unpermute validation on real peer-output rows. The failure is
+   finite and small, but strict exact-zero was required and was not relaxed.
+3. The next session should inspect the `torch_npu.npu_moe_token_unpermute` accumulation/order contract or the final
+   combine oracle before any production tiling enablement. Do not reinterpret this failed final-combine evidence as a
+   passed numerical gate.
+4. The new `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` was read. It remains binding
+   for future W4A8 GMM2 work: preserve the official `dispatch_ffn_combine_w4_a8` lifecycle, do not use public
+   grouped matmul as an oracle, and keep production fail-closed.
 
 ## Stage 2.4 Production Admission Gate Added - 2026-06-27T03:05Z
 
