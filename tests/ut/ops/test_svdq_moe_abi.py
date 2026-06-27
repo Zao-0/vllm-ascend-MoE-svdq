@@ -1998,12 +1998,18 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
     for token in (
         "SVDQFinalCombineShape",
         "SVDQFinalCombineShape finalCombineShape",
+        "SVDQFinalCombineTiling",
+        "SVDQFinalCombineTiling finalCombine",
+        "MoeTokenUnpermuteTilingData moeTokenUnpermuteTilingData",
     ):
         assert token in tiling_header
 
     for token in (
         "BuildFinalCombineShape",
         "BuildFinalCombineShape(tilingData)",
+        "BuildFinalCombineTiling",
+        "BuildFinalCombineTiling(tilingData)",
+        "MoeTokenUnpermuteTiling(info.m * info.topK, info.hiddenSize, info.topK",
         "finalCombine.stageId = SVDQ_STAGE_UNPERMUTE_COMBINE",
         "finalCombine.inputRegionId = SVDQ_REGION_PEER_OUTPUT",
         "finalCombine.routeRegionId = SVDQ_REGION_EXPANDED_ROW_IDX",
@@ -2039,9 +2045,17 @@ def test_svdq_kernel_records_mixed_epilogue_and_final_combine_contracts():
         "shape.routedRows >= shape.activeSlots",
         "launch.expertId != nullptr",
         "launch.probs != nullptr",
+        "finalCombineTiling.coreNum > 0",
+        "finalCombineTiling.moeTokenUnpermuteTilingData.hidden_size == shape.hiddenSize",
+        "finalCombineTiling.moeTokenUnpermuteTilingData.top_k == shape.topK",
+        "finalCombineTiling.moeTokenUnpermuteTilingData.num_out_tokens == shape.activeSlots",
         "if (!FinalCombineReady())",
-        "Final unpermute/combine must be implemented by a validated production AIV path.",
-        "return false;",
+        "SVDQFinalCombineLaunch launch = BuildFinalCombineLaunch()",
+        "KernelMoeTokenUnpermute<bfloat16_t, int32_t, float, true> kernelMoeTokenUnpermuteOp",
+        "kernelMoeTokenUnpermuteOp.Init(launch.input, launch.routeIndex, launch.probs, launch.output",
+        "&tilingData_.finalCombine.moeTokenUnpermuteTilingData",
+        "kernelMoeTokenUnpermuteOp.Process()",
+        "return true;",
     ):
         assert token in final_combine_source
 
@@ -2839,7 +2853,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert not loaded["production_fail_closed"]["mixed_swiglu_epilogue_execution_enabled"]
     assert loaded["production_fail_closed"]["mixed_epilogue_scalar_helpers_absent"]
     assert loaded["production_fail_closed"]["final_combine_launch_descriptor_recorded"]
-    assert not loaded["production_fail_closed"]["final_combine_execution_enabled"]
+    assert loaded["production_fail_closed"]["final_combine_execution_enabled"]
     assert loaded["production_fail_closed"]["final_combine_scalar_helpers_absent"]
     assert loaded["production_fail_closed"]["w4a8_residual_execution_fail_closed"]
     assert loaded["production_fail_closed"]["mixed_epilogue_execution_fail_closed"]
@@ -2861,7 +2875,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "residual_w4a8_gmm_execution_enabled": False,
         "mixed_swiglu_epilogue_execution_enabled": False,
         "mixed_output_epilogue_execution_enabled": False,
-        "final_combine_execution_enabled": False,
+        "final_combine_execution_enabled": True,
         "four_npu_target_model_e2e_validated": False,
     }
     assert loaded["source_proof"]["kernel_resolves_rank_workspace_regions"]
@@ -2891,6 +2905,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_mixed_epilogue_scalar_helpers_absent"]
     assert loaded["source_proof"]["kernel_records_final_combine_contract"]
     assert loaded["source_proof"]["kernel_final_combine_launch_descriptor_recorded"]
+    assert loaded["source_proof"]["kernel_final_combine_official_unpermute_execution_enabled"]
     assert not loaded["source_proof"]["kernel_final_combine_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_final_combine_scalar_helpers_absent"]
     assert loaded["source_proof"]["kernel_mixed_final_execution_dispatch_enabled"]

@@ -9,6 +9,44 @@
 | Stage 2.4 and later | IN PROGRESS | Production fused-op integration and four-NPU end-to-end validation remain open. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
 
+## Stage 2.4 Production Final Combine Source Boundary - 2026-06-27
+
+Latest code state:
+
+- Integrated the production final-combine source boundary through the official token-unpermute helper used by both
+  official BF16 and official W4A8 `CombineV2` paths:
+  `KernelMoeTokenUnpermute<bfloat16_t, int32_t, float, true>`.
+- Added `SVDQFinalCombineTiling` with `MoeTokenUnpermuteTilingData` and built it using
+  `MoeTokenUnpermuteTiling(info.m * info.topK, info.hiddenSize, info.topK, ...)`.
+- `RunFinalCombine()` now calls the official helper with the SVDQ peer-output region, expanded-row index region,
+  top-k probabilities, and final output pointer.
+- The hand-written scalar final-combine substitute remains absent. The manifest now distinguishes
+  `kernel_final_combine_official_unpermute_execution_enabled=true` from
+  `kernel_final_combine_scalar_execution_enabled=false`.
+- This does not change W4A8 GMM2 producer/consumer lifecycle, hidden quantization, mixed AIV epilogues, or production
+  host tiling. Host tiling remains fail-closed with `GRAPH_FAILED`.
+- The public `torch_npu.npu_grouped_matmul` path was not used or modified.
+
+Regenerated manifest:
+
+- Command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+- Resulting key state:
+  `production_fail_closed.dispatch_routing_execution_enabled=true`,
+  `production_fail_closed.final_combine_execution_enabled=true`,
+  `production_admission.remaining_execution_requirements.final_combine_execution_enabled=true`,
+  `production_admission.production_enable_allowed=false`, and
+  `production_admission.host_tiling_must_remain_fail_closed=true`.
+- Remaining source execution gaps:
+  residual hidden quant, residual W4A8 GMM1/GMM2 production execution, mixed SwiGLU epilogue, mixed output epilogue,
+  and four-NPU target-model E2E validation.
+
+Validation:
+
+- `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+- `git diff --check -- csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq.h csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp tools/svdq_kernel_contract_manifest.py tests/ut/ops/test_svdq_moe_abi.py docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q` -> `46 passed, 16 warnings`
+
 ## Stage 2.4 Production Dispatch Routing Source Boundary - 2026-06-27
 
 Latest code state:

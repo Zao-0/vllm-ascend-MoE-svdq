@@ -17,6 +17,7 @@
 
 #include "lowrank/svdq_fused_down_up_tiling.h"
 #include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"
+#include "../../dispatch_ffn_combine_w4_a8/op_kernel/unpermute/moe_token_unpermute_tiling.h"
 
 constexpr uint32_t SVDQ_WORKSPACE_REGION_COUNT = 16;
 constexpr uint32_t SVDQ_SYNC_FLAG_COUNT = 14;
@@ -240,6 +241,11 @@ struct SVDQDispatchRoutingTiling {
     optiling::MoeInitRoutingQuantV2TilingData moeInitRoutingQuantV2TilingData;
 };
 
+struct SVDQFinalCombineTiling {
+    uint32_t coreNum;
+    MoeTokenUnpermuteTilingData moeTokenUnpermuteTilingData;
+};
+
 struct DispatchFFNCombineW4A8SVDQTilingData {
     DispatchFFNCombineW4A8SVDQInfo info;
     SVDQDispatchRoutingTiling dispatchRouting;
@@ -251,6 +257,7 @@ struct DispatchFFNCombineW4A8SVDQTilingData {
     SVDQResidualGmmShape residualGmmShapes[SVDQ_RESIDUAL_GMM_COUNT];
     SVDQMixedEpilogueShape mixedEpilogueShapes[SVDQ_MIXED_EPILOGUE_COUNT];
     SVDQFinalCombineShape finalCombineShape;
+    SVDQFinalCombineTiling finalCombine;
     DispatchFFNCombineW4A8SVDQImpl::SVDQFusedDownUpTiling
         lowRankInvocations[DispatchFFNCombineW4A8SVDQImpl::SVDQ_LOWRANK_INVOCATION_COUNT];
 };

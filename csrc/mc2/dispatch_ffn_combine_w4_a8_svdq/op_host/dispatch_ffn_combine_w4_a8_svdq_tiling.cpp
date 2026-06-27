@@ -580,6 +580,15 @@ static void BuildFinalCombineShape(DispatchFFNCombineW4A8SVDQTilingData* tilingD
     finalCombine.activeSlots = info.m * info.topK;
 }
 
+static void BuildFinalCombineTiling(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
+{
+    auto& info = tilingData->info;
+    auto& finalCombine = tilingData->finalCombine;
+    finalCombine.coreNum = std::max<uint32_t>(1, info.lowRankCoreCount / 2);
+    MoeTokenUnpermuteTiling(info.m * info.topK, info.hiddenSize, info.topK,
+        finalCombine.moeTokenUnpermuteTilingData, finalCombine.coreNum);
+}
+
 static void SetLowRankInvocation(
     DispatchFFNCombineW4A8SVDQTilingData* tilingData, uint32_t invocationId, uint32_t inputRegionId,
     uint32_t rankRegionId, uint32_t outputRegionId, uint32_t downFactorId, uint32_t upFactorId,
@@ -887,6 +896,7 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
     BuildResidualGmmShapeTable(tilingData);
     BuildMixedEpilogueShapeTable(tilingData);
     BuildFinalCombineShape(tilingData);
+    BuildFinalCombineTiling(tilingData);
     BuildLowRankInvocationTable(tilingData);
     size_t* workSpaces = context->GetWorkspaceSizes(1);
     OP_TILING_CHECK(workSpaces == nullptr,

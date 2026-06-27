@@ -1173,8 +1173,13 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         "kernel_final_combine_launch_descriptor_recorded": (
             "struct SVDQFinalCombineShape" in sources["kernel_tiling"]
             and "SVDQFinalCombineShape finalCombineShape" in sources["kernel_tiling"]
+            and "SVDQFinalCombineTiling finalCombine" in sources["kernel_tiling"]
+            and "MoeTokenUnpermuteTilingData moeTokenUnpermuteTilingData" in sources["kernel_tiling"]
             and "BuildFinalCombineShape" in sources["host_tiling"]
             and "BuildFinalCombineShape(tilingData)" in sources["host_tiling"]
+            and "BuildFinalCombineTiling" in sources["host_tiling"]
+            and "BuildFinalCombineTiling(tilingData)" in sources["host_tiling"]
+            and "MoeTokenUnpermuteTiling(info.m * info.topK, info.hiddenSize, info.topK" in sources["host_tiling"]
             and "finalCombine.stageId = SVDQ_STAGE_UNPERMUTE_COMBINE" in sources["host_tiling"]
             and "finalCombine.inputRegionId = SVDQ_REGION_PEER_OUTPUT" in sources["host_tiling"]
             and "finalCombine.routeRegionId = SVDQ_REGION_EXPANDED_ROW_IDX" in sources["host_tiling"]
@@ -1187,6 +1192,16 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "shape.routedRows >= shape.activeSlots" in sources["kernel_contract"]
             and "launch.expertId != nullptr" in sources["kernel_contract"]
             and "launch.probs != nullptr" in sources["kernel_contract"]
+        ),
+        "kernel_final_combine_official_unpermute_execution_enabled": (
+            '#include "../../dispatch_ffn_combine_w4_a8/op_kernel/unpermute/moe_token_unpermute.h"'
+            in sources["kernel_contract"]
+            and "KernelMoeTokenUnpermute<bfloat16_t, int32_t, float, true>" in sources["kernel_contract"]
+            and "kernelMoeTokenUnpermuteOp.Init(launch.input, launch.routeIndex, launch.probs, launch.output"
+            in sources["kernel_contract"]
+            and "&tilingData_.finalCombine.moeTokenUnpermuteTilingData" in sources["kernel_contract"]
+            and "kernelMoeTokenUnpermuteOp.Process()" in sources["kernel_contract"]
+            and "return true;" in sources["kernel_contract"]
         ),
         "kernel_final_combine_scalar_execution_enabled": (
             "LoadFinalCombineRouteIndex(" in sources["kernel_contract"]
@@ -1400,6 +1415,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "BuildResidualGmmShapeTable(tilingData);" in host_tiling_source
             and "BuildMixedEpilogueShapeTable(tilingData);" in host_tiling_source
             and "BuildFinalCombineShape(tilingData);" in host_tiling_source
+            and "BuildFinalCombineTiling(tilingData);" in host_tiling_source
             and "BuildLowRankInvocationTable(tilingData);" in host_tiling_source
             and "workSpaces[0] = SVDQ_SYSTEM_WORKSPACE + info.workspaceBytes +" in host_tiling_source
             and "return ge::GRAPH_SUCCESS;" in host_tiling_source
@@ -2244,7 +2260,7 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
                 "kernel_final_combine_launch_descriptor_recorded"
             ],
             "final_combine_execution_enabled": source_proof[
-                "kernel_final_combine_scalar_execution_enabled"
+                "kernel_final_combine_official_unpermute_execution_enabled"
             ],
             "final_combine_scalar_helpers_absent": source_proof[
                 "kernel_final_combine_scalar_helpers_absent"
@@ -2292,7 +2308,7 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
                     "kernel_mixed_output_epilogue_scalar_execution_enabled"
                 ],
                 "final_combine_execution_enabled": source_proof[
-                    "kernel_final_combine_scalar_execution_enabled"
+                    "kernel_final_combine_official_unpermute_execution_enabled"
                 ],
                 "four_npu_target_model_e2e_validated": False,
             },

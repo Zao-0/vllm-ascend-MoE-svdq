@@ -16,6 +16,7 @@
 #include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2.cpp"
 #include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_v2_gather_out.h"
 #include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_v2_init_routing_fullload.h"
+#include "../../dispatch_ffn_combine_w4_a8/op_kernel/unpermute/moe_token_unpermute.h"
 #include "lowrank/svdq_fused_down_up.hpp"
 
 namespace DispatchFFNCombineW4A8SVDQImpl {
@@ -1070,13 +1071,18 @@ public:
         SVDQFinalCombineContract contract = FinalCombineContract();
         SVDQFinalCombineShape shape = FinalCombineShape();
         SVDQFinalCombineLaunch launch = BuildFinalCombineLaunch();
+        SVDQFinalCombineTiling finalCombineTiling = tilingData_.finalCombine;
         return shape.stageId == contract.stageId && shape.inputRegionId == contract.inputRegionId &&
                shape.routeRegionId == contract.routeRegionId && shape.m == tilingData_.info.m &&
                shape.routedRows == tilingData_.info.maxOutputSize && shape.hiddenSize == tilingData_.info.hiddenSize &&
                shape.topK == tilingData_.info.topK && shape.activeSlots == tilingData_.info.m * tilingData_.info.topK &&
                shape.m > 0 && shape.routedRows >= shape.activeSlots && shape.hiddenSize > 0 &&
                shape.topK > 0 && launch.input != nullptr && launch.routeIndex != nullptr &&
-               launch.output != nullptr && launch.expertId != nullptr && launch.probs != nullptr;
+               launch.output != nullptr && launch.expertId != nullptr && launch.probs != nullptr &&
+               finalCombineTiling.coreNum > 0 &&
+               finalCombineTiling.moeTokenUnpermuteTilingData.hidden_size == shape.hiddenSize &&
+               finalCombineTiling.moeTokenUnpermuteTilingData.top_k == shape.topK &&
+               finalCombineTiling.moeTokenUnpermuteTilingData.num_out_tokens == shape.activeSlots;
     }
 
     __aicore__ inline bool RunFinalCombine() const
@@ -1084,8 +1090,12 @@ public:
         if (!FinalCombineReady()) {
             return false;
         }
-        // Final unpermute/combine must be implemented by a validated production AIV path.
-        return false;
+        SVDQFinalCombineLaunch launch = BuildFinalCombineLaunch();
+        KernelMoeTokenUnpermute<bfloat16_t, int32_t, float, true> kernelMoeTokenUnpermuteOp;
+        kernelMoeTokenUnpermuteOp.Init(launch.input, launch.routeIndex, launch.probs, launch.output,
+            &tilingData_.finalCombine.moeTokenUnpermuteTilingData);
+        kernelMoeTokenUnpermuteOp.Process();
+        return true;
     }
 
 private:
