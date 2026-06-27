@@ -1638,6 +1638,8 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     assert "EmbeddedOfficialW4A8TilingGM() const" in contract
     assert "reinterpret_cast<__gm__ DispatchFFNCombineW4A8SVDQTilingData*>(runtime_.tiling)" in contract
     assert "svdqTiling->residualW4A8Bridge.officialTiling" in contract
+    assert "OfficialW4A8WrapperTypeBound() const" in contract
+    assert "sizeof(SVDQOfficialW4A8Op) > 0" in contract
     assert "BuildOfficialW4A8FullLifecycleLaunch() const" in contract
     assert "OfficialW4A8FullLifecycleLaunchReady(uint32_t stageId) const" in contract
     assert "RunResidualDynamicQuantStage(uint32_t stageId)" in contract
@@ -1862,6 +1864,7 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         "runtime_.probs, runtime_.xActiveMask, runtime_.out, runtime_.expertTokenNums",
         "runtime_.tiling, EmbeddedOfficialW4A8TilingGM(), true, true, true",
         "launch.officialTiling != nullptr",
+        "OfficialW4A8WrapperTypeBound()",
         "launch.requiresOfficialWrapper && launch.requiresFullAicAivLifecycle",
     ):
         assert token in gmm_ready_source
@@ -1899,10 +1902,18 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     assert "DispatchFFNCombineW4A8SVDQ AscendC kernel is not implemented yet" not in tiling
     assert "return ge::GRAPH_SUCCESS;" in tiling
 
+    assert "../../dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h" in contract
     assert (
         "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2.cpp"
+        not in contract
+    )
+    assert "using SVDQOfficialW4A8Op =" in contract
+    assert (
+        "DispatchFFNCombineW4A8Impl::DispatchFFNCombineW4A8<DTYPE_A, DTYPE_W1, DTYPE_OUT, false, true>"
         in contract
     )
+    assert "OfficialW4A8WrapperTypeBound() const" in contract
+    assert "sizeof(SVDQOfficialW4A8Op) > 0" in contract
     assert "DispatchQuantRoutingTempWorkspace() const" in contract
     residual_quant_source = contract[
         contract.index("__aicore__ inline bool RunResidualDynamicQuantStage(uint32_t stageId)") : contract.index(
@@ -2964,6 +2975,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["residual_gmm_official_tiling_bridge_consumed"]
     assert loaded["production_fail_closed"]["residual_gmm_official_full_lifecycle_call_surface_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_embedded_official_tiling_pointer_recorded"]
+    assert loaded["production_fail_closed"]["residual_gmm_official_wrapper_type_bound"]
     assert not loaded["production_fail_closed"]["residual_gmm_official_full_lifecycle_execution_enabled"]
     assert not loaded["production_fail_closed"]["residual_gmm_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_gmm_scalar_helpers_absent"]

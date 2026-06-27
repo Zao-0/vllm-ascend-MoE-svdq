@@ -13,7 +13,7 @@
 
 #include "kernel_operator.h"
 #include "dispatch_ffn_combine_w4_a8_svdq_tiling.h"
-#include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2.cpp"
+#include "../../dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h"
 #include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_v2_gather_out.h"
 #include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_v2_init_routing_fullload.h"
 #include "../../dispatch_ffn_combine_w4_a8/op_kernel/unpermute/moe_token_unpermute.h"
@@ -36,6 +36,9 @@ constexpr uint32_t SVDQ_RESIDUAL_BIAS1_SLOT = 6;
 constexpr uint32_t SVDQ_RESIDUAL_BIAS2_SLOT = 7;
 constexpr uint32_t SVDQ_MIXED_EPILOGUE_VECTOR_TILE = 64;
 constexpr uint32_t SVDQ_MIXED_EPILOGUE_UB_BYTES = 196352;
+
+using SVDQOfficialW4A8Op =
+    DispatchFFNCombineW4A8Impl::DispatchFFNCombineW4A8<DTYPE_A, DTYPE_W1, DTYPE_OUT, false, true>;
 
 template <class DTYPE_X = bfloat16_t>
 __aicore__ inline void svdq_moe_init_routing_v2(
@@ -1050,6 +1053,11 @@ public:
         return reinterpret_cast<GM_ADDR>(&(svdqTiling->residualW4A8Bridge.officialTiling));
     }
 
+    __aicore__ inline bool OfficialW4A8WrapperTypeBound() const
+    {
+        return sizeof(SVDQOfficialW4A8Op) > 0;
+    }
+
     __aicore__ inline SVDQOfficialW4A8FullLifecycleLaunch BuildOfficialW4A8FullLifecycleLaunch() const
     {
         return {runtime_.x, runtime_.residual.w1, runtime_.residual.w2, runtime_.expertId,
@@ -1069,6 +1077,7 @@ public:
                launch.bias1 != nullptr && launch.bias2 != nullptr && launch.probs != nullptr &&
                launch.xActiveMask != nullptr && launch.out != nullptr && launch.expertTokenNums != nullptr &&
                launch.workspace != nullptr && launch.svdqTiling != nullptr && launch.officialTiling != nullptr &&
+               OfficialW4A8WrapperTypeBound() &&
                launch.requiresOfficialWrapper && launch.requiresFullAicAivLifecycle && launch.executionFailClosed;
     }
 

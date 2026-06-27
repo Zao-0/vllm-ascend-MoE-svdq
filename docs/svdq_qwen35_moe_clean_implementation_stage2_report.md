@@ -9,6 +9,49 @@
 | Stage 2.4 production/four-NPU admission | IN PROGRESS | Production residual W4A8 GMM execution and four-NPU target-model E2E validation remain open. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Production enable remains false and host tiling must remain fail-closed. |
 
+## Stage 2.4 Official W4A8 Wrapper Type Bound - 2026-06-27
+
+Purpose:
+
+- The SVDQ production kernel now includes the official
+  `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h` wrapper header instead of directly
+  including `moe_init_routing_quant_v2.cpp`.
+- `SVDQOfficialW4A8Op` aliases
+  `DispatchFFNCombineW4A8Impl::DispatchFFNCombineW4A8<DTYPE_A, DTYPE_W1, DTYPE_OUT, false, true>`, the same official
+  W4A8 specialization used for the packed-W4 path.
+- `OfficialW4A8WrapperTypeBound()` records type-level binding to the official wrapper without constructing or launching
+  it. Production residual W4A8 GMM execution remains disabled because the SVDQ kernel still has no official
+  `op.Init(...)` or `op.Process()` invocation.
+
+Appendix GMM2 official-path constraints accepted for subsequent behavioral work:
+
+- No public `torch_npu.npu_grouped_matmul` work, scalar W4A8 GEMM, host weight unpacking, scale guessing, or custom
+  packed-W4 reinterpretation is allowed.
+- The official W4A8 AIC/AIV lifecycle remains the only source of truth for GMM1, GMM2, packed-weight access, tiling,
+  accumulator/Fixpipe state, C2V handoff, `BlockEpilogue2`, and `CombineV2`.
+- This edit is not a behavioral GMM2 patch. It records the wrapper type boundary only; the next behavioral correction
+  must first document the official-vs-debug state deviation required by the Appendix GMM2 official-path table.
+
+Official source locations inspected for this attempt:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h`
+- `csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq.h`
+- `tools/svdq_kernel_contract_manifest.py`
+- `/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md`
+
+Machine-checkable source constraints:
+
+- `source_proof.kernel_residual_gmm_official_full_lifecycle_call_surface_recorded=true`
+- `production_fail_closed.residual_gmm_official_wrapper_type_bound=true`
+- `source_proof.kernel_residual_gmm_official_full_lifecycle_execution_enabled=false`
+- `production_fail_closed.residual_gmm_execution_enabled=false`
+- `production_admission.production_enable_allowed=false`
+
+Validation for this edit:
+
+- `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q`
+
 ## Stage 2.4 Embedded Official W4A8 Tiling Pointer Resolved - 2026-06-27
 
 Purpose:

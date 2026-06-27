@@ -1065,6 +1065,14 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         ),
         "kernel_residual_gmm_official_full_lifecycle_call_surface_recorded": (
             "GM_ADDR tiling;" in sources["kernel_contract"]
+            and "../../dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h" in sources[
+                "kernel_contract"
+            ]
+            and "using SVDQOfficialW4A8Op =" in sources["kernel_contract"]
+            and "DispatchFFNCombineW4A8Impl::DispatchFFNCombineW4A8<DTYPE_A, DTYPE_W1, DTYPE_OUT, false, true>"
+            in sources["kernel_contract"]
+            and "OfficialW4A8WrapperTypeBound() const" in sources["kernel_contract"]
+            and "sizeof(SVDQOfficialW4A8Op) > 0" in sources["kernel_contract"]
             and "runtime_.tiling = tilingGM" in sources["kernel_contract"]
             and "struct SVDQOfficialW4A8FullLifecycleLaunch" in sources["kernel_contract"]
             and "EmbeddedOfficialW4A8TilingGM() const" in sources["kernel_contract"]
@@ -1081,6 +1089,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
                 "kernel_contract"
             ]
             and "runtime_.tiling, EmbeddedOfficialW4A8TilingGM(), true, true, true" in sources["kernel_contract"]
+            and "OfficialW4A8WrapperTypeBound()" in sources["kernel_contract"]
             and "launch.requiresOfficialWrapper && launch.requiresFullAicAivLifecycle" in sources[
                 "kernel_contract"
             ]
@@ -1148,7 +1157,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "BuildResidualQuantLaunch(stageId)" in sources["kernel_contract"]
         ),
         "kernel_residual_routed_input_quant_execution_enabled": (
-            '../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2.cpp'
+            "../../dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h"
             in sources["kernel_contract"]
             and "DispatchQuantRoutingTempWorkspace() const" in sources["kernel_contract"]
             and "SVDQResidualQuantLaunch launch = BuildResidualQuantLaunch(stageId)" in residual_quant_source
@@ -2489,6 +2498,9 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
                 "kernel_residual_gmm_official_full_lifecycle_call_surface_recorded"
             ],
             "residual_gmm_embedded_official_tiling_pointer_recorded": source_proof[
+                "kernel_residual_gmm_official_full_lifecycle_call_surface_recorded"
+            ],
+            "residual_gmm_official_wrapper_type_bound": source_proof[
                 "kernel_residual_gmm_official_full_lifecycle_call_surface_recorded"
             ],
             "residual_gmm_official_full_lifecycle_execution_enabled": source_proof[
