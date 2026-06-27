@@ -1108,6 +1108,62 @@ def test_svdq_w4a8_tap_mixed_epilogue_probe_uses_official_taps_and_records_limit
     assert "npu_grouped_matmul" not in probe
 
 
+def test_svdq_w4a8_gmm2_probe_emits_post_reset_revision_only_after_gate_abc():
+    from tools.svdq_w4a8_gmm2_from_mixed_hidden_probe import (
+        POST_RESET_OFFICIAL_PATH_CORRECTION_REVISION,
+        _appendix_gmm2_official_path_revision_manifest,
+    )
+
+    routing_identity = {
+        "expert_token_total_matches_active_rows": True,
+        "reference_group_counts_match_expert_token_nums": True,
+        "manifest_scope": {"same_source_token_payload_across_topk_slots_proven": True},
+        "tp_ep_mapping": {"local_expert_id_equals_global_expert_id": True},
+        "routed_row_map_first64": [{"row": 0, "token": 0, "expert": 0}],
+        "expert_prefix_sums": [0, 16],
+        "expert_local_row_starts": [0],
+        "expert_local_row_offsets": [0],
+        "padded_row_interpretation": {
+            "active_rows": 16,
+            "padded_rows_start": 16,
+            "hidden_int4_padded_nonzero_count": 0,
+            "hidden_scale_padded_nonzero_count": 0,
+        },
+    }
+
+    blocked = _appendix_gmm2_official_path_revision_manifest(
+        diagnostic_mode="full_lifecycle_gmm2_post_dequant",
+        gate_a_input_boundary_passed=True,
+        routing_identity=routing_identity,
+        gate_b_source_boundary_identified=True,
+        gate_b_reference_passed=True,
+        gate_b_nonzero=True,
+        gate_c_post_dequant_finite=True,
+        gate_c_post_dequant_nonzero=False,
+        gate_c_reference_passed=True,
+    )
+
+    assert not blocked["post_reset_official_path_correction_revision_ready"]
+    assert not blocked["stage2_2_acceptance_possible"]
+    assert "official_path_correction_revision" not in blocked
+
+    ready = _appendix_gmm2_official_path_revision_manifest(
+        diagnostic_mode="full_lifecycle_gmm2_post_dequant",
+        gate_a_input_boundary_passed=True,
+        routing_identity=routing_identity,
+        gate_b_source_boundary_identified=True,
+        gate_b_reference_passed=True,
+        gate_b_nonzero=True,
+        gate_c_post_dequant_finite=True,
+        gate_c_post_dequant_nonzero=True,
+        gate_c_reference_passed=True,
+    )
+
+    assert ready["post_reset_official_path_correction_revision_ready"]
+    assert ready["stage2_2_acceptance_possible"]
+    assert ready["official_path_correction_revision"] == POST_RESET_OFFICIAL_PATH_CORRECTION_REVISION
+
+
 def test_svdq_final_combine_device_probe_executes_official_token_unpermute_surface():
     probe = (REPO_ROOT / "tools/svdq_final_combine_device_probe.py").read_text()
 

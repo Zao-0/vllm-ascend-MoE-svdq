@@ -83,6 +83,42 @@ Result:
 - Stage 2.3 is `blocked_by_stage2_2_official_gmm2_gate`.
 - `production_enable_allowed=false`.
 
+## Stage 2.2 Post-Reset Probe Revision Marker - 2026-06-27
+
+Purpose:
+
+- Added guarded emission of the post-reset official-path correction marker to
+  `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`.
+- The marker `official_path_correction_revision =
+  stage2_appendix_gmm2_official_path_mandatory_official_path_correction_20260627` is emitted only when routing
+  identity, prefix/padded-row evidence, Gate B raw accumulator/D2 evidence, and Gate C post-dequant evidence are all
+  complete.
+- Loop-stats mode, raw-C2/D2-only mode, or post-dequant runs with zero/failed Gate C remain blocked and do not emit the
+  marker.
+
+Files changed:
+
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+- `tests/ut/ops/test_svdq_moe_abi.py`
+- `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+
+Validation:
+
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py::test_svdq_w4a8_gmm2_probe_emits_post_reset_revision_only_after_gate_abc -q`
+- `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py tools/svdq_kernel_contract_manifest.py`
+- `git diff --check -- tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py tools/svdq_kernel_contract_manifest.py tests/ut/ops/test_svdq_moe_abi.py docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+- `python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /tmp/svdq_manifest_probe_marker_check.json`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q`
+
+Result:
+
+- Unit tests verify the marker is absent when Gate C is zero/failed and present only after Gate A/B/C are complete.
+- Current real evidence remains blocked:
+  `stage2_2.status=fail_in_progress`,
+  `evidence_status=current_recheck_missing_post_reset_official_path_correction_revision`,
+  `stage2_3.status=blocked_by_stage2_2_official_gmm2_gate`.
+- Production remains fail-closed.
+
 ## Stage 2.5 Low-Rank BF16 Accumulator Boundary Attempt - 2026-06-27
 
 Purpose:

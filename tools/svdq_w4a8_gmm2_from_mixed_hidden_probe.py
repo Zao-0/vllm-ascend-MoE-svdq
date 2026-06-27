@@ -63,6 +63,9 @@ from vllm_ascend.utils import bootstrap_custom_op_env, enable_custom_op  # noqa:
 
 CUSTOM_OPAPI_LIB = REPO_ROOT / "vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib/libcust_opapi.so"
 DEFAULT_SUMMARY_NAME = "phase_stage2_gmm2_from_mixed_hidden_summary.json"
+POST_RESET_OFFICIAL_PATH_CORRECTION_REVISION = (
+    "stage2_appendix_gmm2_official_path_mandatory_official_path_correction_20260627"
+)
 _PRELOADED_CUSTOM_OPAPI_GLOBAL = False
 
 
@@ -918,7 +921,8 @@ def _appendix_gmm2_official_path_revision_manifest(
         and gate_c_post_dequant_nonzero
         and gate_c_reference_passed
     )
-    return {
+    post_reset_revision_ready = bool(routing_complete and prefix_and_padded_complete and gate_c_after_gate_b)
+    manifest = {
         "binding_revision": "stage2_appendix_gmm2_official_path",
         "diagnostic_mode": diagnostic_mode,
         "source_of_truth": "official dispatch_ffn_combine_w4_a8 GMM2 AIC/AIV lifecycle",
@@ -949,7 +953,8 @@ def _appendix_gmm2_official_path_revision_manifest(
         "active_failure_all_zero_post_dequant_resolved": bool(
             gate_c_post_dequant_nonzero and gate_c_reference_passed
         ),
-        "stage2_2_acceptance_possible": gate_c_after_gate_b,
+        "post_reset_official_path_correction_revision_ready": post_reset_revision_ready,
+        "stage2_2_acceptance_possible": post_reset_revision_ready,
         "gate_a_summary": {
             "input_boundary_passed": bool(gate_a_input_boundary_passed),
             "routing_identity_complete": routing_complete,
@@ -967,6 +972,9 @@ def _appendix_gmm2_official_path_revision_manifest(
             "reference_passed": bool(gate_c_reference_passed),
         },
     }
+    if post_reset_revision_ready:
+        manifest["official_path_correction_revision"] = POST_RESET_OFFICIAL_PATH_CORRECTION_REVISION
+    return manifest
 
 
 def _unpack_i4_bytes_variant(
