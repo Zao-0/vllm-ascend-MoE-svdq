@@ -2838,7 +2838,12 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["final_combine_contract_recorded"]
     assert loaded["production_admission"]["host_tiling_must_remain_fail_closed"]
     assert not loaded["production_admission"]["production_enable_allowed"]
+    assert "stage2_2_official_gmm2_gate" in loaded["production_admission"]
+    assert not loaded["production_admission"]["stage2_2_official_gmm2_gate_passed"]
+    assert loaded["production_admission"]["stage2_2_official_gmm2_gate"]["status"] == "fail_in_progress"
+    assert loaded["production_admission"]["stage2_2_official_gmm2_gate"]["stage2_3_and_later_blocked"]
     assert "stage2_3_real_checkpoint_composition_gate" in loaded["production_admission"]
+    assert not loaded["production_admission"]["stage2_3_isolated_gate_passed"]
     assert loaded["production_admission"]["remaining_execution_requirements"] == {
         "dispatch_routing_execution_enabled": False,
         "residual_hidden_quant_execution_enabled": False,
@@ -3175,7 +3180,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert down_invocation["second_up_factor"] == "SVDQ_INVALID_ID"
 
 
-def test_svdq_kernel_contract_manifest_accepts_stage2_3_topk8_evidence(tmp_path):
+def test_svdq_kernel_contract_manifest_keeps_stage2_3_evidence_blocked_by_gmm2_gate(tmp_path):
     from tools.svdq_kernel_contract_manifest import build_manifest
 
     evidence_path = tmp_path / "stage2/phase_stage2_real_composition_topk8_finalcombine_fixedidx_experts0_7.json"
@@ -3265,9 +3270,12 @@ def test_svdq_kernel_contract_manifest_accepts_stage2_3_topk8_evidence(tmp_path)
     gate = manifest["production_admission"]["stage2_3_real_checkpoint_composition_gate"]
 
     assert gate["evidence_found"]
-    assert gate["passed"]
-    assert gate["status"] == "passed"
-    assert manifest["production_admission"]["stage2_3_isolated_gate_passed"]
+    assert not gate["passed"]
+    assert gate["historical_passed_under_superseded_contract"]
+    assert gate["status"] == "blocked_by_stage2_2_official_gmm2_gate"
+    assert gate["blocking_gate"] == "stage2_2_modified_hidden_official_w4a8_gmm2"
+    assert not manifest["production_admission"]["stage2_2_official_gmm2_gate_passed"]
+    assert not manifest["production_admission"]["stage2_3_isolated_gate_passed"]
     assert not manifest["production_admission"]["production_enable_allowed"]
     assert manifest["production_admission"]["host_tiling_must_remain_fail_closed"]
 

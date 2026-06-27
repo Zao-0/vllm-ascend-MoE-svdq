@@ -19,6 +19,9 @@ DEFAULT_EVIDENCE_DIR = Path("/root/workspace/lza/svdq_clean_evidence")
 STAGE2_3_REAL_COMPOSITION_EVIDENCE = Path(
     "stage2/phase_stage2_real_composition_topk8_finalcombine_fixedidx_experts0_7.json"
 )
+STAGE2_2_GMM2_OFFICIAL_PATH_APPENDIX = (
+    "/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md"
+)
 
 OP_ROOT = Path("csrc/mc2/dispatch_ffn_combine_w4_a8_svdq")
 OP_CMAKE = OP_ROOT / "op_host/CMakeLists.txt"
@@ -1675,6 +1678,49 @@ def _zero_error(error: dict[str, Any]) -> bool:
     )
 
 
+def _stage2_2_official_gmm2_gate() -> dict[str, Any]:
+    required_status_fields: dict[str, bool | None] = {
+        "official_gmm2_entry_reached": True,
+        "official_gmm2_loop_count": None,
+        "official_gmm2_active_tile_count": None,
+        "official_gmm2_aic_raw_output_finite": None,
+        "official_gmm2_aic_raw_output_nonzero": False,
+        "official_gmm2_aic_reference_passed": False,
+        "official_gmm2_c2v_handoff_verified": False,
+        "official_gmm2_post_dequant_finite": True,
+        "official_gmm2_post_dequant_nonzero": False,
+        "official_gmm2_post_dequant_reference_passed": False,
+        "official_gmm2_numerical_gate_passed": False,
+    }
+    return {
+        "name": "stage2_2_modified_hidden_official_w4a8_gmm2",
+        "status": "fail_in_progress",
+        "passed": False,
+        "appendix_reference": STAGE2_2_GMM2_OFFICIAL_PATH_APPENDIX,
+        "source_of_truth": "official dispatch_ffn_combine_w4_a8 GMM2 AIC/AIV lifecycle",
+        "active_problem": (
+            "official GMM2 post-dequant readback is all zeros while the unfused "
+            "official-contract reference is nonzero"
+        ),
+        "stage2_3_and_later_blocked": True,
+        "production_tiling_enable_allowed": False,
+        "public_grouped_matmul_allowed": False,
+        "required_gate_a": (
+            "same routed-row identity with canonical hidden BF16, hidden INT8, packed INT4, "
+            "hidden scale, expert token nums, prefix sums, row offsets, and W2 metadata"
+        ),
+        "required_gate_b": (
+            "official GMM2 AIC raw/D2 output finite, nonzero, and reference-matched at the "
+            "exact BlockEpilogue2 source boundary"
+        ),
+        "required_gate_c": (
+            "official BlockEpilogue2/CombineV2 FP32 post-dequant output finite, nonzero, "
+            "and strict-reference matched"
+        ),
+        "required_status_fields": required_status_fields,
+    }
+
+
 def _stage2_3_real_composition_gate(evidence_dir: Path) -> dict[str, Any]:
     evidence_path = evidence_dir / STAGE2_3_REAL_COMPOSITION_EVIDENCE
     gate: dict[str, Any] = {
@@ -1778,7 +1824,7 @@ def _stage2_3_real_composition_gate(evidence_dir: Path) -> dict[str, Any]:
             final_combine.get("index_semantics") == "official_token_major_output_slots_to_permuted_input_rows"
         ),
     }
-    passed = bool(
+    historical_passed = bool(
         summary.get("passed")
         and stage.get("passed")
         and all(required_stage_flags.values())
@@ -1792,8 +1838,10 @@ def _stage2_3_real_composition_gate(evidence_dir: Path) -> dict[str, Any]:
     )
     gate.update(
         {
-            "status": "passed" if passed else "failed",
-            "passed": passed,
+            "status": "blocked_by_stage2_2_official_gmm2_gate" if historical_passed else "failed",
+            "passed": False,
+            "historical_passed_under_superseded_contract": historical_passed,
+            "blocking_gate": "stage2_2_modified_hidden_official_w4a8_gmm2",
             "summary_passed": bool(summary.get("passed")),
             "stage_passed": bool(stage.get("passed")),
             "shape": shape,
@@ -1816,6 +1864,7 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
     sources = _read_sources(repo_root)
     source_proof = _source_proof(sources)
     host_tiling_source = _production_host_tiling_source(sources)
+    stage2_2_gate = _stage2_2_official_gmm2_gate()
     stage2_3_gate = _stage2_3_real_composition_gate(evidence_dir)
     manifest = {
         "schema_version": 1,
@@ -2096,15 +2145,17 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
             "final_combine_contract_recorded": True,
         },
         "production_admission": {
+            "stage2_2_official_gmm2_gate": stage2_2_gate,
+            "stage2_2_official_gmm2_gate_passed": bool(stage2_2_gate["passed"]),
             "stage2_3_real_checkpoint_composition_gate": stage2_3_gate,
-            "stage2_3_isolated_gate_passed": bool(stage2_3_gate["passed"]),
+            "stage2_3_isolated_gate_passed": bool(stage2_2_gate["passed"] and stage2_3_gate["passed"]),
             "host_tiling_must_remain_fail_closed": True,
             "production_enable_allowed": False,
             "reason": (
-                "Stage 2.3 isolated real-checkpoint composition is necessary but not sufficient. "
-                "Production tiling remains blocked until fused production execution replaces the current "
-                "dispatch routing, residual W4A8 GMM, mixed epilogue, and final-combine execution stubs and "
-                "the target model passes four-NPU end-to-end validation."
+                "Stage 2.2 modified-hidden official W4A8 GMM2 is fail/in progress under the binding "
+                "official-path appendix, so Stage 2.3 and later evidence is historical only. Production "
+                "tiling remains blocked until Stage 2.2 Gate A/B/C, later same-routing composition, fused "
+                "production execution, and four-NPU target-model validation all pass."
             ),
             "remaining_execution_requirements": {
                 "dispatch_routing_execution_enabled": source_proof["kernel_dispatch_routing_execution_enabled"],

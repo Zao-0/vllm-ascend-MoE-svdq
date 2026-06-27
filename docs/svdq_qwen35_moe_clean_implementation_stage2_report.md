@@ -4,15 +4,48 @@
 |---|---|---|
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
-| Stage 2.2 modified-hidden official W4A8 GMM2 | PASS | Single-device real-checkpoint official-lifecycle top-1 expert-0 probe passes Gate A, Gate B, C2V, and strict Gate C with max/mean abs `0.0`. |
-| Stage 2.3 same-routing two-stage composition | PASS | Single-device real-checkpoint top-k 8 experts 0-7 probe still passes first mixed epilogue, official GMM2 from SVDQ hidden, actual SVDQ down, final mixed down/output, and same-routing manifest with max/mean abs `0.0`. |
-| Stage 2.3 final-combine token unpermute | PASS | Real-checkpoint peer-output validation uses the official token-major output-slot to permuted-input-row index convention and passes with max/mean abs `0.0`. |
-| Stage 2.4 and later | IN PROGRESS | Production fused-op integration and four-NPU end-to-end validation remain open. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Binding appendix `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` supersedes later pass claims; Gate B raw official GMM2 output and Gate C post-dequant reference are not accepted. |
+| Stage 2.3 and later | BLOCKED | Blocked until Stage 2.2 proves the official GMM2 AIC raw output, C2V handoff, BlockEpilogue2/CombineV2 post-dequant output, and strict real-checkpoint reference match. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
 
-## Stage 2.3 Final-Combine Gate Passed - 2026-06-27T03:24Z
+## Stage 2.2 Official-Path Appendix Supersession - 2026-06-27
 
-This is the latest authoritative Stage 2.3 handoff. The previous final-combine failure was caused by using the
+This is the latest authoritative handoff. The new binding appendix
+`svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` was read and applied as a higher-priority
+constraint. It restores Stage 2.2 to `FAIL / IN PROGRESS` and blocks Stage 2.3+, regardless of later historical
+composition/final-combine summaries, until the official W4A8 GMM2 lifecycle gate passes with explicit Gate A/B/C
+readbacks.
+
+Required current interpretation:
+
+1. Stage 2.0 and Stage 2.1 remain passed.
+2. Stage 2.2 is open. The active problem is the official W4A8 GMM2 producer/consumer lifecycle and state
+   reconstruction for modified hidden input, specifically the all-zero official post-dequant readback against a
+   nonzero unfused official-contract reference.
+3. Stage 2.3 same-routing composition, SVDQ down composition, final combine, Stage 2.4 production admission, and
+   four-NPU target-model serving are blocked until Stage 2.2 passes.
+4. The only acceptable source of truth for W4A8 GMM2 remains the official `dispatch_ffn_combine_w4_a8` AIC/AIV path.
+   Public `torch_npu.npu_grouped_matmul`, scalar substitutes, guessed scale formulas, and host-unpacked W4A8 GEMMs
+   remain forbidden.
+5. Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed.
+
+Machine-checkable guardrail added:
+
+- `tools/svdq_kernel_contract_manifest.py` now emits `production_admission.stage2_2_official_gmm2_gate` with
+  `status=fail_in_progress`, `passed=false`, and required fields for `official_gmm2_aic_raw_output_*`,
+  `official_gmm2_c2v_handoff_verified`, `official_gmm2_post_dequant_*`, and
+  `official_gmm2_numerical_gate_passed`.
+- Existing Stage 2.3 top-k/final-combine evidence is preserved as historical evidence only. The manifest records
+  `historical_passed_under_superseded_contract=true` when the old summary satisfies the old checks, but it forces
+  `stage2_3_real_checkpoint_composition_gate.passed=false` and
+  `production_admission.stage2_3_isolated_gate_passed=false` while Stage 2.2 is open.
+
+No kernel behavior was changed in this update. The next behavioral patch must first identify a specific deviation in
+the official-vs-debug state table and tie it to an exact official source counterpart.
+
+## Historical: Stage 2.3 Final-Combine Gate Passed - 2026-06-27T03:24Z
+
+Historical section superseded by the Stage 2.2 official-path appendix on 2026-06-27. The previous final-combine failure was caused by using the
 wrong index convention in the probe/oracle: it passed an expert-contiguous input-row to flattened `[token, top_k]`
 slot map. The official `KernelMoeTokenUnpermute` path consumes the inverse convention: flattened token-major output
 slots point to input rows in the permuted/expert-contiguous peer-output buffer.
