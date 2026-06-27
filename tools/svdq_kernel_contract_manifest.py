@@ -979,6 +979,29 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "ResidualGmmLaunchReady(uint32_t stageId)" in sources["kernel_contract"]
             and "BuildResidualGmmLaunch(stageId)" in sources["kernel_contract"]
         ),
+        "kernel_residual_gmm_official_bridge_contract_recorded": (
+            "SVDQResidualGmmOfficialBridgeContract" in sources["kernel_contract"]
+            and "ResidualGmmOfficialBridgeContract(" in sources["kernel_contract"]
+            and "ResidualGmmOfficialBridgeReady(uint32_t stageId) const" in sources["kernel_contract"]
+            and "SVDQ_OFFICIAL_W4A8_KERNEL_DISPATCH_FFN_COMBINE" in sources["kernel_contract"]
+            and "SVDQ_OFFICIAL_W4A8_AIC_GMM" in sources["kernel_contract"]
+            and "SVDQ_OFFICIAL_W4A8_AIV_DEQUANT" in sources["kernel_contract"]
+            and "SVDQ_REGION_X_Q, SVDQ_REGION_X_SCALE" in sources["kernel_contract"]
+            and "SVDQ_REGION_HIDDEN_Q, SVDQ_REGION_HIDDEN_SCALE" in sources["kernel_contract"]
+            and "SVDQ_REGION_ACCUMULATOR_1, true, true, true, true, true" in sources["kernel_contract"]
+            and "SVDQ_REGION_ACCUMULATOR_2, true, true, true, true, true" in sources["kernel_contract"]
+            and "bridge.requiresPackedW4Weights && bridge.requiresOfficialAicAccumulator" in sources[
+                "kernel_contract"
+            ]
+            and "bridge.requiresOfficialC2VHandoff && bridge.requiresOfficialAivDequant" in sources[
+                "kernel_contract"
+            ]
+            and "bridge.producesBF16Residual && launch.weightNz && launch.residualOnly" in sources[
+                "kernel_contract"
+            ]
+            and "Execution remains fail-closed until this bridge directly reuses the official W4A8 AIC/AIV lifecycle."
+            in sources["kernel_contract"]
+        ),
         "kernel_residual_gmm_scalar_execution_enabled": (
             "return RunResidualPackedW4A8ScalarGmmStage(launch);" in sources["kernel_contract"]
             and "RunResidualPackedW4A8ScalarGmmStage(const SVDQResidualGmmLaunch& launch) const"
@@ -2319,6 +2342,9 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
             ],
             "residual_gmm_launch_descriptor_recorded": source_proof[
                 "kernel_residual_gmm_launch_descriptor_recorded"
+            ],
+            "residual_gmm_official_bridge_contract_recorded": source_proof[
+                "kernel_residual_gmm_official_bridge_contract_recorded"
             ],
             "residual_gmm_execution_enabled": source_proof[
                 "kernel_residual_gmm_scalar_execution_enabled"

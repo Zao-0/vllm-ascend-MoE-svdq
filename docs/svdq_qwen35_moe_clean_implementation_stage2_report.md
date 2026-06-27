@@ -78,6 +78,39 @@ Official-vs-debug state table checkpoint:
 | `BlockEpilogue2` input state | `CombineV2` passes `gmCGMM2`, `gmC2`, `gmPerTokenScale2`, W2 aux, tile coords, group, `preSumBeforeRank` at `1511-1512`. | `BlockEpilogue2::operator()` dequantizes and writes peer output. | Constructed at `1325-1339` or debug readback at `996-1009`. | `gmC2`, `gmPerTokenScale2`, `ptrMAux2`, remote peer memory `offsetD`. | `actualBlockShape.m()/2` after high/low merge. | UB events inside `BlockEpilogue2`. | After C2V wait. | Internal MTE/V waits at `block_epilogue_w4a8post_pertoken_v2.hpp:182-190` and `265-270`. | `Finalize()` waits all UB stages at `132-140`. | Gate C must validate this output only after Gate B is nonzero. |
 | FP32 post-dequant debug tap | `BlockEpilogue2` debug branch writes `gmTileGMM2` after high/low merge and scale at `block_epilogue_w4a8post_pertoken_v2.hpp:258-262`. | Host probe reads debug GM. | Debug GM is optional through `ptrDebugGMM2`. | `workspaceInfo.ptrCGMM2` or external debug pointer at `1620-1627`. | FP32 row-major active tile. | Debug uses `EVENT_ID7` MTE3/V guard. | During BlockEpilogue2. | Debug waits `EVENT_ID7`. | `Finalize()` waits debug event under `W4A8_DEBUG`. | Prior all-zero readbacks are insufficient; Gate B and Gate C must be separated and interpreted as specified by the appendix. |
 
+## Stage 2.4 Residual W4A8 Official Bridge Contract - 2026-06-27
+
+Latest code state:
+
+- Added `SVDQResidualGmmOfficialBridgeContract` to `dispatch_ffn_combine_w4_a8_svdq.h`.
+- The bridge records the only acceptable production residual-GMM source boundary:
+  official `dispatch_ffn_combine_w4_a8`, official AIC GMM producer, official AIV dequant consumer, packed W4 weights,
+  official accumulator lifecycle, official C2V handoff, and BF16 residual output into the SVDQ accumulator regions.
+- Stage 1 maps `SVDQ_REGION_X_Q` plus `SVDQ_REGION_X_SCALE` to `SVDQ_REGION_ACCUMULATOR_1`.
+- Stage 2 maps `SVDQ_REGION_HIDDEN_Q` plus `SVDQ_REGION_HIDDEN_SCALE` to `SVDQ_REGION_ACCUMULATOR_2`.
+- `RunResidualGmmStage` now requires this bridge contract before reaching the execution gate, but still returns
+  false. Execution remains fail-closed until the bridge directly reuses or ports the official W4A8 AIC/AIV lifecycle.
+- No public `torch_npu.npu_grouped_matmul`, scalar W4A8 GEMM, host-unpacked substitute, or guessed scale formula was
+  added.
+
+Regenerated manifest:
+
+- Command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+- Resulting key state:
+  `production_fail_closed.residual_gmm_official_bridge_contract_recorded=true`,
+  `source_proof.kernel_residual_gmm_official_bridge_contract_recorded=true`,
+  `production_fail_closed.residual_gmm_execution_enabled=false`,
+  `production_admission.remaining_execution_requirements.residual_w4a8_gmm_execution_enabled=false`, and
+  `production_admission.production_enable_allowed=false`.
+
+Validation:
+
+- `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+- `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+- `git diff --check -- csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq.h tools/svdq_kernel_contract_manifest.py tests/ut/ops/test_svdq_moe_abi.py docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q` -> `46 passed, 16 warnings`
+
 ## Stage 2.4 Production Hidden Quant AIV Source Boundary - 2026-06-27
 
 Latest code state:

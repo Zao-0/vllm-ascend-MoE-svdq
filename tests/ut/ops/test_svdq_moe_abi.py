@@ -1598,6 +1598,7 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     assert "SVDQResidualExecutionPlan" in contract
     assert "SVDQResidualQuantLaunch" in contract
     assert "SVDQResidualGmmLaunch" in contract
+    assert "SVDQResidualGmmOfficialBridgeContract" in contract
     assert "ResidualExecutionPlan(uint32_t stageId)" in contract
     assert "ResidualQuantIdForStage(uint32_t stageId)" in contract
     assert "BuildResidualQuantLaunch(uint32_t stageId)" in contract
@@ -1607,6 +1608,8 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     assert "ResidualExecutionPlanReady(uint32_t stageId)" in contract
     assert "ResidualQuantLaunchReady(uint32_t stageId)" in contract
     assert "ResidualGmmLaunchReady(uint32_t stageId)" in contract
+    assert "ResidualGmmOfficialBridgeContract(" in contract
+    assert "ResidualGmmOfficialBridgeReady(uint32_t stageId) const" in contract
     assert "RunResidualDynamicQuantStage(uint32_t stageId)" in contract
     assert "RunResidualGmmStage(uint32_t stageId)" in contract
     assert "RunResidualStage(uint32_t stageId)" in contract
@@ -1786,6 +1789,20 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     ):
         assert token in gmm_ready_source
 
+    for token in (
+        "SVDQ_OFFICIAL_W4A8_KERNEL_DISPATCH_FFN_COMBINE",
+        "SVDQ_OFFICIAL_W4A8_AIC_GMM",
+        "SVDQ_OFFICIAL_W4A8_AIV_DEQUANT",
+        "SVDQ_REGION_X_Q, SVDQ_REGION_X_SCALE",
+        "SVDQ_REGION_HIDDEN_Q, SVDQ_REGION_HIDDEN_SCALE",
+        "SVDQ_REGION_ACCUMULATOR_1, true, true, true, true, true",
+        "SVDQ_REGION_ACCUMULATOR_2, true, true, true, true, true",
+        "bridge.requiresPackedW4Weights && bridge.requiresOfficialAicAccumulator",
+        "bridge.requiresOfficialC2VHandoff && bridge.requiresOfficialAivDequant",
+        "bridge.producesBF16Residual && launch.weightNz && launch.residualOnly",
+    ):
+        assert token in gmm_ready_source
+
     gmm_execution_source = contract[
         contract.index("__aicore__ inline bool RunResidualGmmStage") : contract.index(
             "__aicore__ inline SVDQMixedEpilogueContract MixedEpilogueContract"
@@ -1793,8 +1810,8 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     ]
     for token in (
         "plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM",
-        "!ResidualGmmLaunchReady(stageId)",
-        "Residual W4A8 GMM must be implemented by the official AIC W4A8 kernel path.",
+        "!ResidualGmmOfficialBridgeReady(stageId)",
+        "Execution remains fail-closed until this bridge directly reuses the official W4A8 AIC/AIV lifecycle.",
         "return false;",
     ):
         assert token in gmm_execution_source
@@ -2877,6 +2894,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["residual_hidden_quant_scalar_helpers_absent"]
     assert loaded["production_fail_closed"]["residual_quant_launch_descriptor_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_launch_descriptor_recorded"]
+    assert loaded["production_fail_closed"]["residual_gmm_official_bridge_contract_recorded"]
     assert not loaded["production_fail_closed"]["residual_gmm_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_gmm_scalar_helpers_absent"]
     assert loaded["production_fail_closed"]["mixed_epilogue_launch_descriptor_recorded"]
@@ -2923,6 +2941,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_residual_dispatches_dynamic_quant_and_gmm"]
     assert loaded["source_proof"]["kernel_residual_quant_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_launch_descriptor_recorded"]
+    assert loaded["source_proof"]["kernel_residual_gmm_official_bridge_contract_recorded"]
     assert not loaded["source_proof"]["kernel_residual_gmm_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_gmm_scalar_helpers_absent"]
     assert loaded["source_proof"]["kernel_residual_routed_input_quant_execution_enabled"]

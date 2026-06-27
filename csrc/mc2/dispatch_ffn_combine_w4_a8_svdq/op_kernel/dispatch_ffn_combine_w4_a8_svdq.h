@@ -25,6 +25,9 @@ constexpr uint32_t SVDQ_FACTOR_COUNT = 5;
 constexpr uint32_t SVDQ_BF16_STAGE_COUNT = 7;
 constexpr uint32_t SVDQ_MIXED_EPILOGUE_COUNT = 2;
 constexpr uint32_t SVDQ_INVALID_ID = 0xffffffffU;
+constexpr uint32_t SVDQ_OFFICIAL_W4A8_KERNEL_DISPATCH_FFN_COMBINE = 1;
+constexpr uint32_t SVDQ_OFFICIAL_W4A8_AIC_GMM = 2;
+constexpr uint32_t SVDQ_OFFICIAL_W4A8_AIV_DEQUANT = 3;
 constexpr uint32_t SVDQ_RESIDUAL_WEIGHT1_SLOT = 1;
 constexpr uint32_t SVDQ_RESIDUAL_WEIGHT2_SLOT = 2;
 constexpr uint32_t SVDQ_RESIDUAL_SCALE1_SLOT = 4;
@@ -252,6 +255,21 @@ struct SVDQResidualGmmLaunch {
     bool transB;
     bool weightNz;
     bool residualOnly;
+};
+
+struct SVDQResidualGmmOfficialBridgeContract {
+    uint32_t stageId;
+    uint32_t officialKernelId;
+    uint32_t officialAicProducerId;
+    uint32_t officialAivConsumerId;
+    uint32_t inputRegionId;
+    uint32_t activationScaleRegionId;
+    uint32_t outputRegionId;
+    bool requiresPackedW4Weights;
+    bool requiresOfficialAicAccumulator;
+    bool requiresOfficialC2VHandoff;
+    bool requiresOfficialAivDequant;
+    bool producesBF16Residual;
 };
 
 struct SVDQMixedEpilogueContract {
@@ -919,6 +937,43 @@ public:
                launch.bias != nullptr && launch.expertTokenNums != nullptr;
     }
 
+    __aicore__ inline SVDQResidualGmmOfficialBridgeContract ResidualGmmOfficialBridgeContract(
+        uint32_t stageId) const
+    {
+        switch (stageId) {
+            case SVDQ_RESIDUAL_STAGE_W4A8_GMM1:
+                return {stageId, SVDQ_OFFICIAL_W4A8_KERNEL_DISPATCH_FFN_COMBINE, SVDQ_OFFICIAL_W4A8_AIC_GMM,
+                    SVDQ_OFFICIAL_W4A8_AIV_DEQUANT, SVDQ_REGION_X_Q, SVDQ_REGION_X_SCALE,
+                    SVDQ_REGION_ACCUMULATOR_1, true, true, true, true, true};
+            case SVDQ_RESIDUAL_STAGE_W4A8_GMM2:
+                return {stageId, SVDQ_OFFICIAL_W4A8_KERNEL_DISPATCH_FFN_COMBINE, SVDQ_OFFICIAL_W4A8_AIC_GMM,
+                    SVDQ_OFFICIAL_W4A8_AIV_DEQUANT, SVDQ_REGION_HIDDEN_Q, SVDQ_REGION_HIDDEN_SCALE,
+                    SVDQ_REGION_ACCUMULATOR_2, true, true, true, true, true};
+            default:
+                return {SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID,
+                    SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID, false, false, false, false, false};
+        }
+    }
+
+    __aicore__ inline bool ResidualGmmOfficialBridgeReady(uint32_t stageId) const
+    {
+        if (!ResidualGmmLaunchReady(stageId)) {
+            return false;
+        }
+        SVDQResidualGmmLaunch launch = BuildResidualGmmLaunch(stageId);
+        SVDQResidualGmmOfficialBridgeContract bridge = ResidualGmmOfficialBridgeContract(stageId);
+        return bridge.stageId == stageId &&
+               bridge.officialKernelId == SVDQ_OFFICIAL_W4A8_KERNEL_DISPATCH_FFN_COMBINE &&
+               bridge.officialAicProducerId == SVDQ_OFFICIAL_W4A8_AIC_GMM &&
+               bridge.officialAivConsumerId == SVDQ_OFFICIAL_W4A8_AIV_DEQUANT &&
+               bridge.inputRegionId == ResidualExecutionPlan(stageId).inputRegionId &&
+               bridge.activationScaleRegionId == ResidualExecutionPlan(stageId).activationScaleRegionId &&
+               bridge.outputRegionId == ResidualExecutionPlan(stageId).outputRegionId &&
+               bridge.requiresPackedW4Weights && bridge.requiresOfficialAicAccumulator &&
+               bridge.requiresOfficialC2VHandoff && bridge.requiresOfficialAivDequant &&
+               bridge.producesBF16Residual && launch.weightNz && launch.residualOnly;
+    }
+
     __aicore__ inline void CopyInResidualQuantBf16(LocalTensor<bfloat16_t> dst,
         const GlobalTensor<bfloat16_t>& src, uint32_t offset, uint32_t count) const
     {
@@ -1159,10 +1214,10 @@ public:
     __aicore__ inline bool RunResidualGmmStage(uint32_t stageId) const
     {
         SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
-        if (plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM || !ResidualGmmLaunchReady(stageId)) {
+        if (plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM || !ResidualGmmOfficialBridgeReady(stageId)) {
             return false;
         }
-        // Residual W4A8 GMM must be implemented by the official AIC W4A8 kernel path.
+        // Execution remains fail-closed until this bridge directly reuses the official W4A8 AIC/AIV lifecycle.
         return false;
     }
 
