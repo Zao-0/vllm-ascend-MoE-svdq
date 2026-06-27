@@ -623,6 +623,7 @@ function(add_bin_compile_target)
                     COMMAND ${_BUILD_COMMAND}
                     COMMAND touch ${_BUILD_FLAG}
                     WORKING_DIRECTORY ${GEN_OUT_DIR}
+                    DEPENDS ${bin_script} ${DYNAMIC_PY_FILE}
             )
 
             add_custom_target(${OP_TARGET_NAME}_${op_index}
@@ -632,7 +633,8 @@ function(add_bin_compile_target)
             if (ENABLE_OPS_HOST OR ENABLE_HOST_TILING)
                 add_dependencies(${OP_TARGET_NAME}_${op_index} optiling_compat generate_ops_info)
             endif ()
-            add_dependencies(${OP_TARGET_NAME}_${op_index} ${OP_TARGET_NAME}_src_copy ${OP_TARGET_NAME}_py_copy ${OP_TARGET_NAME}_mkdir)
+            add_dependencies(${OP_TARGET_NAME}_${op_index} generate_compile_cmd_${BINARY_COMPUTE_UNIT}
+                    ${OP_TARGET_NAME}_src_copy ${OP_TARGET_NAME}_py_copy ${OP_TARGET_NAME}_mkdir)
             add_dependencies(${OP_TARGET_NAME} ${OP_TARGET_NAME}_${op_index})
         endif ()
     endforeach()

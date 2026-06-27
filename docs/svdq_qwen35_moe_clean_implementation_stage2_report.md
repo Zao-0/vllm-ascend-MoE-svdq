@@ -1,5 +1,68 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Stage 2.2 GMM2 Int32 Accumulator Binary Rebuild - 2026-06-27T00:13Z
+
+This section is the latest authoritative handoff. It supersedes the immediately following
+`2026-06-26T23:45Z` rebuild handoff, whose source diagnosis was correct but whose binary-build blocker has now
+been fixed. This is still not a Stage 2.2 numerical pass and it does not enable production SVDQ.
+
+| Item | Status | Evidence / blocker |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Accepted prior Stage 2 evidence; unchanged by this build-system patch. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | The debug op now builds with the six-output `gmm2AccumulatorInt32` ABI. Install/register and real-device Gate B accumulator validation are still pending. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 Gate B and Gate C. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No production host-tiling enablement. |
+
+Binding requirement update:
+
+- `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` was reread in this turn and remains
+  binding.
+- No public `torch_npu.npu_grouped_matmul` path was used or modified.
+- No W4A8 scale formula, packed-weight format, C2V/V2C lifecycle, or production SVDQ path was changed.
+- The production `DispatchFFNCombineW4A8SVDQ` host tiling remains fail-closed.
+
+Root cause corrected:
+
+- The six-output op store and dynamic wrapper were regenerated, but the Ascend binary OPC compile rules could reuse
+  stale `.done` files and stale `SVDQW4A8GMM2DebugReadback_*_param.json` inputs.
+- `csrc/cmake/func.cmake` did not make each binary `.done` output depend on the generated compile script or copied
+  dynamic Python, and the per-variant target did not depend on `generate_compile_cmd_${BINARY_COMPUTE_UNIT}`.
+- As a result, OPC previously consumed five-output param JSON files even though the op store expected six outputs.
+
+Files changed in this attempt:
+
+- `csrc/cmake/func.cmake`
+  - Added file-level dependencies from binary `.done` outputs to `${bin_script}` and `${DYNAMIC_PY_FILE}`.
+  - Added a target-level dependency from each per-variant binary compile target to
+    `generate_compile_cmd_${BINARY_COMPUTE_UNIT}`.
+
+Validation commands and results:
+
+- `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 cmake --build csrc/build --target generate_compile_cmd_ascend910b -- -B -j1`:
+  passed and regenerated the GMM2 debug compile scripts/param JSON files.
+- Script/param audit:
+  all eight `SVDQW4A8GMM2DebugReadback-svdqw4_a8_gmm2_debug_readback-*.sh` files now reference six-output param
+  JSON files whose final output is `gmm2AccumulatorInt32`.
+- `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 cmake --build csrc/build --target svdqw4_a8_gmm2_debug_readback_ascend910b -- -B -j1`:
+  passed. All eight six-output OPC variants generated successfully:
+  `aa5b120529daaf84972f322c315db307`, `744db51fa6e1f42ff3e6b6a5fb044ace`,
+  `8fd9c1b4c000e78db783d34628fa5afc`, `6158724529d46b254c9148d17de3caf6`,
+  `9a44d5098210aa15a7c15cb9401632dc`, `45e122228f80275cada0ec3b998af3e8`,
+  `326f3495d0f89f32f11d9af00c243c38`, and `b7fb8fe1ee499856e08a63895144ee73`.
+- Saved build log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260626T_stage2_gmm2_int32_accumulator_build_fixed.log`
+- Log grep result:
+  no `invalid output nums`, no `Opc tool compile failed`, no `Traceback`, and no `CMake Error`.
+
+Remaining work:
+
+1. Install/register the rebuilt custom op package under `vllm_ascend/_cann_ops_custom`.
+2. Run the real-device Stage 2.2 probe with `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3` and the installed six-output ABI.
+3. Validate `gmm2_accumulator_int32` against the official-contract int32 accumulator reference.
+4. Keep Stage 2.2 failed until Gate B and Gate C both pass; do not advance to SVDQ down composition or production
+   host tiling before those gates pass.
+
 ## Stage 2.2 GMM2 Int32 Accumulator Readback ABI - 2026-06-26T23:45Z
 
 This section is the latest rebuild handoff. It records the current source state after adding a debug-only GMM2
