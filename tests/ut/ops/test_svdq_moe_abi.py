@@ -1219,7 +1219,7 @@ def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
     tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
     tiling_header = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h").read_text()
 
-    assert "SVDQ_WORKSPACE_REGION_COUNT = 18" in tiling_header
+    assert "SVDQ_WORKSPACE_REGION_COUNT = 19" in tiling_header
     assert "SVDQWorkspaceRegion workspaceRegions[SVDQ_WORKSPACE_REGION_COUNT]" in tiling_header
     assert "workspaceBytes" in tiling_header
     assert "BuildWorkspaceMap" in tiling
@@ -1244,6 +1244,7 @@ def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
         "SVDQ_REGION_LOWRANK_RANK_2",
         "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT",
         "SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE",
+        "SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR",
     ):
         assert region in tiling_header
         assert region in tiling
@@ -1278,6 +1279,8 @@ def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
     assert "activeSlots * hiddenSize * BF16_BYTES" in tiling
     assert "SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE, offset" in tiling
     assert "ResidualW4A8OfficialWorkspaceBytes(info)" in tiling
+    assert "SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR, offset" in tiling
+    assert "routedRows * hiddenSize * 2 * INT32_BYTES" in tiling
     assert "DispatchFFNCombineW4A8SVDQ AscendC kernel is not implemented yet" not in tiling
     assert "return ge::GRAPH_SUCCESS;" in tiling
 
@@ -1644,6 +1647,7 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     assert "GM_ADDR gmm2PostDequantFp32;" in contract
     assert "GM_ADDR externalHiddenPacked;" in contract
     assert "GM_ADDR externalHiddenScale;" in contract
+    assert "GM_ADDR gmm2AccumulatorInt32;" in contract
     assert "usesOfficialGmm1Fp32Tap" in contract
     assert "usesOfficialGmm2Fp32Tap" in contract
     assert "usesSvdqHiddenPackedBoundary" in contract
@@ -1879,12 +1883,14 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         "runtime_.expertTokenNums, WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE)",
         "runtime_.tiling, EmbeddedOfficialW4A8TilingGM(), WorkspaceAddress(SVDQ_REGION_ACCUMULATOR_1)",
         "WorkspaceAddress(SVDQ_REGION_ACCUMULATOR_2), WorkspaceAddress(SVDQ_REGION_HIDDEN_Q)",
-        "WorkspaceAddress(SVDQ_REGION_HIDDEN_SCALE), true, true, true, true, true, true, true",
+        "WorkspaceAddress(SVDQ_REGION_HIDDEN_SCALE)",
+        "WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR)",
         "launch.officialTiling != nullptr",
         "launch.out == WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)",
         "launch.workspace == WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE)",
         "launch.gmm1PostDequantFp32 != nullptr && launch.gmm2PostDequantFp32 != nullptr",
         "launch.externalHiddenPacked != nullptr && launch.externalHiddenScale != nullptr",
+        "launch.gmm2AccumulatorInt32 == WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR)",
         "OfficialW4A8WrapperTypeBound()",
         "launch.requiresOfficialWrapper && launch.requiresFullAicAivLifecycle",
         "launch.usesOfficialGmm1Fp32Tap && launch.usesOfficialGmm2Fp32Tap",
@@ -2789,6 +2795,7 @@ def test_svdq_cann_kernel_contract_resolves_factors_workspace_and_bf16_stages():
         ("peerOutput", "SVDQ_REGION_PEER_OUTPUT"),
         ("officialW4A8ScratchOut", "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT"),
         ("officialW4A8Workspace", "SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE"),
+        ("officialW4A8Gmm2Accumulator", "SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR"),
     ):
         assert f"workspace_.{region_field} = WorkspaceAddress({region_id})" in contract
 
@@ -2967,7 +2974,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     )
     assert loaded["counts"] == {
         "factor_abi": 5,
-        "workspace_regions": 18,
+        "workspace_regions": 19,
         "sync_flags": 14,
         "bf16_stages": 7,
         "residual_stages": 4,
@@ -3085,11 +3092,12 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["lowrank_helper_enabled_by_contract"]
     assert loaded["source_proof"]["lowrank_helper_uses_separate_rank_workspace"]
     assert loaded["source_proof"]["lowrank_helper_stage_orders_rank_consumers"]
-    assert [region["name"] for region in loaded["workspace_regions"][-2:]] == [
+    assert [region["name"] for region in loaded["workspace_regions"][-3:]] == [
         "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT",
         "SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE",
+        "SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR",
     ]
-    assert loaded["workspace_regions"][-2] == {
+    assert loaded["workspace_regions"][-3] == {
         "id": 16,
         "name": "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT",
         "dtype": "SVDQ_DTYPE_BF16",
@@ -3099,7 +3107,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "lifetime_id": 17,
         "purpose": "scratch destination for ordinary official W4A8 final-combine output; never accepted as SVDQ output",
     }
-    assert loaded["workspace_regions"][-1] == {
+    assert loaded["workspace_regions"][-2] == {
         "id": 17,
         "name": "SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE",
         "dtype": "SVDQ_DTYPE_INT8",
@@ -3108,6 +3116,16 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "consumer_stage": "SVDQ_STAGE_W4A8_GEMM_2",
         "lifetime_id": 18,
         "purpose": "private workspace for official W4A8 wrapper layout; starts at official params.ptrWorkspace",
+    }
+    assert loaded["workspace_regions"][-1] == {
+        "id": 18,
+        "name": "SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR",
+        "dtype": "SVDQ_DTYPE_INT32",
+        "size_expr": "maxOutputSize * hiddenSize * 2 * INT32_BYTES",
+        "producer_stage": "SVDQ_STAGE_W4A8_GEMM_2",
+        "consumer_stage": "SVDQ_STAGE_W4A8_GEMM_2",
+        "lifetime_id": 19,
+        "purpose": "official GMM2 pre-Fixpipe int32 accumulator tap with doubled high/low C2 rows",
     }
     assert [stage["name"] for stage in loaded["residual_stages"]] == [
         "SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT",

@@ -263,6 +263,16 @@ WORKSPACE_REGIONS = [
         "lifetime_id": 18,
         "purpose": "private workspace for official W4A8 wrapper layout; starts at official params.ptrWorkspace",
     },
+    {
+        "id": 18,
+        "name": "SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR",
+        "dtype": "SVDQ_DTYPE_INT32",
+        "size_expr": "maxOutputSize * hiddenSize * 2 * INT32_BYTES",
+        "producer_stage": "SVDQ_STAGE_W4A8_GEMM_2",
+        "consumer_stage": "SVDQ_STAGE_W4A8_GEMM_2",
+        "lifetime_id": 19,
+        "purpose": "official GMM2 pre-Fixpipe int32 accumulator tap with doubled high/low C2 rows",
+    },
 ]
 
 SYNC_FLAGS = [
@@ -1089,6 +1099,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "GM_ADDR gmm2PostDequantFp32;" in sources["kernel_contract"]
             and "GM_ADDR externalHiddenPacked;" in sources["kernel_contract"]
             and "GM_ADDR externalHiddenScale;" in sources["kernel_contract"]
+            and "GM_ADDR gmm2AccumulatorInt32;" in sources["kernel_contract"]
             and "usesOfficialGmm1Fp32Tap" in sources["kernel_contract"]
             and "usesOfficialGmm2Fp32Tap" in sources["kernel_contract"]
             and "usesSvdqHiddenPackedBoundary" in sources["kernel_contract"]
@@ -1122,9 +1133,11 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             in sources["kernel_contract"]
             and "WorkspaceAddress(SVDQ_REGION_ACCUMULATOR_2), WorkspaceAddress(SVDQ_REGION_HIDDEN_Q)"
             in sources["kernel_contract"]
-            and "WorkspaceAddress(SVDQ_REGION_HIDDEN_SCALE), true, true, true, true, true, true, true"
-            in sources["kernel_contract"]
+            and "WorkspaceAddress(SVDQ_REGION_HIDDEN_SCALE)" in sources["kernel_contract"]
+            and "WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR)" in sources["kernel_contract"]
             and "launch.gmm1PostDequantFp32 != nullptr && launch.gmm2PostDequantFp32 != nullptr"
+            in sources["kernel_contract"]
+            and "launch.gmm2AccumulatorInt32 == WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR)"
             in sources["kernel_contract"]
             and "launch.out == WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)"
             in sources["kernel_contract"]
@@ -1164,22 +1177,31 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         "kernel_residual_gmm_official_scratch_output_recorded": (
             "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT = 16" in sources["kernel_tiling"]
             and "SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE = 17" in sources["kernel_tiling"]
-            and "SVDQ_WORKSPACE_REGION_COUNT = 18" in sources["kernel_tiling"]
+            and "SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR = 18" in sources["kernel_tiling"]
+            and "SVDQ_WORKSPACE_REGION_COUNT = 19" in sources["kernel_tiling"]
             and "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT, offset" in sources["host_tiling"]
             and "activeSlots * hiddenSize * BF16_BYTES" in sources["host_tiling"]
             and "SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE, offset" in sources["host_tiling"]
+            and "SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR, offset" in sources["host_tiling"]
+            and "routedRows * hiddenSize * 2 * INT32_BYTES" in sources["host_tiling"]
             and "ResidualW4A8OfficialWorkspaceBytes(info)" in sources["host_tiling"]
             and "GM_ADDR officialW4A8ScratchOut;" in sources["kernel_contract"]
             and "GM_ADDR officialW4A8Workspace;" in sources["kernel_contract"]
+            and "GM_ADDR officialW4A8Gmm2Accumulator;" in sources["kernel_contract"]
             and "WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)" in sources["kernel_contract"]
             and "WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE)" in sources["kernel_contract"]
+            and "WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR)" in sources["kernel_contract"]
             and "launch.out == WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)"
             in sources["kernel_contract"]
             and "launch.workspace == WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE)"
             in sources["kernel_contract"]
+            and "launch.gmm2AccumulatorInt32 == WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR)"
+            in sources["kernel_contract"]
             and "workspace_.officialW4A8ScratchOut = WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)"
             in sources["kernel_contract"]
             and "workspace_.officialW4A8Workspace = WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE)"
+            in sources["kernel_contract"]
+            and "workspace_.officialW4A8Gmm2Accumulator ="
             in sources["kernel_contract"]
         ),
         "kernel_residual_gmm_official_full_lifecycle_execution_enabled": (

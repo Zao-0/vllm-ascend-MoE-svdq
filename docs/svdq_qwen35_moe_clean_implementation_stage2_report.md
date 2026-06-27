@@ -54,7 +54,7 @@ Current state:
   Gate A/B/C on the real device, then validate production fused numerics and four-NPU target-model E2E with exactly
   `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
 
-## Stage 2.4 Official W4A8 Scratch Output And Workspace Boundaries - 2026-06-27
+## Stage 2.4 Official W4A8 Scratch, Workspace, And GMM2 Accumulator Boundaries - 2026-06-27
 
 Purpose:
 
@@ -62,15 +62,19 @@ Purpose:
   final-combine output.
 - Added `SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE` as a private workspace segment for the official W4A8 wrapper's own
   `params.ptrWorkspace` layout, sized with `ResidualW4A8OfficialWorkspaceBytes(info)`.
+- Added `SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR` as an internal INT32 workspace region for the official GMM2
+  pre-Fixpipe accumulator tap, sized as doubled high/low C2 rows:
+  `maxOutputSize * hiddenSize * 2 * INT32_BYTES`.
 - Redirected `BuildOfficialW4A8FullLifecycleLaunch().out` from `runtime_.out` to
   `WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)`.
 - Redirected `BuildOfficialW4A8FullLifecycleLaunch().workspace` from the SVDQ workspace base to
   `WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE)`.
-- Added readiness checks that the official full-lifecycle launch descriptor uses the scratch output and private
-  official workspace regions.
+- Added readiness checks that the official full-lifecycle launch descriptor uses the scratch output, private official
+  workspace, and official GMM2 accumulator regions.
 - This prevents a future fail-closed official wrapper bridge from accepting or writing ordinary W4A8 final-combine
   output as the fused SVDQ result, or overwriting SVDQ workspace regions with the official wrapper workspace layout,
-  before mixed down and official final combine are validated.
+  before mixed down and official final combine are validated. The accumulator reservation records the official Gate B
+  readback boundary used by `ptrDebugGMM2Accumulator`; it does not enable residual W4A8 execution.
 
 Files changed:
 
@@ -82,9 +86,10 @@ Files changed:
 
 Machine-checkable state:
 
-- `SVDQ_WORKSPACE_REGION_COUNT = 18`
+- `SVDQ_WORKSPACE_REGION_COUNT = 19`
 - `SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT = 16`
 - `SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE = 17`
+- `SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR = 18`
 - `source_proof.kernel_residual_gmm_official_scratch_output_recorded=true`
 - `production_fail_closed.residual_gmm_official_scratch_output_recorded=true`
 - `source_proof.kernel_residual_gmm_official_full_lifecycle_execution_enabled=false`
@@ -97,6 +102,7 @@ Current state:
 - No public `torch_npu.npu_grouped_matmul`, scalar W4A8 GEMM, host W4 unpacking, or guessed dequant path was added.
 - This is a production safety boundary for the future official producer bridge; it is not Stage 2.2/2.6 numerical
   progress by itself.
+- The production `RunResidualGmmStage` path still returns `false`.
 
 ## Stage 2.2 Official-vs-Debug GMM2 Lifecycle Table - 2026-06-27
 

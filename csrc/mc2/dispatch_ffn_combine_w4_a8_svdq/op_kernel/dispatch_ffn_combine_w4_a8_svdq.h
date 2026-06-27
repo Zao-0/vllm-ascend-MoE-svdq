@@ -174,6 +174,7 @@ struct SVDQWorkspaceGM {
     GM_ADDR lowRankRank2;
     GM_ADDR officialW4A8ScratchOut;
     GM_ADDR officialW4A8Workspace;
+    GM_ADDR officialW4A8Gmm2Accumulator;
 };
 
 struct SVDQBF16StageContract {
@@ -298,6 +299,7 @@ struct SVDQOfficialW4A8FullLifecycleLaunch {
     GM_ADDR gmm2PostDequantFp32;
     GM_ADDR externalHiddenPacked;
     GM_ADDR externalHiddenScale;
+    GM_ADDR gmm2AccumulatorInt32;
     bool requiresOfficialWrapper;
     bool requiresFullAicAivLifecycle;
     bool usesOfficialGmm1Fp32Tap;
@@ -1094,7 +1096,9 @@ public:
             runtime_.expertTokenNums, WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE),
             runtime_.tiling, EmbeddedOfficialW4A8TilingGM(), WorkspaceAddress(SVDQ_REGION_ACCUMULATOR_1),
             WorkspaceAddress(SVDQ_REGION_ACCUMULATOR_2), WorkspaceAddress(SVDQ_REGION_HIDDEN_Q),
-            WorkspaceAddress(SVDQ_REGION_HIDDEN_SCALE), true, true, true, true, true, true, true};
+            WorkspaceAddress(SVDQ_REGION_HIDDEN_SCALE),
+            WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR),
+            true, true, true, true, true, true, true};
     }
 
     __aicore__ inline bool OfficialW4A8FullLifecycleLaunchReady(uint32_t stageId) const
@@ -1113,6 +1117,7 @@ public:
                launch.svdqTiling != nullptr && launch.officialTiling != nullptr &&
                launch.gmm1PostDequantFp32 != nullptr && launch.gmm2PostDequantFp32 != nullptr &&
                launch.externalHiddenPacked != nullptr && launch.externalHiddenScale != nullptr &&
+               launch.gmm2AccumulatorInt32 == WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR) &&
                OfficialW4A8WrapperTypeBound() &&
                launch.requiresOfficialWrapper && launch.requiresFullAicAivLifecycle &&
                launch.usesOfficialGmm1Fp32Tap && launch.usesOfficialGmm2Fp32Tap &&
@@ -1769,6 +1774,7 @@ private:
         workspace_.lowRankRank2 = WorkspaceAddress(SVDQ_REGION_LOWRANK_RANK_2);
         workspace_.officialW4A8ScratchOut = WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT);
         workspace_.officialW4A8Workspace = WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE);
+        workspace_.officialW4A8Gmm2Accumulator = WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR);
     }
 
     SVDQRuntimeGM runtime_;

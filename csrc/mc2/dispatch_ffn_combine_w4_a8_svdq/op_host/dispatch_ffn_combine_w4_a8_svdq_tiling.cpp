@@ -164,6 +164,9 @@ static void BuildWorkspaceMap(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
     SetWorkspaceRegion(tilingData, SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE, offset,
         ResidualW4A8OfficialWorkspaceBytes(info), SVDQ_DTYPE_INT8,
         SVDQ_STAGE_W4A8_GEMM_1, SVDQ_STAGE_W4A8_GEMM_2, 18);
+    SetWorkspaceRegion(tilingData, SVDQ_REGION_OFFICIAL_W4A8_GMM2_ACCUMULATOR, offset,
+        routedRows * hiddenSize * 2 * INT32_BYTES, SVDQ_DTYPE_INT32,
+        SVDQ_STAGE_W4A8_GEMM_2, SVDQ_STAGE_W4A8_GEMM_2, 19);
 
     info.workspaceBytes = offset;
 }
