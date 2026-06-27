@@ -49,7 +49,6 @@ from svdq_w4a8_debug_readback_probe import (  # noqa: E402
 )
 from svdq_w4a8_debug_readback_real_checkpoint_probe import (  # noqa: E402
     _float_stats,
-    _int64_float_bits_to_fp32,
     _load_real_residual_layer,
     _official_w4a8_scaled_half_c2,
     _unpack_postloaded_w4_columns,
@@ -941,7 +940,7 @@ def _raw_c2_reference_from_parts(
 ) -> torch.Tensor:
     row_count = min(int(x_high.shape[0]), int(x_low.shape[0]), int(max_rows))
     counts = _clip_group_counts_for_limit(expert_token_nums, row_count)
-    weight_scale_fp32 = _int64_float_bits_to_fp32(weight_scale)
+    weight_scale_fp32 = _scale_bits_to_fp32(weight_scale, word="low32", zero_low_bits=13)
     unpacked_weight = _unpack_postloaded_w4_columns(weight, output_columns)
 
     outputs: list[torch.Tensor] = []
@@ -978,7 +977,7 @@ def _official_gmm2_d2_half_reference(
     )
     row_count = min(int(x_high.shape[0]), int(x_low.shape[0]), int(max_rows))
     counts = _clip_group_counts_for_limit(expert_token_nums, row_count)
-    weight_scale_fp32 = _int64_float_bits_to_fp32(weight_scale)
+    weight_scale_fp32 = _scale_bits_to_fp32(weight_scale, word="low32", zero_low_bits=13)
     unpacked_weight = _unpack_postloaded_w4_columns_zN(weight, output_columns)
     if half not in {"high", "low"}:
         raise ValueError(f"unsupported D2 half reference: {half}")
@@ -1007,7 +1006,15 @@ def _official_gmm2_d2_half_reference(
             "or peer-output routing."
         ),
         "weight_layout": "official postloaded W2 Catlass layout::zN::MakeLayout<int4b_t>",
-        "d2_storage": "float16_t per-channel Fixpipe output, compared after FP16 storage rounding and FP32 cast",
+        "d2_storage": (
+            "float16_t per-channel Fixpipe output using low32_trunc13(postloaded_weight_scale), compared after "
+            "FP16 nearest-even storage rounding and FP32 cast"
+        ),
+        "scale_contract": (
+            "CANN Fixpipe comments describe deq factor bits[31:13] as the FP32 deq value; Stage 2.2 raw D2 "
+            "readbacks matched exactly when the low 13 bits of the low32 scale word were zeroed before FP32 "
+            "reinterpretation."
+        ),
         "group_counts": counts,
         "diagnostic_only": (
             "Per-half D2 boundary comparator for isolating the official Fixpipe/FP16 rounding contract; "
@@ -1068,7 +1075,7 @@ def _official_gmm2_int32_accumulator_reference(
     }
 
 
-def _scale_bits_to_fp32(scale: torch.Tensor, *, word: str) -> torch.Tensor:
+def _scale_bits_to_fp32(scale: torch.Tensor, *, word: str, zero_low_bits: int = 0) -> torch.Tensor:
     scale_u64 = scale.detach().contiguous().cpu().numpy().astype(np.uint64, copy=False)
     if word == "low32":
         scale_u32 = (scale_u64 & np.uint64(0xFFFFFFFF)).astype(np.uint32, copy=False)
@@ -1076,6 +1083,11 @@ def _scale_bits_to_fp32(scale: torch.Tensor, *, word: str) -> torch.Tensor:
         scale_u32 = (scale_u64 >> np.uint64(32)).astype(np.uint32, copy=False)
     else:
         raise ValueError(f"unsupported scale word: {word}")
+    if zero_low_bits:
+        if zero_low_bits < 0 or zero_low_bits > 31:
+            raise ValueError(f"unsupported zero_low_bits: {zero_low_bits}")
+        mask = np.uint32((0xFFFFFFFF << zero_low_bits) & 0xFFFFFFFF)
+        scale_u32 = np.bitwise_and(scale_u32, mask)
     scale_fp32 = torch.from_numpy(scale_u32.view(np.float32).copy()).float()
     if scale_fp32.dim() == 3 and scale_fp32.shape[1] == 1:
         return scale_fp32[:, 0, :]
@@ -1134,6 +1146,7 @@ def _official_gmm2_d2_half_variant_diagnostics(
     unpacked_weight = _unpack_postloaded_w4_columns_zN(weight, output_columns)
     scale_variants = {
         "low32": _scale_bits_to_fp32(weight_scale, word="low32"),
+        "low32_trunc13": _scale_bits_to_fp32(weight_scale, word="low32", zero_low_bits=13),
         "low32_value_fp16": _scale_bits_to_fp32(weight_scale, word="low32").to(torch.float16).float(),
         "high32": _scale_bits_to_fp32(weight_scale, word="high32"),
     }
@@ -1220,6 +1233,7 @@ def _official_gmm2_post_dequant_variant_diagnostics(
     bias = scale_bias.detach().cpu().float().contiguous()
     scale_variants = {
         "low32": _scale_bits_to_fp32(weight_scale, word="low32"),
+        "low32_trunc13": _scale_bits_to_fp32(weight_scale, word="low32", zero_low_bits=13),
         "low32_value_fp16": _scale_bits_to_fp32(weight_scale, word="low32").to(torch.float16).float(),
         "high32": _scale_bits_to_fp32(weight_scale, word="high32"),
     }
@@ -1318,6 +1332,11 @@ def _official_gmm2_post_dequant_variant_diagnostics(
         },
         "scale_precision_candidates": {
             "low32": "float32 value reconstructed from the low 32 bits of the postloaded int64 scale word",
+            "low32_trunc13": (
+                "diagnostic-only candidate that zeroes the low 13 bits of the low32 FP32 scale word before "
+                "reinterpretation, tied to CANN Fixpipe comments that describe deq factor bits[31:13] as the "
+                "FP32 deq value"
+            ),
             "low32_value_fp16": (
                 "diagnostic-only candidate where that low32 value is first rounded to FP16, to test whether "
                 "the VDEQF16 boundary behaves as if the scale operand is narrowed before multiplication"
@@ -1505,6 +1524,7 @@ def _official_gmm2_actual_d2_from_accumulator_diagnostics(
     }
     scale_variants = {
         "low32": _scale_bits_to_fp32(weight_scale, word="low32"),
+        "low32_trunc13": _scale_bits_to_fp32(weight_scale, word="low32", zero_low_bits=13),
         "low32_value_fp16": _scale_bits_to_fp32(weight_scale, word="low32").to(torch.float16).float(),
         "high32": _scale_bits_to_fp32(weight_scale, word="high32"),
     }
@@ -1593,6 +1613,11 @@ def _official_gmm2_actual_d2_from_accumulator_diagnostics(
         },
         "scale_precision_candidates": {
             "low32": "float32 value reconstructed from the low 32 bits of the postloaded int64 scale word",
+            "low32_trunc13": (
+                "diagnostic-only candidate that zeroes the low 13 bits of the low32 FP32 scale word before "
+                "reinterpretation, tied to CANN Fixpipe comments that describe deq factor bits[31:13] as the "
+                "FP32 deq value"
+            ),
             "low32_value_fp16": (
                 "diagnostic-only candidate where that low32 value is first rounded to FP16, to test whether "
                 "the VDEQF16 boundary behaves as if the scale operand is narrowed before multiplication"
@@ -1799,7 +1824,7 @@ def _raw_c2_reference_with_unpacked_weight(
 ) -> torch.Tensor:
     row_count = min(int(x_high.shape[0]), int(x_low.shape[0]), int(max_rows))
     counts = _clip_group_counts_for_limit(expert_token_nums, row_count)
-    weight_scale_fp32 = _int64_float_bits_to_fp32(weight_scale)
+    weight_scale_fp32 = _scale_bits_to_fp32(weight_scale, word="low32", zero_low_bits=13)
 
     outputs: list[torch.Tensor] = []
     row_start = 0

@@ -783,7 +783,7 @@ def test_svdq_lowrank_debug_mmad_synchronizes_l0_reuse():
     assert "DrainMmadL0ReuseEvents();" not in process_block
     assert "SVDQOfficialBF16BlockMmad blockMmad(resource);" in fused
     assert "SVDQ_LOWRANK_BF16_RANK_N_TILE = 64" in fused
-    assert "SVDQLowRankBF16RankBlockMmad blockMmad(resource);" in fused
+    assert "SVDQLowRankBF16RankBlockMmad blockMmad(resource);" not in fused
     assert "stage.stageKind == SVDQ_LOWRANK_STAGE_DOWN_PROJECT" in fused
     assert "StageOutputColumnTile(stage)" in fused
     assert "RunOfficialOutputTileBF16(outputTilePlan, blockMmad)" in fused
@@ -2283,7 +2283,7 @@ def test_svdq_cann_lowrank_down_up_component_contract_is_wired():
     assert "ExecuteStage(stageIndex, coreIdx, scheduledCoreCount, resource)" in lowrank_header
     assert "SVDQOfficialBF16Resource resource;" in lowrank_header
     assert "SVDQOfficialBF16BlockMmad blockMmad(resource);" in lowrank_header
-    assert "SVDQLowRankBF16RankBlockMmad blockMmad(resource);" in lowrank_header
+    assert "SVDQLowRankBF16RankBlockMmad blockMmad(resource);" not in lowrank_header
     assert "stage.stageKind == SVDQ_LOWRANK_STAGE_DOWN_PROJECT" in lowrank_header
     assert "StageOutputColumnTile(stage)" in lowrank_header
     assert "SVDQOfficialBF16BlockScheduler blockScheduler;" in lowrank_header

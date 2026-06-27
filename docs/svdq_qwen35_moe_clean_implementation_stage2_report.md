@@ -4,14 +4,129 @@
 |---|---|---|
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
-| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Official-lifecycle loop/tile stats, Gate A, and accumulator Gate B now pass for top-1 expert 0; Gate C still fails strict post-dequant numerical tolerance. |
-| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 official GMM2 lifecycle and strict numerical gates. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | PASS | Single-device real-checkpoint official-lifecycle top-1 expert-0 probe passes Gate A, Gate B, C2V, and strict Gate C with max/mean abs `0.0`. |
+| Stage 2.3 same-routing two-stage composition | NEXT / IN PROGRESS | Now unblocked by Stage 2.2; must prove shared routed-row identity across W4A8 and SVDQ branches before final down/combine. |
+| Stage 2.4 and later | BLOCKED | Blocked on Stage 2.3 same-routing composition and later numerical gates. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
+
+## Stage 2.2 Trunc13 Fixpipe Reference Pass - 2026-06-27T02:35Z
+
+This section is the latest authoritative handoff. It supersedes the `2026-06-27T02:24Z` FP16-scale / ULP
+diagnostic by promoting the source-backed, real-device-proven Fixpipe scale contract into the strict Stage 2.2
+GMM2 unfused reference. Production remains fail-closed; Stage 2.3 same-routing composition is the next active gate.
+
+Baseline note:
+
+- The Stage 2 prompt names `/root/workspace/lza/svdq_qwen35_moe_clean_implementation_report_clarified_completed.md`
+  as the preferred handoff baseline, but that file is not present in the rebuilt environment. A `find` under
+  `/root/workspace/lza` found no clarified report. Current baseline therefore uses this Stage 2 report, the Stage 2
+  prompt, the main implementation prompt, and the current appendix constraints.
+
+Files changed:
+
+- `tools/svdq_w4a8_debug_readback_real_checkpoint_probe.py`
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+- `tools/svdq_kernel_contract_manifest.py`
+- `tests/ut/ops/test_svdq_moe_abi.py`
+- `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+
+Exact correction:
+
+- Added an optional `zero_low_bits` argument to `_int64_float_bits_to_fp32`.
+- Updated only GMM2 unfused and raw-C2 references to reinterpret the low 32 bits of the postloaded W4A8 scale after
+  zeroing the low 13 bits.
+- Left the GMM1 historical reference path unchanged to avoid reopening accepted GMM1 gates.
+- Updated local Stage 2.2 raw-D2 and layout diagnostics to use the same `low32_trunc13` scale contract.
+- Updated stale static low-rank ABI checks and manifest source proof to require the official BF16 `BlockMmad`
+  execution path, and to reject instantiating the older `SVDQLowRankBF16RankBlockMmad` path. This matches the
+  Appendix 5 official BF16 lifecycle direction and does not change kernel behavior.
+- Kept all device kernels, packed W4 layout, V2C/C2V flags, workspace offsets, tolerances, public grouped-matmul
+  avoidance, and production host tiling unchanged.
+
+Source-backed root cause:
+
+- CANN Fixpipe sources describe dequant factor bits `[31:13]` as the FP32 dequant value:
+  - `/usr/local/Ascend/cann-9.0.0/aarch64-linux/asc/impl/basic_api/dav_m300/kernel_operator_fixpipe_impl.h:226-229`
+  - `/usr/local/Ascend/cann-9.0.0/aarch64-linux/asc/impl/basic_api/dav_m300/kernel_operator_fixpipe_v2_impl.h:406-408`
+  - `/usr/local/Ascend/cann-9.0.0/aarch64-linux/asc/impl/basic_api/dav_c310/kernel_operator_fixpipe_impl.h:521-523`
+- The prior diagnostic run proved this was the missing Stage 2.2 contract detail:
+  `scale_low32_trunc13_fp16_nearest_even` matched both high and low actual D2 readbacks with max abs `0.0`, mean
+  abs `0.0`, and best-key failed count `0`.
+
+Validation commands:
+
+- Syntax and whitespace:
+  `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py tools/svdq_w4a8_debug_readback_real_checkpoint_probe.py`
+  `git diff --check -- tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py tools/svdq_w4a8_debug_readback_real_checkpoint_probe.py`
+- Focused static ABI regression:
+  `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q`
+  passed with `44 passed, 16 warnings`.
+- A first run of the same static ABI test failed on stale low-rank source checks that still required
+  `SVDQLowRankBF16RankBlockMmad blockMmad(resource);`. The source uses the accepted official BF16
+  `SVDQOfficialBF16BlockMmad blockMmad(resource);`; the tests and manifest proof were corrected to encode that
+  official lifecycle expectation.
+- Real-device preflight used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`; Python preflight reported four visible
+  Ascend910B4 logical devices and selected logical NPU 0.
+- Probe command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH:-} python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py --require-npu --top-k 1 --route-experts 0 --local-num-experts 8 --summary-name phase_stage2_gmm2_trunc13_reference_true_top1_expert0.json`
+
+Evidence paths:
+
+- NPU preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_trunc13_reference_preflight_npus.log`
+- Python logical-device preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_trunc13_reference_preflight_python.log`
+- Active process preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_trunc13_reference_preflight_processes.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_trunc13_reference_true_top1_expert0.log`
+- Probe exit code:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_trunc13_reference_true_top1_expert0.exitcode`
+  contains `0`.
+- Probe summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_trunc13_reference_true_top1_expert0.json`
+
+Validated status fields from `stage.checks`:
+
+- `gate_a_input_boundary_passed: true`
+- `official_gmm2_aic_raw_output_finite: true`
+- `official_gmm2_aic_raw_output_nonzero: true`
+- `official_gmm2_aic_reference_passed: true`
+- `official_gmm2_accumulator_int32_reference_passed: true`
+- `official_gmm2_c2v_handoff_verified: true`
+- `official_gmm2_post_dequant_finite: true`
+- `official_gmm2_post_dequant_nonzero: true`
+- `official_gmm2_post_dequant_reference_passed: true`
+- `official_gmm2_numerical_gate_passed: true`
+- `gmm2_reference_passed: true`
+- `official_gmm2_loop_stats_valid: true`
+- `official_gmm2_loop_count: 8`
+- `official_gmm2_active_tile_count: 8`
+- `official_gmm2_active_tile_count_nonzero: true`
+
+Numerical result:
+
+- Gate A: passes; hidden packed and hidden scale post-override readbacks are exact.
+- Gate B: passes; int32 accumulator is finite, nonzero, and exact against the integer reference.
+- Gate C: passes; post-dequant active shape `[16, 2048]`, finite/nonzero, NaN count `0`, Inf count `0`.
+- Strict unfused GMM2 reference error: max abs `0.0`, mean abs `0.0`, numel `32768`.
+- Contract formula recorded in the summary:
+  `fp16_nearest_even(high_acc * low32_trunc13(postloaded_weight_scale)) * 16 + fp16_nearest_even(low_acc * low32_trunc13(postloaded_weight_scale)) + scale_bias, then * hidden_x_scale`.
+
+Current interpretation:
+
+1. The previous Gate C failure was a host-reference mismatch at the official Fixpipe/D2 scale contract, not a device
+   GMM2, hidden packing, AIC/AIV lifecycle, C2V handoff, or BF16 producer failure.
+2. Stage 2.2 is now passed for the isolated single-device real-checkpoint top-1 expert-0 official-lifecycle probe.
+3. This pass does not complete Stage 2 overall: Stage 2.3 same-routing two-stage composition, final mixed down,
+   production fused-operator integration, and four-NPU E2E validation remain incomplete.
+4. Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed.
 
 ## Stage 2.2 FP16-Scale / ULP Diagnostic and Official-Path Table - 2026-06-27T02:24Z
 
-This section is the latest authoritative handoff. It supersedes the `2026-06-27T02:13Z` loop-stats section by
-adding the new mandatory official-path appendix requirements, an updated official-vs-debug state table for the
+Historical section. Superseded by the `2026-06-27T02:35Z` trunc13 Fixpipe reference pass.
+It previously superseded the `2026-06-27T02:13Z` loop-stats section by adding the new mandatory official-path
+appendix requirements, an updated official-vs-debug state table for the
 current normal official-lifecycle probe, and a fresh real-device run from the exact probe code now in the tree.
 No kernel behavior, V2C/C2V flag, workspace offset, packed W4 layout, production host tiling, tolerance, or public
 `torch_npu.npu_grouped_matmul` path was changed.

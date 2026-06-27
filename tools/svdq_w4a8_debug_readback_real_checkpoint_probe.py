@@ -208,8 +208,13 @@ def _tensor_error(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, Any
     }
 
 
-def _int64_float_bits_to_fp32(scale: torch.Tensor) -> torch.Tensor:
+def _int64_float_bits_to_fp32(scale: torch.Tensor, *, zero_low_bits: int = 0) -> torch.Tensor:
     scale_cpu = scale.detach().contiguous().cpu().numpy().astype(np.uint64).astype(np.uint32)
+    if zero_low_bits:
+        if zero_low_bits < 0 or zero_low_bits > 31:
+            raise ValueError(f"unsupported zero_low_bits: {zero_low_bits}")
+        mask = np.uint32((0xFFFFFFFF << zero_low_bits) & 0xFFFFFFFF)
+        scale_cpu = np.bitwise_and(scale_cpu, mask)
     scale_fp32 = torch.from_numpy(scale_cpu.view(np.float32).copy()).float()
     if scale_fp32.dim() == 3 and scale_fp32.shape[1] == 1:
         return scale_fp32[:, 0, :]
@@ -372,7 +377,7 @@ def _official_gmm2_unfused_reference(
     counts = _clip_group_counts(expert_token_nums, row_count)
     x_high, x_low = _official_packed_i4_hidden_to_parts(hidden_x_int4_packed[:row_count])
     per_token_scale = hidden_x_scale[:row_count].detach().cpu().float()
-    weight_scale_fp32 = _int64_float_bits_to_fp32(weight_scale)
+    weight_scale_fp32 = _int64_float_bits_to_fp32(weight_scale, zero_low_bits=13)
     bias = scale_bias.detach().cpu().float().contiguous()
     unpacked_weight = _unpack_postloaded_w4_columns_zN(weight, output_columns)
 
@@ -402,8 +407,14 @@ def _official_gmm2_unfused_reference(
         ),
         "weight_layout": "postloaded W4 weight interpreted with Catlass layout::zN::MakeLayout<int4b_t>",
         "epilogue_formula": (
-            "fp16(high_acc * postloaded_weight_scale) * 16 + "
-            "fp16(low_acc * postloaded_weight_scale) + scale_bias, then * hidden_x_scale"
+            "fp16_nearest_even(high_acc * low32_trunc13(postloaded_weight_scale)) * 16 + "
+            "fp16_nearest_even(low_acc * low32_trunc13(postloaded_weight_scale)) + scale_bias, "
+            "then * hidden_x_scale"
+        ),
+        "scale_contract": (
+            "CANN Fixpipe comments describe deq factor bits[31:13] as the FP32 deq value; "
+            "Stage 2.2 raw D2 readbacks matched exactly when the low 13 bits of the low32 scale word "
+            "were zeroed before FP32 reinterpretation."
         ),
         "compared_rows": int(reference.shape[0]),
         "group_counts": counts.tolist(),
@@ -423,7 +434,7 @@ def _official_gmm2_raw_c2_reference(
     row_count = min(int(hidden_x_int4_packed.shape[0]), int(max_rows))
     counts = _clip_group_counts(expert_token_nums, row_count)
     x_high, x_low = _official_packed_i4_hidden_to_parts(hidden_x_int4_packed[:row_count])
-    weight_scale_fp32 = _int64_float_bits_to_fp32(weight_scale)
+    weight_scale_fp32 = _int64_float_bits_to_fp32(weight_scale, zero_low_bits=13)
     unpacked_weight = _unpack_postloaded_w4_columns_zN(weight, output_columns)
 
     outputs: list[torch.Tensor] = []
@@ -449,9 +460,14 @@ def _official_gmm2_raw_c2_reference(
             "official GMM2 reads prepacked hidden INT4 high-half bytes and low-half bytes from gmA2I4_I8"
         ),
         "weight_layout": "postloaded W4 weight interpreted with Catlass layout::zN::MakeLayout<int4b_t>",
+        "scale_contract": (
+            "CANN Fixpipe bits[31:13] FP32 deq contract; low 13 bits of the low32 postloaded scale word "
+            "are zeroed before FP32 reinterpretation for GMM2 D2 comparison."
+        ),
         "raw_c2_formula": (
-            "fp16(high_acc * postloaded_weight_scale) * 16 + "
-            "fp16(low_acc * postloaded_weight_scale), matching GMM2 Fixpipe float16 D2 storage "
+            "fp16_nearest_even(high_acc * low32_trunc13(postloaded_weight_scale)) * 16 + "
+            "fp16_nearest_even(low_acc * low32_trunc13(postloaded_weight_scale)), "
+            "matching GMM2 Fixpipe float16 D2 storage "
             "before scale_bias, hidden_x_scale, BF16 cast, or peer-output routing"
         ),
         "compared_rows": int(reference.shape[0]),
