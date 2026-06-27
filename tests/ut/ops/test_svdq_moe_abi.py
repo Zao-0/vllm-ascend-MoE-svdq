@@ -1632,6 +1632,11 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     assert "ResidualW4A8BridgeTiling() const" in contract
     assert "return tilingData_.residualW4A8Bridge" in contract
     assert "ResidualGmmOfficialTilingBridgeReady(uint32_t stageId) const" in contract
+    assert "struct SVDQOfficialW4A8FullLifecycleLaunch" in contract
+    assert "GM_ADDR tiling;" in contract
+    assert "runtime_.tiling = tilingGM" in contract
+    assert "BuildOfficialW4A8FullLifecycleLaunch() const" in contract
+    assert "OfficialW4A8FullLifecycleLaunchReady(uint32_t stageId) const" in contract
     assert "RunResidualDynamicQuantStage(uint32_t stageId)" in contract
     assert "RunResidualGmmStage(uint32_t stageId)" in contract
     assert "RunResidualStage(uint32_t stageId)" in contract
@@ -1849,6 +1854,12 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         "launch.k == bridge.officialK && launch.n == bridge.officialN",
         "stageId == SVDQ_RESIDUAL_STAGE_W4A8_GMM2",
         "launch.k == bridge.officialN / 2 && launch.n == bridge.officialK",
+        "runtime_.x, runtime_.residual.w1, runtime_.residual.w2, runtime_.expertId",
+        "runtime_.residual.scale1, runtime_.residual.scale2, runtime_.residual.bias1",
+        "runtime_.probs, runtime_.xActiveMask, runtime_.out, runtime_.expertTokenNums",
+        "runtime_.tiling, nullptr, true, true, true",
+        "launch.officialTiling != nullptr",
+        "launch.requiresOfficialWrapper && launch.requiresFullAicAivLifecycle",
     ):
         assert token in gmm_ready_source
 
@@ -1859,8 +1870,9 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     ]
     for token in (
         "plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM",
-        "!ResidualGmmOfficialTilingBridgeReady(stageId)",
-        "Execution remains fail-closed until this bridge directly reuses the official W4A8 AIC/AIV lifecycle.",
+        "!OfficialW4A8FullLifecycleLaunchReady(stageId)",
+        "Execution remains fail-closed until this bridge passes an embedded official tiling pointer",
+        "to the official DispatchFFNCombineW4A8 wrapper and validates fused production numerics.",
         "return false;",
     ):
         assert token in gmm_execution_source
@@ -2947,6 +2959,8 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["residual_gmm_official_bridge_contract_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_official_tiling_bridge_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_official_tiling_bridge_consumed"]
+    assert loaded["production_fail_closed"]["residual_gmm_official_full_lifecycle_call_surface_recorded"]
+    assert not loaded["production_fail_closed"]["residual_gmm_official_full_lifecycle_execution_enabled"]
     assert not loaded["production_fail_closed"]["residual_gmm_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_gmm_scalar_helpers_absent"]
     assert loaded["production_fail_closed"]["mixed_epilogue_launch_descriptor_recorded"]
@@ -2998,6 +3012,8 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_residual_gmm_official_bridge_contract_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_official_tiling_bridge_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_official_tiling_bridge_consumed"]
+    assert loaded["source_proof"]["kernel_residual_gmm_official_full_lifecycle_call_surface_recorded"]
+    assert not loaded["source_proof"]["kernel_residual_gmm_official_full_lifecycle_execution_enabled"]
     assert not loaded["source_proof"]["kernel_residual_gmm_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_gmm_scalar_helpers_absent"]
     assert loaded["source_proof"]["kernel_residual_routed_input_quant_execution_enabled"]
@@ -3135,6 +3151,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     }
     expected_false_source_proofs = {
         "host_tiling_graph_success_enabled",
+        "kernel_residual_gmm_official_full_lifecycle_execution_enabled",
         "kernel_residual_gmm_scalar_execution_enabled",
         "kernel_residual_hidden_quant_scalar_execution_enabled",
         "kernel_mixed_output_epilogue_scalar_execution_enabled",

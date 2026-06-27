@@ -9,6 +9,36 @@
 | Stage 2.4 production/four-NPU admission | IN PROGRESS | Production residual W4A8 GMM execution and four-NPU target-model E2E validation remain open. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Production enable remains false and host tiling must remain fail-closed. |
 
+## Stage 2.4 Official W4A8 Full-Lifecycle Call Surface Recorded - 2026-06-27
+
+Purpose:
+
+- Added a production SVDQ kernel descriptor for the exact official `DispatchFFNCombineW4A8` full-lifecycle call
+  surface: `x`, residual `w1/w2`, residual scales/biases, `expertId`, `probs`, `xActiveMask`, `out`,
+  `expertTokenNums`, workspace, the SVDQ tiling pointer, and a future embedded official W4A8 tiling pointer.
+- `runtime_.tiling` now preserves the production SVDQ `tilingGM` pointer so the eventual official-wrapper bridge can
+  derive or pass the correct official tiling data instead of reconstructing state from names.
+- The official lifecycle readiness check deliberately requires `launch.officialTiling != nullptr`; today that pointer is
+  still null, so residual W4A8 GMM execution remains disabled. This records the next concrete implementation boundary:
+  pass an embedded official `DispatchFFNCombineW4A8TilingData` GM pointer to the official wrapper and validate fused
+  production numerics.
+
+Machine-checkable source constraints:
+
+- `source_proof.kernel_residual_gmm_official_full_lifecycle_call_surface_recorded=true`
+- `source_proof.kernel_residual_gmm_official_full_lifecycle_execution_enabled=false`
+- `production_fail_closed.residual_gmm_official_full_lifecycle_call_surface_recorded=true`
+- `production_fail_closed.residual_gmm_official_full_lifecycle_execution_enabled=false`
+- `production_fail_closed.residual_gmm_execution_enabled=false`
+- `production_admission.remaining_execution_requirements.residual_w4a8_gmm_execution_enabled=false`
+- `production_admission.production_enable_allowed=false`
+
+Validation for this edit:
+
+- `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q`
+- `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+
 ## Stage 2.4 Host Tiling Metadata Build Before Fail-Closed Return - 2026-06-27
 
 Purpose:

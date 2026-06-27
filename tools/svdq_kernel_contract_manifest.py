@@ -1011,7 +1011,9 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "bridge.producesBF16Residual && launch.weightNz && launch.residualOnly" in sources[
                 "kernel_contract"
             ]
-            and "Execution remains fail-closed until this bridge directly reuses the official W4A8 AIC/AIV lifecycle."
+            and "Execution remains fail-closed until this bridge passes an embedded official tiling pointer"
+            in sources["kernel_contract"]
+            and "to the official DispatchFFNCombineW4A8 wrapper and validates fused production numerics."
             in sources["kernel_contract"]
         ),
         "kernel_residual_gmm_official_tiling_bridge_recorded": (
@@ -1054,9 +1056,39 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "launch.k == bridge.officialK && launch.n == bridge.officialN" in sources["kernel_contract"]
             and "stageId == SVDQ_RESIDUAL_STAGE_W4A8_GMM2" in sources["kernel_contract"]
             and "launch.k == bridge.officialN / 2 && launch.n == bridge.officialK" in sources["kernel_contract"]
-            and "!ResidualGmmOfficialTilingBridgeReady(stageId)" in sources["kernel_contract"]
-            and "Execution remains fail-closed until this bridge directly reuses the official W4A8 AIC/AIV lifecycle."
+            and "OfficialW4A8FullLifecycleLaunchReady(uint32_t stageId) const" in sources["kernel_contract"]
+            and "!OfficialW4A8FullLifecycleLaunchReady(stageId)" in sources["kernel_contract"]
+            and "Execution remains fail-closed until this bridge passes an embedded official tiling pointer"
             in sources["kernel_contract"]
+            and "to the official DispatchFFNCombineW4A8 wrapper and validates fused production numerics."
+            in sources["kernel_contract"]
+        ),
+        "kernel_residual_gmm_official_full_lifecycle_call_surface_recorded": (
+            "GM_ADDR tiling;" in sources["kernel_contract"]
+            and "runtime_.tiling = tilingGM" in sources["kernel_contract"]
+            and "struct SVDQOfficialW4A8FullLifecycleLaunch" in sources["kernel_contract"]
+            and "BuildOfficialW4A8FullLifecycleLaunch() const" in sources["kernel_contract"]
+            and "runtime_.x, runtime_.residual.w1, runtime_.residual.w2, runtime_.expertId" in sources[
+                "kernel_contract"
+            ]
+            and "runtime_.residual.scale1, runtime_.residual.scale2" in sources["kernel_contract"]
+            and "runtime_.residual.bias1, runtime_.residual.bias2" in sources["kernel_contract"]
+            and "runtime_.probs, runtime_.xActiveMask, runtime_.out, runtime_.expertTokenNums" in sources[
+                "kernel_contract"
+            ]
+            and "runtime_.tiling, nullptr, true, true, true" in sources["kernel_contract"]
+            and "launch.requiresOfficialWrapper && launch.requiresFullAicAivLifecycle" in sources[
+                "kernel_contract"
+            ]
+        ),
+        "kernel_residual_gmm_official_full_lifecycle_execution_enabled": (
+            "DispatchFFNCombineW4A8<DTYPE_A, DTYPE_W1, DTYPE_OUT, false, true> op" in sources[
+                "kernel_contract"
+            ]
+            and "op.Init(launch.x, launch.w1, launch.w2" in sources["kernel_contract"]
+            and "op.Process()" in sources["kernel_contract"]
+            and "launch.officialTiling != nullptr" in sources["kernel_contract"]
+            and "return true;" in sources["kernel_contract"]
         ),
         "kernel_residual_gmm_scalar_execution_enabled": (
             "return RunResidualPackedW4A8ScalarGmmStage(launch);" in sources["kernel_contract"]
@@ -1793,6 +1825,7 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
                 "host_tiling_graph_success_enabled",
                 "kernel_residual_gmm_scalar_execution_enabled",
                 "kernel_residual_hidden_quant_scalar_execution_enabled",
+                "kernel_residual_gmm_official_full_lifecycle_execution_enabled",
                 "kernel_mixed_output_epilogue_scalar_execution_enabled",
                 "kernel_mixed_swiglu_epilogue_scalar_execution_enabled",
                 "kernel_final_combine_scalar_execution_enabled",
@@ -2448,8 +2481,14 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
             "residual_gmm_official_tiling_bridge_consumed": source_proof[
                 "kernel_residual_gmm_official_tiling_bridge_consumed"
             ],
+            "residual_gmm_official_full_lifecycle_call_surface_recorded": source_proof[
+                "kernel_residual_gmm_official_full_lifecycle_call_surface_recorded"
+            ],
+            "residual_gmm_official_full_lifecycle_execution_enabled": source_proof[
+                "kernel_residual_gmm_official_full_lifecycle_execution_enabled"
+            ],
             "residual_gmm_execution_enabled": source_proof[
-                "kernel_residual_gmm_scalar_execution_enabled"
+                "kernel_residual_gmm_official_full_lifecycle_execution_enabled"
             ],
             "residual_gmm_scalar_helpers_absent": source_proof[
                 "kernel_residual_gmm_scalar_helpers_absent"
@@ -2509,7 +2548,7 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
                     "kernel_residual_hidden_quant_aiv_execution_enabled"
                 ],
                 "residual_w4a8_gmm_execution_enabled": source_proof[
-                    "kernel_residual_gmm_scalar_execution_enabled"
+                    "kernel_residual_gmm_official_full_lifecycle_execution_enabled"
                 ],
                 "mixed_swiglu_epilogue_execution_enabled": source_proof[
                     "kernel_mixed_swiglu_epilogue_aiv_execution_enabled"

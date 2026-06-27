@@ -147,6 +147,7 @@ struct SVDQRuntimeGM {
     GM_ADDR out;
     GM_ADDR expertTokenNums;
     GM_ADDR workspace;
+    GM_ADDR tiling;
     SVDQResidualGM residual;
     SVDQFactorGM factors;
 };
@@ -272,6 +273,27 @@ struct SVDQResidualGmmOfficialBridgeContract {
     bool producesBF16Residual;
 };
 
+struct SVDQOfficialW4A8FullLifecycleLaunch {
+    GM_ADDR x;
+    GM_ADDR w1;
+    GM_ADDR w2;
+    GM_ADDR expertId;
+    GM_ADDR scale1;
+    GM_ADDR scale2;
+    GM_ADDR bias1;
+    GM_ADDR bias2;
+    GM_ADDR probs;
+    GM_ADDR xActiveMask;
+    GM_ADDR out;
+    GM_ADDR expertTokenNums;
+    GM_ADDR workspace;
+    GM_ADDR svdqTiling;
+    GM_ADDR officialTiling;
+    bool requiresOfficialWrapper;
+    bool requiresFullAicAivLifecycle;
+    bool executionFailClosed;
+};
+
 struct SVDQMixedEpilogueContract {
     uint32_t stageId;
     uint32_t residualRegionId;
@@ -344,6 +366,7 @@ public:
         runtime_.out = out;
         runtime_.expertTokenNums = expertTokenNums;
         runtime_.workspace = workspaceGM;
+        runtime_.tiling = tilingGM;
         runtime_.residual.w1 = w1;
         runtime_.residual.w2 = w2;
         runtime_.residual.scale1 = scale1;
@@ -1018,6 +1041,28 @@ public:
             stageShapeMatchesOfficial && launch.listLen == bridge.officialListLen;
     }
 
+    __aicore__ inline SVDQOfficialW4A8FullLifecycleLaunch BuildOfficialW4A8FullLifecycleLaunch() const
+    {
+        return {runtime_.x, runtime_.residual.w1, runtime_.residual.w2, runtime_.expertId,
+            runtime_.residual.scale1, runtime_.residual.scale2, runtime_.residual.bias1, runtime_.residual.bias2,
+            runtime_.probs, runtime_.xActiveMask, runtime_.out, runtime_.expertTokenNums, runtime_.workspace,
+            runtime_.tiling, nullptr, true, true, true};
+    }
+
+    __aicore__ inline bool OfficialW4A8FullLifecycleLaunchReady(uint32_t stageId) const
+    {
+        if (!ResidualGmmOfficialTilingBridgeReady(stageId)) {
+            return false;
+        }
+        SVDQOfficialW4A8FullLifecycleLaunch launch = BuildOfficialW4A8FullLifecycleLaunch();
+        return launch.x != nullptr && launch.w1 != nullptr && launch.w2 != nullptr &&
+               launch.expertId != nullptr && launch.scale1 != nullptr && launch.scale2 != nullptr &&
+               launch.bias1 != nullptr && launch.bias2 != nullptr && launch.probs != nullptr &&
+               launch.xActiveMask != nullptr && launch.out != nullptr && launch.expertTokenNums != nullptr &&
+               launch.workspace != nullptr && launch.svdqTiling != nullptr && launch.officialTiling != nullptr &&
+               launch.requiresOfficialWrapper && launch.requiresFullAicAivLifecycle && launch.executionFailClosed;
+    }
+
     __aicore__ inline void CopyInResidualQuantBf16(LocalTensor<bfloat16_t> dst,
         const GlobalTensor<bfloat16_t>& src, uint32_t offset, uint32_t count) const
     {
@@ -1259,10 +1304,11 @@ public:
     {
         SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
         if (plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM ||
-            !ResidualGmmOfficialTilingBridgeReady(stageId)) {
+            !OfficialW4A8FullLifecycleLaunchReady(stageId)) {
             return false;
         }
-        // Execution remains fail-closed until this bridge directly reuses the official W4A8 AIC/AIV lifecycle.
+        // Execution remains fail-closed until this bridge passes an embedded official tiling pointer
+        // to the official DispatchFFNCombineW4A8 wrapper and validates fused production numerics.
         return false;
     }
 
