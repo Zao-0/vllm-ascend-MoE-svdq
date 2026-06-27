@@ -9,6 +9,33 @@
 | Stage 2.4 production/four-NPU admission | IN PROGRESS | Production residual W4A8 GMM execution and four-NPU target-model E2E validation remain open. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Production enable remains false and host tiling must remain fail-closed. |
 
+## Stage 2.4 Official W4A8 FP32 Tap Destinations Recorded - 2026-06-27
+
+Purpose:
+
+- Extended the production SVDQ official-W4A8 launch descriptor with the stage boundaries required by the mixed AIVs:
+  `gmm1PostDequantFp32`, `gmm2PostDequantFp32`, `externalHiddenPacked`, and `externalHiddenScale`.
+- Bound the FP32 post-dequant destinations to `SVDQ_REGION_ACCUMULATOR_1` and `SVDQ_REGION_ACCUMULATOR_2`, and bound
+  the SVDQ hidden boundary to `SVDQ_REGION_HIDDEN_Q` and `SVDQ_REGION_HIDDEN_SCALE`.
+- Renamed the residual bridge contract from `producesBF16Residual` to `producesFP32Residual`, matching the official
+  W4A8 `ptrDebugGMM1` / `ptrDebugGMM2` post-dequant tap contract and the mixed AIV FP32 input contract.
+- Production residual W4A8 GMM execution remains disabled. The descriptor records the required official tap wiring, but
+  `RunResidualGmmStage` still returns `false` until an official producer path can write those FP32 taps while consuming
+  the SVDQ hidden boundary and without accepting the ordinary W4A8 final-combine output as the fused SVDQ result.
+
+Machine-checkable source constraints:
+
+- `source_proof.kernel_residual_gmm_official_bridge_contract_recorded=true`
+- `source_proof.kernel_residual_gmm_official_full_lifecycle_call_surface_recorded=true`
+- `source_proof.kernel_residual_gmm_official_full_lifecycle_execution_enabled=false`
+- `production_fail_closed.residual_gmm_execution_enabled=false`
+- `production_admission.production_enable_allowed=false`
+
+Validation for this edit:
+
+- `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q`
+
 ## Stage 2.4 Mixed AIV FP32 Residual Boundary - 2026-06-27
 
 Purpose:

@@ -1634,6 +1634,14 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     assert "ResidualGmmOfficialTilingBridgeReady(uint32_t stageId) const" in contract
     assert "struct SVDQOfficialW4A8FullLifecycleLaunch" in contract
     assert "GM_ADDR tiling;" in contract
+    assert "GM_ADDR gmm1PostDequantFp32;" in contract
+    assert "GM_ADDR gmm2PostDequantFp32;" in contract
+    assert "GM_ADDR externalHiddenPacked;" in contract
+    assert "GM_ADDR externalHiddenScale;" in contract
+    assert "usesOfficialGmm1Fp32Tap" in contract
+    assert "usesOfficialGmm2Fp32Tap" in contract
+    assert "usesSvdqHiddenPackedBoundary" in contract
+    assert "requiresNoOrdinaryW4A8FinalCombine" in contract
     assert "runtime_.tiling = tilingGM" in contract
     assert "EmbeddedOfficialW4A8TilingGM() const" in contract
     assert "reinterpret_cast<__gm__ DispatchFFNCombineW4A8SVDQTilingData*>(runtime_.tiling)" in contract
@@ -1846,7 +1854,7 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         "SVDQ_REGION_ACCUMULATOR_2, true, true, true, true, true",
         "bridge.requiresPackedW4Weights && bridge.requiresOfficialAicAccumulator",
         "bridge.requiresOfficialC2VHandoff && bridge.requiresOfficialAivDequant",
-        "bridge.producesBF16Residual && launch.weightNz && launch.residualOnly",
+        "bridge.producesFP32Residual && launch.weightNz && launch.residualOnly",
         "SVDQResidualW4A8BridgeTiling bridge = ResidualW4A8BridgeTiling()",
         "DispatchFFNCombineW4A8Info officialInfo = bridge.officialTiling.dispatchFFNCombineW4A8Info",
         "bridge.officialK == tilingData_.info.hiddenSize",
@@ -1862,10 +1870,16 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         "runtime_.x, runtime_.residual.w1, runtime_.residual.w2, runtime_.expertId",
         "runtime_.residual.scale1, runtime_.residual.scale2, runtime_.residual.bias1",
         "runtime_.probs, runtime_.xActiveMask, runtime_.out, runtime_.expertTokenNums",
-        "runtime_.tiling, EmbeddedOfficialW4A8TilingGM(), true, true, true",
+        "runtime_.tiling, EmbeddedOfficialW4A8TilingGM(), WorkspaceAddress(SVDQ_REGION_ACCUMULATOR_1)",
+        "WorkspaceAddress(SVDQ_REGION_ACCUMULATOR_2), WorkspaceAddress(SVDQ_REGION_HIDDEN_Q)",
+        "WorkspaceAddress(SVDQ_REGION_HIDDEN_SCALE), true, true, true, true, true, true, true",
         "launch.officialTiling != nullptr",
+        "launch.gmm1PostDequantFp32 != nullptr && launch.gmm2PostDequantFp32 != nullptr",
+        "launch.externalHiddenPacked != nullptr && launch.externalHiddenScale != nullptr",
         "OfficialW4A8WrapperTypeBound()",
         "launch.requiresOfficialWrapper && launch.requiresFullAicAivLifecycle",
+        "launch.usesOfficialGmm1Fp32Tap && launch.usesOfficialGmm2Fp32Tap",
+        "launch.usesSvdqHiddenPackedBoundary && launch.requiresNoOrdinaryW4A8FinalCombine",
     ):
         assert token in gmm_ready_source
 
@@ -1877,8 +1891,9 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
     for token in (
         "plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM",
         "!OfficialW4A8FullLifecycleLaunchReady(stageId)",
-        "Execution remains fail-closed until this bridge passes an embedded official tiling pointer",
-        "to the official DispatchFFNCombineW4A8 wrapper and validates fused production numerics.",
+        "Execution remains fail-closed until the official GMM1/GMM2 FP32 tap destinations are passed",
+        "to an official W4A8 producer path that consumes the SVDQ hidden boundary without accepting",
+        "the ordinary W4A8 final-combine output as the fused SVDQ result.",
         "return false;",
     ):
         assert token in gmm_execution_source

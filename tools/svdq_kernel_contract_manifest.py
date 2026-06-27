@@ -1008,12 +1008,14 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "bridge.requiresOfficialC2VHandoff && bridge.requiresOfficialAivDequant" in sources[
                 "kernel_contract"
             ]
-            and "bridge.producesBF16Residual && launch.weightNz && launch.residualOnly" in sources[
+            and "bridge.producesFP32Residual && launch.weightNz && launch.residualOnly" in sources[
                 "kernel_contract"
             ]
-            and "Execution remains fail-closed until this bridge passes an embedded official tiling pointer"
+            and "Execution remains fail-closed until the official GMM1/GMM2 FP32 tap destinations are passed"
             in sources["kernel_contract"]
-            and "to the official DispatchFFNCombineW4A8 wrapper and validates fused production numerics."
+            and "to an official W4A8 producer path that consumes the SVDQ hidden boundary without accepting"
+            in sources["kernel_contract"]
+            and "the ordinary W4A8 final-combine output as the fused SVDQ result."
             in sources["kernel_contract"]
         ),
         "kernel_residual_gmm_official_tiling_bridge_recorded": (
@@ -1058,13 +1060,23 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "launch.k == bridge.officialN / 2 && launch.n == bridge.officialK" in sources["kernel_contract"]
             and "OfficialW4A8FullLifecycleLaunchReady(uint32_t stageId) const" in sources["kernel_contract"]
             and "!OfficialW4A8FullLifecycleLaunchReady(stageId)" in sources["kernel_contract"]
-            and "Execution remains fail-closed until this bridge passes an embedded official tiling pointer"
+            and "Execution remains fail-closed until the official GMM1/GMM2 FP32 tap destinations are passed"
             in sources["kernel_contract"]
-            and "to the official DispatchFFNCombineW4A8 wrapper and validates fused production numerics."
+            and "to an official W4A8 producer path that consumes the SVDQ hidden boundary without accepting"
+            in sources["kernel_contract"]
+            and "the ordinary W4A8 final-combine output as the fused SVDQ result."
             in sources["kernel_contract"]
         ),
         "kernel_residual_gmm_official_full_lifecycle_call_surface_recorded": (
             "GM_ADDR tiling;" in sources["kernel_contract"]
+            and "GM_ADDR gmm1PostDequantFp32;" in sources["kernel_contract"]
+            and "GM_ADDR gmm2PostDequantFp32;" in sources["kernel_contract"]
+            and "GM_ADDR externalHiddenPacked;" in sources["kernel_contract"]
+            and "GM_ADDR externalHiddenScale;" in sources["kernel_contract"]
+            and "usesOfficialGmm1Fp32Tap" in sources["kernel_contract"]
+            and "usesOfficialGmm2Fp32Tap" in sources["kernel_contract"]
+            and "usesSvdqHiddenPackedBoundary" in sources["kernel_contract"]
+            and "requiresNoOrdinaryW4A8FinalCombine" in sources["kernel_contract"]
             and "../../dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h" in sources[
                 "kernel_contract"
             ]
@@ -1088,8 +1100,23 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "runtime_.probs, runtime_.xActiveMask, runtime_.out, runtime_.expertTokenNums" in sources[
                 "kernel_contract"
             ]
-            and "runtime_.tiling, EmbeddedOfficialW4A8TilingGM(), true, true, true" in sources["kernel_contract"]
+            and "runtime_.tiling, EmbeddedOfficialW4A8TilingGM(), WorkspaceAddress(SVDQ_REGION_ACCUMULATOR_1)"
+            in sources["kernel_contract"]
+            and "WorkspaceAddress(SVDQ_REGION_ACCUMULATOR_2), WorkspaceAddress(SVDQ_REGION_HIDDEN_Q)"
+            in sources["kernel_contract"]
+            and "WorkspaceAddress(SVDQ_REGION_HIDDEN_SCALE), true, true, true, true, true, true, true"
+            in sources["kernel_contract"]
+            and "launch.gmm1PostDequantFp32 != nullptr && launch.gmm2PostDequantFp32 != nullptr"
+            in sources["kernel_contract"]
+            and "launch.externalHiddenPacked != nullptr && launch.externalHiddenScale != nullptr"
+            in sources["kernel_contract"]
             and "OfficialW4A8WrapperTypeBound()" in sources["kernel_contract"]
+            and "launch.usesOfficialGmm1Fp32Tap && launch.usesOfficialGmm2Fp32Tap" in sources[
+                "kernel_contract"
+            ]
+            and "launch.usesSvdqHiddenPackedBoundary && launch.requiresNoOrdinaryW4A8FinalCombine" in sources[
+                "kernel_contract"
+            ]
             and "launch.requiresOfficialWrapper && launch.requiresFullAicAivLifecycle" in sources[
                 "kernel_contract"
             ]
