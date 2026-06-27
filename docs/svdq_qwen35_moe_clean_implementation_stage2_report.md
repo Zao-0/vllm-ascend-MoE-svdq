@@ -119,9 +119,9 @@ Purpose:
 
 Official source locations:
 
-- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h:220-233`:
-  `InitGMM2OnlyFromPacked` calls full `Init(...)`, stores external hidden/scale pointers, and currently sets
-  `gmm2OnlyFromPacked_ = false`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h:227-255`:
+  `InitFullLifecycleWithExternalGMM2Hidden` calls full `Init(...)`, stores external hidden/scale pointers, and sets
+  `gmm2OnlyFromPacked_ = false`; `InitGMM2OnlyFromPacked` remains as a compatibility alias.
 - `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8.h:327-348`: the wrapper constructs
   official layouts and launches `DispatchFFNCombineW4A8Kernel`.
 - `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:248-275`: AIC runs
@@ -160,8 +160,9 @@ Official source locations:
 
 Explicit official-vs-current-debug deviations:
 
-- The debug op name still says `GMM2OnlyFromPacked`, but the current authoritative mode is full official
-  `DispatchAndCombine` lifecycle with `gmm2OnlyFromPacked_ = false`.
+- The debug op name still says `GMM2DebugReadback`, and its kernel now calls
+  `InitFullLifecycleWithExternalGMM2Hidden`; the current authoritative mode is full official `DispatchAndCombine`
+  lifecycle with `gmm2OnlyFromPacked_ = false`.
 - Only `gmA2I4_I8` and `gmPerTokenScale2` are overlaid from validated SVDQ hidden tensors; token state, C2V/V2C,
   GMM2 AIC, D2, `BlockEpilogue2`, `CombineV2`, and final drain remain official.
 - The isolated debug path may expose FP32 and int32 readbacks. Production `DispatchFFNCombineW4A8SVDQ` does not consume

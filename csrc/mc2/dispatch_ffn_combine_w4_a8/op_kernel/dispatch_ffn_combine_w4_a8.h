@@ -70,6 +70,13 @@ public:
         GM_ADDR externalHiddenScaleGM, GM_ADDR externalExpertTokenNumsGM, GM_ADDR debugGMM2GM,
         GM_ADDR debugHiddenXGM = nullptr, GM_ADDR debugHiddenScaleGM = nullptr,
         GM_ADDR debugGMM2AccumulatorGM = nullptr);
+    __aicore__ inline void InitFullLifecycleWithExternalGMM2Hidden(
+        GM_ADDR xGM, GM_ADDR weight1GM, GM_ADDR weight2GM, GM_ADDR expertIdGM, GM_ADDR scale1GM, GM_ADDR scale2GM,
+        GM_ADDR bias1GM, GM_ADDR bias2GM, GM_ADDR probs, GM_ADDR xActiveMaskGM, GM_ADDR outGM,
+        GM_ADDR expertTokenNums, GM_ADDR workspaceGM, GM_ADDR tilingGM, GM_ADDR externalHiddenXGM,
+        GM_ADDR externalHiddenScaleGM, GM_ADDR externalExpertTokenNumsGM, GM_ADDR debugGMM2GM,
+        GM_ADDR debugHiddenXGM = nullptr, GM_ADDR debugHiddenScaleGM = nullptr,
+        GM_ADDR debugGMM2AccumulatorGM = nullptr);
     __aicore__ inline void Process();
 
 
@@ -218,6 +225,20 @@ __aicore__ inline void DispatchFFNCombineW4A8<TemplateMMA2ACFunc>::Init(GM_ADDR 
 
 template <TemplateMMA2AClass>
 __aicore__ inline void DispatchFFNCombineW4A8<TemplateMMA2ACFunc>::InitGMM2OnlyFromPacked(
+    GM_ADDR xGM, GM_ADDR weight1GM, GM_ADDR weight2GM, GM_ADDR expertIdGM, GM_ADDR scale1GM, GM_ADDR scale2GM,
+    GM_ADDR bias1GM, GM_ADDR bias2GM, GM_ADDR probs, GM_ADDR xActiveMaskGM, GM_ADDR outGM, GM_ADDR expertTokenNums,
+    GM_ADDR workspaceGM, GM_ADDR tilingGM, GM_ADDR externalHiddenXGM, GM_ADDR externalHiddenScaleGM,
+    GM_ADDR externalExpertTokenNumsGM, GM_ADDR debugGMM2GM, GM_ADDR debugHiddenXGM, GM_ADDR debugHiddenScaleGM,
+    GM_ADDR debugGMM2AccumulatorGM)
+{
+    InitFullLifecycleWithExternalGMM2Hidden(xGM, weight1GM, weight2GM, expertIdGM, scale1GM, scale2GM, bias1GM,
+        bias2GM, probs, xActiveMaskGM, outGM, expertTokenNums, workspaceGM, tilingGM, externalHiddenXGM,
+        externalHiddenScaleGM, externalExpertTokenNumsGM, debugGMM2GM, debugHiddenXGM, debugHiddenScaleGM,
+        debugGMM2AccumulatorGM);
+}
+
+template <TemplateMMA2AClass>
+__aicore__ inline void DispatchFFNCombineW4A8<TemplateMMA2ACFunc>::InitFullLifecycleWithExternalGMM2Hidden(
     GM_ADDR xGM, GM_ADDR weight1GM, GM_ADDR weight2GM, GM_ADDR expertIdGM, GM_ADDR scale1GM, GM_ADDR scale2GM,
     GM_ADDR bias1GM, GM_ADDR bias2GM, GM_ADDR probs, GM_ADDR xActiveMaskGM, GM_ADDR outGM, GM_ADDR expertTokenNums,
     GM_ADDR workspaceGM, GM_ADDR tilingGM, GM_ADDR externalHiddenXGM, GM_ADDR externalHiddenScaleGM,

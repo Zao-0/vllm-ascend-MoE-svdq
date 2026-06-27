@@ -2209,11 +2209,12 @@ def _official_lifecycle_debug_contract() -> dict[str, Any]:
         "source_backing": {
             "init_entry": (
                 "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/"
-                "dispatch_ffn_combine_w4_a8.h:220-233"
+                "dispatch_ffn_combine_w4_a8.h:227-255"
             ),
             "init_contract": (
-                "InitGMM2OnlyFromPacked calls Init(...), stores externalHiddenX/externalHiddenScale, "
-                "and sets gmm2OnlyFromPacked_ = false."
+                "InitFullLifecycleWithExternalGMM2Hidden calls Init(...), stores externalHiddenX/"
+                "externalHiddenScale, and sets gmm2OnlyFromPacked_ = false; InitGMM2OnlyFromPacked "
+                "is retained as a compatibility alias."
             ),
             "aic_dispatch": (
                 "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/"

@@ -260,6 +260,7 @@ def test_svdq_w4a8_gmm2_debug_torch_schema_meta_and_adapter_are_registered():
     cmake = (op_root / "op_host/CMakeLists.txt").read_text()
     op_def = (op_root / "op_host/svdqw4_a8_gmm2_debug_readback_def.cpp").read_text()
     kernel = (op_root / "op_kernel/svdqw4_a8_gmm2_debug_readback.cpp").read_text()
+    op_class = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8.h").read_text()
     official = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp").read_text()
 
     assert "svdq_w4a8_gmm2_debug_readback(Tensor x" in binding
@@ -290,11 +291,13 @@ def test_svdq_w4a8_gmm2_debug_torch_schema_meta_and_adapter_are_registered():
     assert 'this->Output("hiddenXReadback")' in op_def
     assert 'this->Output("hiddenScaleReadback")' in op_def
     assert 'this->Output("gmm2AccumulatorInt32")' in op_def
-    assert "InitGMM2OnlyFromPacked" in kernel
+    assert "InitFullLifecycleWithExternalGMM2Hidden" in kernel
     assert "hiddenXReadback" in kernel
     assert "hiddenScaleReadback" in kernel
     assert "gmm2AccumulatorInt32" in kernel
+    assert "InitFullLifecycleWithExternalGMM2Hidden" in op_class
     assert "GMM2OnlyFromPacked" in official
+    assert "InitGMM2OnlyFromPacked" in op_class
     assert "GMM2(params)" in official
 
 
@@ -3750,7 +3753,7 @@ def test_svdq_stage2_report_records_appendix_gmm2_official_state_table():
     ):
         assert row_name in report
     for source_token in (
-        "dispatch_ffn_combine_w4_a8.h:220-233",
+        "dispatch_ffn_combine_w4_a8.h:227-255",
         "dispatch_ffn_combine_w4_a8_kernel.hpp:687-793",
         "dispatch_ffn_combine_w4_a8_kernel.hpp:1448-1525",
         "block_epilogue_w4a8post_pertoken_v2.hpp:147-312",
