@@ -1,8 +1,110 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+| Stage | Status | Current gate |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Must now be debugged only against the complete official lifecycle contract. Latest diagnostic evidence is not an acceptance pass until the official producer/consumer state table is complete and Gate B/Gate C pass on the official path. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 official GMM2 lifecycle and strict numerical gates. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
+
+## Stage 2.2 Official-Lifecycle Constraint Handoff - 2026-06-27
+
+This section is the latest authoritative handoff. It supersedes the `2026-06-27T01:59Z` direct
+accumulator-to-D2 diagnostic as the controlling work constraint. The prior diagnostics remain valid failed
+experiments, but they do not count as Stage 2.2 acceptance evidence until the debug operator is proven equivalent to
+the successful official `dispatch_ffn_combine_w4_a8` producer/consumer lifecycle.
+
+New binding appendix read:
+
+- `/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md`
+
+Mandatory interpretation:
+
+- Do not modify, reinterpret, or debug public `torch_npu.npu_grouped_matmul`.
+- Do not guess scale formulas, repack W4, unpack weights on the host, or substitute scalar GEMM.
+- Do not change V2C/C2V flags, ownership, token state, workspace offsets, loop state, or barriers unless the
+  change is tied to a documented official source location.
+- Do not proceed to Stage 2.3, SVDQ down composition, final combine, or production host tiling while Stage 2.2 is
+  open.
+- Keep `DispatchFFNCombineW4A8SVDQ` fail-closed.
+
+Official source locations inspected for the lifecycle table:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:250-275`:
+  AIC dispatch calls `GMM2OnlyFromPacked` only for the debug-only path, while the normal AIV path enters
+  `DispatchAndCombine`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:287-318`:
+  workspace-backed official GM regions are bound for `cumsumMM`, packed hidden `gmA2I4_I8`,
+  `gmPerTokenScale2`, `tokenPerExpert`, and `preSumBeforeRank`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:687-747`:
+  official `GMM2` derives per-expert `currentM` from `cumsumMM`, doubles M for INT4, binds W2/scale tensors by
+  expert, then waits `SYNCFLAGV2C` before processing group tiles.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:668`:
+  official GMM producer drains via `blockMmad.Finalize(syncLoopIdx, SYNCFLAGC2V)`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:944-987`:
+  current GMM2-only debug path manually seeds token state and calls `GMM2`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:990-1016`:
+  current GMM2-only AIV path manually seeds packed hidden/scale/token state, emits synthetic ready signals, then
+  calls `CombineV2`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1323-1412`:
+  successful official AIV path constructs `BlockEpilogue2`, runs `BlockEpilogue1`, optionally overlays external
+  GMM2 hidden/scale for debug, emits `SYNCFLAGV2C`, then calls `CombineV2`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1448-1525`:
+  `CombineV2` initializes `BlockEpilogue2`, waits C2V group flags, calls `BlockEpilogue2`, drains remaining flags,
+  and finalizes the epilogue.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp:147-262`:
+  `BlockEpilogue2` reads high/low D2 halves, applies high*16+low, adds W4A8 auxiliary, multiplies by hidden scale,
+  and writes the W4A8 debug FP32 tap.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp:277-307`:
+  final D writeback uses `tokenPerExpert`, `preSumBeforeRank`, shared-memory offsetD, and official output layout.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/dispatch_ffn_combine_w4_a8_kernel.hpp:1554-1630`:
+  official workspace offset order for expanded row indices, `cumsumMM`, scale buffers, packed INT4 hidden buffers,
+  GMM debug taps, and `preSumBeforeRank`.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_host/dispatch_ffn_combine_w4_a8_tiling.cpp:253-264`:
+  host workspace sizing matches the kernel workspace regions.
+- `csrc/third_party/catlass/include/catlass/gemm/tile/atlasa2/copy_gm_to_l1.hpp:1945-1970` and
+  `csrc/third_party/catlass/include/catlass/gemm/tile/atlasa2/copy_l1_to_fp.hpp:33-56`:
+  vector scale movement into Fixpipe is a raw contiguous vector copy; no hidden source-backed scale-layout
+  transform has been found.
+
+Official-vs-debug state table, current snapshot:
+
+| State or region | Official producer | Official consumer | Official initialization point | Physical GM/workspace address and offset | Row/tile stride | Flag or event | Signal timing | Wait timing | Final drain | Current debug behavior |
+|---|---|---|---|---|---|---|---|---|---|---|
+| packed hidden `gmA2I4_I8` | `BlockEpilogue1` in `DispatchAndCombine`; optional external override after official producer. | `GMM2` as A matrix through `params.layoutA2`. | Workspace binding in `initBuffer`; rows produced per `dequantSum`. | `workspaceInfo.ptrA2Int4`; after `ptrA1Int4 + maxOutputSize * K`. | `layoutD1` / `layoutA2`, INT4 packed as `problemShape.n()/2`. | V2C group readiness. | Official AIV sets V2C after each sync slot. | GMM2 waits V2C before groups. | Normal path resets token state after combine. | GMM2-only copies `ptrExternalHiddenX` to `gmA2I4_I8` directly; lifecycle-equivalence not proven. |
+| hidden scale `gmPerTokenScale2` | `BlockEpilogue1` per-token hidden quant scale; optional external override. | `BlockEpilogue2` post-dequant multiply. | Workspace binding in `initBuffer`. | `workspaceInfo.ptrPerTokenScale2`; after `ptrPerTokenScale + maxOutputSize * sizeof(float)`. | One scalar per routed row. | V2C readiness with packed hidden. | Official AIV sets after scale is available. | GMM2 waits before using rows; `BlockEpilogue2` reads during C2V-drained combine. | Epilogue finalizes UB events. | GMM2-only copies `ptrExternalHiddenScale` directly; row identity/padded-row proof still incomplete. |
+| `tokenPerExpert` | Official routing/MC2 token exchange. | `GMM2`, `CombineV2`, `BlockEpilogue2`. | `tokenPerExpert.SetGlobalBuffer(shmem()+offsetPeerTokenPerExpert)`. | Peer shared memory `offsetPeerTokenPerExpert = SegmentSize - 2 * MB_SIZE`. | `Layout3D(AlignUp(EP * expertPerRank + 1, 128), expertPerRank)`. | C2V/V2C plus shared-memory lifecycle. | Produced before GMM2 and combine. | Read by GMM2 and epilogue. | `ResetTokenPerExpert` after combine. | GMM2-only seeds local entries from `externalExpertTokenNums`; official multi-rank layout equivalence not complete. |
+| `cumsumMM` | `GetCumsumForMMAIV` / official routing state. | `GMM2` and `CombineV2` group loops. | Workspace binding in `initBuffer`. | `workspaceInfo.ptrcumsumMM`; after expanded row index workspace. | `EP * EP * expertPerRank` int32 region. | V2C/C2V loop protocol. | Before GMM2 group loops. | GMM2 reads at group start; CombineV2 reads at group start. | None separate from normal path cleanup. | GMM2-only computes or copies cumsum from external counts; official source path not fully reproduced. |
+| `preSumBeforeRank` | Official cross-rank prefix path. | `BlockEpilogue2` final D placement. | Workspace binding in `initBuffer`. | `workspaceInfo.ptrSumBeforeRank`; after debug GMM regions. | `EP * expertPerRank` int32. | Shared routing state. | Before final epilogue writeback. | `BlockEpilogue2` reads per destination EP. | Normal path cleanup follows combine. | GMM2-only zeros it; acceptable only for EP=1 debug, not a general official lifecycle proof. |
+| GMM2 AIC input tile state | Official `GMM2`. | `BlockMmad`. | Per group in `GMM2`, after V2C wait. | `gmA2I4_I8`, W2 `ptrB2`, scale `ptrScale2`, output `gmC2`. | `L1TileShape` scheduler; M doubled for INT4. | `SYNCFLAGV2C`. | AIV sets after hidden/scale production. | AIC waits before group tiles. | `BlockMmad::Finalize`. | Uses official `GMM2`, but driven by manually seeded state. |
+| GMM2 accumulator / D2 region | `BlockMmad` and Fixpipe. | `BlockEpilogue2`. | Inside `GMM2` tile loop. | `gmC2` / debug `ptrCGMM2`; D2 high/low layout from `layoutD2`. | High/low halves separated by `n2` in `BlockEpilogue2`. | C2V. | AIC finalizes per sync group. | CombineV2 waits C2V before epilogue. | CombineV2 drains remaining flags. | Diagnostic taps read int32 accumulator and actual D2, but lifecycle source remains debug-only. |
+| C2V handoff state | `BlockMmad::Finalize(..., SYNCFLAGC2V)`. | `CombineV2`. | GMM2 group completion. | Cross-core flag state. | Per sync group. | `SYNCFLAGC2V`. | After AIC GMM2 group tiles finish. | `CombineV2` waits before `BlockEpilogue2`. | CombineV2 drains all groups. | AIV side uses synthetic ready helper in GMM2-only path; official source must be preserved in next fix. |
+| `BlockEpilogue2` input state | Official D2 high/low, `gmPerTokenScale2`, MAux2, token state. | `BlockEpilogue2`. | Constructed before combine. | `gmC2`, `gmCGMM2`, scale GM, MAux2, shmem `offsetD`. | 32-row AIV split; high row offset and low row offset separated by `n2`. | UB events plus C2V waits. | After C2V wait. | Event waits inside epilogue. | `BlockEpilogue2::Finalize`. | Formula reconstruction from actual D2 is exact, but official lifecycle equivalence is not proven. |
+| FP32 post-dequant debug tap | `BlockEpilogue2` W4A8_DEBUG path. | Host probe readback. | During normal `BlockEpilogue2`. | `ptrDebugGMM2` override or workspace `ptrCGMM2`. | `maxOutputSize * n2` float. | `EVENT_ID7` inside debug copy. | After high*16+low, aux, hidden scale. | Host sync after op completion. | Epilogue finalize. | Latest tap is finite/nonzero but fails strict reference tolerance; not accepted as Stage 2.2 pass. |
+
+Confirmed deviation before any next behavioral patch:
+
+- The current isolated GMM2-only path reuses the official `GMM2`, `CombineV2`, `BlockEpilogue2`, packed W2 access,
+  MMAD, Fixpipe, and D2/AIV formula, but it does not yet prove the complete official producer/consumer lifecycle.
+  Specifically, token state and packed hidden/scale state are manually seeded, and AIV readiness is synthetically
+  signaled instead of coming only from the successful official `DispatchAndCombine` producer loop.
+
+Next allowed correction strategy:
+
+- Start from the successful official `DispatchAndCombine` W4A8 path and preserve official AIC/AIV roles,
+  token/expert state, V2C/C2V protocol, GMM2 loop state, packed W2 access, D2 source region, `BlockEpilogue2`,
+  `CombineV2`, and final drain.
+- Modify only the hidden input boundary by overlaying the already validated Stage 2.1 packed hidden INT4 tensor and
+  per-token hidden scale at the same official point that `DispatchAndCombine` currently overlays external GMM2
+  hidden/scale.
+- Before changing behavior, complete Gate A row-identity evidence: routed token set, routed-row order, active expert
+  set, `expert_token_nums`, prefix sums, expert-local row starts/offsets, active-row count, and padded-row
+  interpretation.
+
 ## Stage 2.2 Direct Accumulator-to-D2 Diagnostic - 2026-06-27T01:59Z
 
-This section is the latest authoritative handoff. It supersedes the `2026-06-27T01:52Z` actual-D2 reconstruction
+Historical section. It superseded the `2026-06-27T01:52Z` actual-D2 reconstruction
 handoff by adding and validating a direct comparator from the official int32 accumulator readback to the actual
 raw high-D2 and low-D2 readbacks. No kernel behavior, lifecycle flag, V2C/C2V protocol, workspace state, tolerance,
 production host tiling, public grouped-matmul path, packed-weight format, or scale formula was changed.
