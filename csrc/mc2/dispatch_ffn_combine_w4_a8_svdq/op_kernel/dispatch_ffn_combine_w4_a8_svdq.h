@@ -327,6 +327,28 @@ struct SVDQOfficialW4A8InterleavedProducerContract {
     bool executionFailClosed;
 };
 
+enum SVDQOfficialW4A8ProducerSegmentId : uint32_t {
+    SVDQ_OFFICIAL_W4A8_SEGMENT_GMM1_FP32_TAP = 1,
+    SVDQ_OFFICIAL_W4A8_SEGMENT_GMM2_FP32_TAP = 2,
+};
+
+struct SVDQOfficialW4A8ProducerSegmentContract {
+    uint32_t segmentId;
+    uint32_t stageId;
+    uint32_t inputRegionId;
+    uint32_t outputRegionId;
+    uint32_t tapRegionId;
+    uint32_t waitFlagId;
+    uint32_t signalFlagId;
+    bool requiresOfficialAicGmm;
+    bool requiresOfficialAivDequant;
+    bool stopsBeforeOrdinarySwiGLU;
+    bool stopsBeforeOrdinaryFinalCombine;
+    bool consumesSvdqHiddenBoundary;
+    bool preservesOfficialC2VHandoff;
+    bool executionFailClosed;
+};
+
 struct SVDQMixedEpilogueContract {
     uint32_t stageId;
     uint32_t residualRegionId;
@@ -1152,6 +1174,50 @@ public:
                contract.requiresScratchOrdinaryW4A8Output && contract.executionFailClosed;
     }
 
+    __aicore__ inline SVDQOfficialW4A8ProducerSegmentContract OfficialW4A8ProducerSegmentContract(
+        uint32_t stageId) const
+    {
+        if (stageId == SVDQ_RESIDUAL_STAGE_W4A8_GMM1) {
+            return {SVDQ_OFFICIAL_W4A8_SEGMENT_GMM1_FP32_TAP, SVDQ_RESIDUAL_STAGE_W4A8_GMM1,
+                SVDQ_REGION_X_Q, SVDQ_REGION_ACCUMULATOR_1, SVDQ_REGION_ACCUMULATOR_1,
+                SVDQ_SYNC_QUANT_1_TO_W4A8_GEMM_1, SVDQ_SYNC_W4A8_GEMM_1_TO_MIXED_EPILOGUE_1,
+                true, true, true, false, false, true, true};
+        }
+        if (stageId == SVDQ_RESIDUAL_STAGE_W4A8_GMM2) {
+            return {SVDQ_OFFICIAL_W4A8_SEGMENT_GMM2_FP32_TAP, SVDQ_RESIDUAL_STAGE_W4A8_GMM2,
+                SVDQ_REGION_HIDDEN_Q, SVDQ_REGION_ACCUMULATOR_2, SVDQ_REGION_ACCUMULATOR_2,
+                SVDQ_SYNC_QUANT_2_TO_W4A8_GMM_2, SVDQ_SYNC_W4A8_GMM_2_TO_MIXED_OUTPUT_EPILOGUE,
+                true, true, false, true, true, true, true};
+        }
+        return {SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID, SVDQ_INVALID_ID,
+            SVDQ_INVALID_ID, SVDQ_INVALID_ID, false, false, false, false, false, false, true};
+    }
+
+    __aicore__ inline bool OfficialW4A8ProducerSegmentReady(uint32_t stageId) const
+    {
+        SVDQOfficialW4A8ProducerSegmentContract segment = OfficialW4A8ProducerSegmentContract(stageId);
+        const bool gmm1Ready = stageId == SVDQ_RESIDUAL_STAGE_W4A8_GMM1 &&
+            segment.segmentId == SVDQ_OFFICIAL_W4A8_SEGMENT_GMM1_FP32_TAP &&
+            segment.inputRegionId == SVDQ_REGION_X_Q &&
+            segment.outputRegionId == SVDQ_REGION_ACCUMULATOR_1 &&
+            segment.tapRegionId == SVDQ_REGION_ACCUMULATOR_1 &&
+            segment.waitFlagId == SVDQ_SYNC_QUANT_1_TO_W4A8_GEMM_1 &&
+            segment.signalFlagId == SVDQ_SYNC_W4A8_GEMM_1_TO_MIXED_EPILOGUE_1 &&
+            segment.stopsBeforeOrdinarySwiGLU && !segment.consumesSvdqHiddenBoundary;
+        const bool gmm2Ready = stageId == SVDQ_RESIDUAL_STAGE_W4A8_GMM2 &&
+            segment.segmentId == SVDQ_OFFICIAL_W4A8_SEGMENT_GMM2_FP32_TAP &&
+            segment.inputRegionId == SVDQ_REGION_HIDDEN_Q &&
+            segment.outputRegionId == SVDQ_REGION_ACCUMULATOR_2 &&
+            segment.tapRegionId == SVDQ_REGION_ACCUMULATOR_2 &&
+            segment.waitFlagId == SVDQ_SYNC_QUANT_2_TO_W4A8_GMM_2 &&
+            segment.signalFlagId == SVDQ_SYNC_W4A8_GMM_2_TO_MIXED_OUTPUT_EPILOGUE &&
+            segment.stopsBeforeOrdinaryFinalCombine && segment.consumesSvdqHiddenBoundary;
+        return segment.stageId == stageId &&
+               segment.requiresOfficialAicGmm && segment.requiresOfficialAivDequant &&
+               segment.preservesOfficialC2VHandoff && segment.executionFailClosed &&
+               (gmm1Ready || gmm2Ready);
+    }
+
     __aicore__ inline void CopyInResidualQuantBf16(LocalTensor<bfloat16_t> dst,
         const GlobalTensor<bfloat16_t>& src, uint32_t offset, uint32_t count) const
     {
@@ -1394,7 +1460,8 @@ public:
         SVDQResidualExecutionPlan plan = ResidualExecutionPlan(stageId);
         if (plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM ||
             !OfficialW4A8FullLifecycleLaunchReady(stageId) ||
-            !OfficialW4A8InterleavedProducerReady()) {
+            !OfficialW4A8InterleavedProducerReady() ||
+            !OfficialW4A8ProducerSegmentReady(stageId)) {
             return false;
         }
         // Execution remains fail-closed until official W4A8 producer segments can be interleaved:

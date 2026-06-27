@@ -1891,7 +1891,7 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         assert token in residual_gmm_source
 
     gmm_ready_source = contract[
-        contract.index("__aicore__ inline bool ResidualGmmLaunchReady") : contract.index(
+        contract.index("enum SVDQOfficialW4A8ProducerSegmentId") : contract.index(
             "__aicore__ inline bool RunResidualDynamicQuantStage"
         )
     ]
@@ -1925,6 +1925,16 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         "bridge.requiresOfficialC2VHandoff && bridge.requiresOfficialAivDequant",
         "bridge.producesFP32Residual && launch.weightNz && launch.residualOnly",
         "SVDQResidualW4A8BridgeTiling bridge = ResidualW4A8BridgeTiling()",
+        "enum SVDQOfficialW4A8ProducerSegmentId",
+        "SVDQ_OFFICIAL_W4A8_SEGMENT_GMM1_FP32_TAP",
+        "SVDQ_OFFICIAL_W4A8_SEGMENT_GMM2_FP32_TAP",
+        "struct SVDQOfficialW4A8ProducerSegmentContract",
+        "OfficialW4A8ProducerSegmentContract(",
+        "uint32_t stageId) const",
+        "OfficialW4A8ProducerSegmentReady(uint32_t stageId) const",
+        "segment.stopsBeforeOrdinarySwiGLU && !segment.consumesSvdqHiddenBoundary",
+        "segment.stopsBeforeOrdinaryFinalCombine && segment.consumesSvdqHiddenBoundary",
+        "segment.preservesOfficialC2VHandoff && segment.executionFailClosed",
         "DispatchFFNCombineW4A8Info officialInfo = bridge.officialTiling.dispatchFFNCombineW4A8Info",
         "bridge.officialK == tilingData_.info.hiddenSize",
         "bridge.officialN == tilingData_.info.intermediateSize * 2",
@@ -1966,6 +1976,7 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         "plan.opKind != SVDQ_RESIDUAL_OP_W4A8_GMM",
         "!OfficialW4A8FullLifecycleLaunchReady(stageId)",
         "!OfficialW4A8InterleavedProducerReady()",
+        "!OfficialW4A8ProducerSegmentReady(stageId)",
         "Execution remains fail-closed until official W4A8 producer segments can be interleaved",
         "GMM1 must write the FP32 tap before mixed SwiGLU",
         "GMM2 must consume the SVDQ hidden",
@@ -3085,6 +3096,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["residual_gmm_official_tiling_bridge_consumed"]
     assert loaded["production_fail_closed"]["residual_gmm_official_full_lifecycle_call_surface_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_official_interleaved_producer_contract_recorded"]
+    assert loaded["production_fail_closed"]["residual_gmm_official_split_producer_segment_contract_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_official_scratch_output_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_embedded_official_tiling_pointer_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_official_wrapper_type_bound"]
@@ -3108,15 +3120,21 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert not loaded["production_admission"]["production_enable_allowed"]
     assert "stage2_2_official_gmm2_gate" in loaded["production_admission"]
     stage2_2_gate = loaded["production_admission"]["stage2_2_official_gmm2_gate"]
-    assert loaded["production_admission"]["stage2_2_official_gmm2_gate_passed"]
-    assert stage2_2_gate["status"] == "passed"
-    assert stage2_2_gate["evidence_status"] == "current_recheck_passed"
-    assert not stage2_2_gate["stage2_3_and_later_blocked"]
+    assert not loaded["production_admission"]["stage2_2_official_gmm2_gate_passed"]
+    assert stage2_2_gate["status"] == "fail_in_progress"
+    assert stage2_2_gate["evidence_status"] == (
+        "current_recheck_missing_appendix_gmm2_official_path_revision_fields"
+    )
+    assert stage2_2_gate["historical_passed_under_superseded_contract"]
+    assert stage2_2_gate["stage2_3_and_later_blocked"]
     assert stage2_2_gate["required_appendix_gmm2_official_path_revision_flags"][
         "official_path_correction_revision_matches"
     ]
+    assert not stage2_2_gate["required_appendix_gmm2_official_path_revision_flags"][
+        "current_authoritative_requirements_revision_matches"
+    ]
     assert "stage2_3_real_checkpoint_composition_gate" in loaded["production_admission"]
-    assert loaded["production_admission"]["stage2_3_isolated_gate_passed"]
+    assert not loaded["production_admission"]["stage2_3_isolated_gate_passed"]
     assert loaded["production_admission"]["remaining_execution_requirements"] == {
         "dispatch_routing_execution_enabled": True,
         "residual_hidden_quant_execution_enabled": True,
@@ -3143,6 +3161,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_residual_gmm_launch_descriptor_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_official_bridge_contract_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_official_tiling_bridge_recorded"]
+    assert loaded["source_proof"]["kernel_residual_gmm_official_split_producer_segment_contract_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_official_tiling_bridge_consumed"]
     assert loaded["source_proof"]["kernel_residual_gmm_official_full_lifecycle_call_surface_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_official_interleaved_producer_contract_recorded"]
@@ -3811,15 +3830,21 @@ def test_svdq_kernel_contract_manifest_blocks_superseded_stage2_2_recheck_and_st
     admitted_stage2_2 = admitted["production_admission"]["stage2_2_official_gmm2_gate"]
     admitted_stage2_3 = admitted["production_admission"]["stage2_3_real_checkpoint_composition_gate"]
 
-    assert admitted_stage2_2["status"] == "passed"
-    assert admitted_stage2_2["evidence_status"] == "current_recheck_passed"
-    assert admitted_stage2_2["passed"]
-    assert not admitted_stage2_2["stage2_3_and_later_blocked"]
-    assert admitted_stage2_3["status"] == "passed"
-    assert admitted_stage2_3["passed"]
-    assert admitted_stage2_3["blocking_gate"] is None
-    assert admitted["production_admission"]["stage2_2_official_gmm2_gate_passed"]
-    assert admitted["production_admission"]["stage2_3_isolated_gate_passed"]
+    assert admitted_stage2_2["status"] == "fail_in_progress"
+    assert admitted_stage2_2["evidence_status"] == (
+        "current_recheck_missing_appendix_gmm2_official_path_revision_fields"
+    )
+    assert admitted_stage2_2["historical_passed_under_superseded_contract"]
+    assert not admitted_stage2_2["required_appendix_gmm2_official_path_revision_flags"][
+        "current_authoritative_requirements_revision_matches"
+    ]
+    assert not admitted_stage2_2["passed"]
+    assert admitted_stage2_2["stage2_3_and_later_blocked"]
+    assert admitted_stage2_3["status"] == "blocked_by_stage2_2_official_gmm2_gate"
+    assert not admitted_stage2_3["passed"]
+    assert admitted_stage2_3["blocking_gate"] == "stage2_2_modified_hidden_official_w4a8_gmm2"
+    assert not admitted["production_admission"]["stage2_2_official_gmm2_gate_passed"]
+    assert not admitted["production_admission"]["stage2_3_isolated_gate_passed"]
     assert not admitted["production_admission"]["production_enable_allowed"]
 
 

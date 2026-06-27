@@ -27,6 +27,9 @@ STAGE2_2_GMM2_OFFICIAL_PATH_APPENDIX = (
 STAGE2_2_GMM2_OFFICIAL_PATH_RESET_REVISION = (
     "stage2_appendix_gmm2_official_path_mandatory_official_path_correction_20260627"
 )
+STAGE2_2_GMM2_OFFICIAL_PATH_CURRENT_REQUIREMENTS_REVISION = (
+    "stage2_appendix_gmm2_official_path_current_authoritative_fail_in_progress_20260627"
+)
 
 OP_ROOT = Path("csrc/mc2/dispatch_ffn_combine_w4_a8_svdq")
 OP_CMAKE = OP_ROOT / "op_host/CMakeLists.txt"
@@ -1177,6 +1180,23 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "GMM1 must write the FP32 tap before mixed SwiGLU" in sources["kernel_contract"]
             and "GMM2 must consume the SVDQ hidden" in sources["kernel_contract"]
         ),
+        "kernel_residual_gmm_official_split_producer_segment_contract_recorded": (
+            "enum SVDQOfficialW4A8ProducerSegmentId" in sources["kernel_contract"]
+            and "SVDQ_OFFICIAL_W4A8_SEGMENT_GMM1_FP32_TAP" in sources["kernel_contract"]
+            and "SVDQ_OFFICIAL_W4A8_SEGMENT_GMM2_FP32_TAP" in sources["kernel_contract"]
+            and "struct SVDQOfficialW4A8ProducerSegmentContract" in sources["kernel_contract"]
+            and "OfficialW4A8ProducerSegmentContract(" in sources["kernel_contract"]
+            and "uint32_t stageId) const" in sources["kernel_contract"]
+            and "OfficialW4A8ProducerSegmentReady(uint32_t stageId) const" in sources["kernel_contract"]
+            and "segment.stopsBeforeOrdinarySwiGLU && !segment.consumesSvdqHiddenBoundary"
+            in sources["kernel_contract"]
+            and "segment.stopsBeforeOrdinaryFinalCombine && segment.consumesSvdqHiddenBoundary"
+            in sources["kernel_contract"]
+            and "segment.preservesOfficialC2VHandoff && segment.executionFailClosed" in sources[
+                "kernel_contract"
+            ]
+            and "!OfficialW4A8ProducerSegmentReady(stageId)" in sources["kernel_contract"]
+        ),
         "kernel_residual_gmm_official_scratch_output_recorded": (
             "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT = 16" in sources["kernel_tiling"]
             and "SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE = 17" in sources["kernel_tiling"]
@@ -2023,13 +2043,17 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
             "and_gate_a_b_c_evidence"
         ),
         "required_official_path_correction_revision": STAGE2_2_GMM2_OFFICIAL_PATH_RESET_REVISION,
+        "required_current_authoritative_requirements_revision": (
+            STAGE2_2_GMM2_OFFICIAL_PATH_CURRENT_REQUIREMENTS_REVISION
+        ),
         "effective_status_for_production": "pending_current_recheck",
         "reason": (
             "The Stage 2 appendix keeps modified-hidden official W4A8 GMM2 in FAIL / IN PROGRESS "
             "until evidence records the official-vs-debug state table, exact routed-row identity, "
             "Gate A input boundary, Gate B AIC raw/D2 output, and Gate C BlockEpilogue2/CombineV2 "
-            "post-dequant readback. Existing current-recheck summaries are retained only as historical "
-            "evidence unless they explicitly carry the post-reset official-path correction revision field."
+            "post-dequant readback under the current authoritative appendix state. Existing current-recheck "
+            "summaries are retained only as historical evidence unless regenerated for the current "
+            "official-lifecycle requirements revision."
         ),
         "required_gate_a": (
             "same routed-row identity with canonical hidden BF16, hidden INT8, packed INT4, "
@@ -2142,8 +2166,16 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
     appendix_revision = stage.get("appendix_gmm2_official_path", {})
     observed_reset_revision = appendix_revision.get("official_path_correction_revision")
     post_reset_revision_passed = observed_reset_revision == STAGE2_2_GMM2_OFFICIAL_PATH_RESET_REVISION
+    observed_current_requirements_revision = appendix_revision.get(
+        "current_authoritative_requirements_revision"
+    )
+    current_requirements_revision_passed = (
+        observed_current_requirements_revision
+        == STAGE2_2_GMM2_OFFICIAL_PATH_CURRENT_REQUIREMENTS_REVISION
+    )
     appendix_revision_flags = {
         "official_path_correction_revision_matches": post_reset_revision_passed,
+        "current_authoritative_requirements_revision_matches": current_requirements_revision_passed,
         "official_vs_debug_state_table_complete": bool(
             appendix_revision.get("official_vs_debug_state_table_complete")
         ),
@@ -2166,7 +2198,7 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
             appendix_revision.get("active_failure_all_zero_post_dequant_resolved")
         ),
     }
-    passed = bool(
+    historical_passed_under_superseded_contract = bool(
         summary.get("passed")
         and stage.get("passed")
         and not bool(summary.get("skipped"))
@@ -2179,7 +2211,15 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
         and all(lifecycle_flags.values())
         and all(diagnostic_flags.values())
         and all(shape_flags.values())
-        and all(appendix_revision_flags.values())
+        and all(
+            value
+            for name, value in appendix_revision_flags.items()
+            if name != "current_authoritative_requirements_revision_matches"
+        )
+    )
+    passed = bool(
+        historical_passed_under_superseded_contract
+        and appendix_revision_flags["current_authoritative_requirements_revision_matches"]
     )
     missing_appendix_revision = evidence_path.exists() and not all(appendix_revision_flags.values())
     gate.update(
@@ -2199,8 +2239,11 @@ def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
                 )
             ),
             "passed": passed,
-            "historical_passed_under_superseded_contract": False,
+            "historical_passed_under_superseded_contract": historical_passed_under_superseded_contract,
             "observed_official_path_correction_revision": observed_reset_revision,
+            "observed_current_authoritative_requirements_revision": (
+                observed_current_requirements_revision
+            ),
             "summary_passed": bool(summary.get("passed")),
             "stage_passed": bool(stage.get("passed")),
             "shape": shape,
@@ -2626,6 +2669,9 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
             ],
             "residual_gmm_official_interleaved_producer_contract_recorded": source_proof[
                 "kernel_residual_gmm_official_interleaved_producer_contract_recorded"
+            ],
+            "residual_gmm_official_split_producer_segment_contract_recorded": source_proof[
+                "kernel_residual_gmm_official_split_producer_segment_contract_recorded"
             ],
             "residual_gmm_official_scratch_output_recorded": source_proof[
                 "kernel_residual_gmm_official_scratch_output_recorded"

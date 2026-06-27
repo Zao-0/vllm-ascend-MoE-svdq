@@ -4,8 +4,8 @@
 |---|---|---|
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
-| Stage 2.2 modified-hidden official W4A8 GMM2 | PASS | Fresh post-reset real-device probe emitted the official-path correction revision and passed Gate A/B/C. |
-| Stage 2.3 isolated real-checkpoint composition | PASS | Existing top-k8 composition evidence is admitted after the Stage 2.2 reset gate passed. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | The new appendix is authoritative: continue only from the official W4A8 GMM2 AIC/AIV lifecycle table and Gate A/B/C readbacks. Previous post-reset pass evidence is retained as historical under a superseded admission marker. |
+| Stage 2.3 isolated real-checkpoint composition | BLOCKED | Blocked until Stage 2.2 is regenerated and admitted under the current official-lifecycle requirements. |
 | Stage 2.4+ production integration | BLOCKED | Do not enable production until residual W4A8 GMM execution is wired through the official interleavable producer path and four-NPU target-model E2E passes. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | Production enable remains false and host tiling must remain fail-closed. |
 
@@ -46,9 +46,9 @@ Required interpretation for the rebuilt environment:
 - Mandatory gates are Gate A input-boundary/routing identity, Gate B AIC raw accumulator/Fixpipe/D2 readback, and Gate C
   AIV post-dequant output. Stage 2.2 passes only when Gate B and Gate C are finite, nonzero, and strict-reference
   matched on real device after the Gate A routing evidence is complete.
-- The production-admission manifest must treat existing Stage 2.2/2.3 JSON evidence as historical unless a fresh
-  post-reset run emits `official_path_correction_revision =
-  stage2_appendix_gmm2_official_path_mandatory_official_path_correction_20260627` together with the Gate A/B/C fields.
+- The production-admission manifest must treat existing Stage 2.2/2.3 JSON evidence as historical unless a future
+  real-device run is regenerated under the current authoritative official-lifecycle requirements and records the
+  required source-table, routed-row identity, Gate A, Gate B, and Gate C fields.
 - All work must continue to use exactly `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`; production host tiling remains
   fail-closed until all isolated and production real-device numerical gates pass.
 - The Stage 2.5 low-rank accumulator work recorded below is not the active next gate under this appendix. It remains a
@@ -120,7 +120,7 @@ Result:
   `stage2_3.status=blocked_by_stage2_2_official_gmm2_gate`.
 - Production remains fail-closed.
 
-## Stage 2.2 Post-Reset Real-Device Recheck Passed - 2026-06-27T07:59Z
+## Historical Stage 2.2 Post-Reset Real-Device Recheck - 2026-06-27T07:59Z
 
 Purpose:
 
@@ -181,11 +181,15 @@ Stage 2.2 result:
 
 Manifest result:
 
-- `production_admission.stage2_2_official_gmm2_gate.status=passed`
-- `production_admission.stage2_2_official_gmm2_gate.evidence_status=current_recheck_passed`
-- `production_admission.stage2_2_official_gmm2_gate_passed=true`
-- `production_admission.stage2_3_real_checkpoint_composition_gate.status=passed`
-- `production_admission.stage2_3_isolated_gate_passed=true`
+- Under the previous post-reset admission marker this run passed the isolated Gate A/B/C checks.
+- Under the new appendix state, this run is historical evidence only until it is regenerated against the current
+  official-lifecycle requirements.
+- `production_admission.stage2_2_official_gmm2_gate.status=fail_in_progress`
+- `production_admission.stage2_2_official_gmm2_gate.evidence_status=current_recheck_missing_appendix_gmm2_official_path_revision_fields`
+- `production_admission.stage2_2_official_gmm2_gate.historical_passed_under_superseded_contract=true`
+- `production_admission.stage2_2_official_gmm2_gate_passed=false`
+- `production_admission.stage2_3_real_checkpoint_composition_gate.status=blocked_by_stage2_2_official_gmm2_gate`
+- `production_admission.stage2_3_isolated_gate_passed=false`
 - `production_admission.production_enable_allowed=false`
 
 Remaining blockers:
@@ -194,6 +198,58 @@ Remaining blockers:
 - `four_npu_target_model_e2e_validated=false`
 - Production host tiling must remain fail-closed until the official interleavable W4A8 producer path is wired into
   production and the target model passes exactly-four-NPU E2E validation.
+
+## Stage 2.4 Official W4A8 Split Producer Segment Contract - 2026-06-27
+
+Purpose:
+
+- Recorded the production-required split official W4A8 producer segments without enabling execution.
+- GMM1 segment contract: official W4A8 AIC/AIV producer writes the FP32 tap for the mixed SwiGLU path and stops before
+  the ordinary W4A8 SwiGLU/final path.
+- GMM2 segment contract: consumes the SVDQ hidden INT4/scale boundary, preserves the official C2V handoff and AIV
+  dequant path, writes the FP32 residual-down tap, and stops before the ordinary W4A8 final combine.
+- The monolithic official wrapper remains forbidden as the production SVDQ result because it would run ordinary W4A8
+  SwiGLU/final-combine behavior instead of the mixed SVDQ epilogues.
+
+Files changed:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq.h`
+- `tools/svdq_kernel_contract_manifest.py`
+- `tests/ut/ops/test_svdq_moe_abi.py`
+- `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+
+Source contract recorded:
+
+- `enum SVDQOfficialW4A8ProducerSegmentId`
+- `SVDQ_OFFICIAL_W4A8_SEGMENT_GMM1_FP32_TAP`
+- `SVDQ_OFFICIAL_W4A8_SEGMENT_GMM2_FP32_TAP`
+- `SVDQOfficialW4A8ProducerSegmentContract`
+- `OfficialW4A8ProducerSegmentContract(stageId)`
+- `OfficialW4A8ProducerSegmentReady(stageId)`
+- `RunResidualGmmStage` now requires the segment contract readiness check before the existing fail-closed return.
+
+Machine state:
+
+- `source_proof.kernel_residual_gmm_official_split_producer_segment_contract_recorded=true`
+- `production_fail_closed.residual_gmm_official_split_producer_segment_contract_recorded=true`
+- `production_fail_closed.residual_gmm_execution_enabled=false`
+- `production_admission.remaining_execution_requirements.residual_w4a8_gmm_execution_enabled=false`
+- `production_admission.stage2_2_official_gmm2_gate_passed=false`
+- `production_admission.stage2_3_isolated_gate_passed=false`
+- `production_admission.production_enable_allowed=false`
+
+Validation:
+
+- `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+- `git diff --check -- csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq.h tools/svdq_kernel_contract_manifest.py tests/ut/ops/test_svdq_moe_abi.py docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+- `python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /tmp/svdq_manifest_split_segment_check.json`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q`
+
+Current constraint:
+
+- This is source-contract and admission-guard work only. It is not numerical progress toward Stage 2.2 and does not
+  permit SVDQ BF16 projections, mixed AIV epilogues, SwiGLU integration, hidden quantization integration, or production
+  host tiling enablement.
 
 ## Stage 2.5 Low-Rank BF16 Accumulator Boundary Attempt - 2026-06-27
 
