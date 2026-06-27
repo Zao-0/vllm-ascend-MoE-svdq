@@ -9,6 +9,31 @@
 | Stage 2.4 and later | BLOCKED | Blocked on Stage 2.3 same-routing composition and later numerical gates. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
 
+## Stage 2.3 Official GMM2 Path Constraint Refresh - 2026-06-27
+
+The new handoff requirement file was read:
+
+- `/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md`
+
+Binding interpretation for the next environment rebuild:
+
+- The appendix remains binding for any future W4A8 GMM2 lifecycle work: do not change V2C/C2V flags, producer or
+  consumer ownership, token state, workspace offsets, loop state, barriers, D2 source regions, `BlockEpilogue2`,
+  `CombineV2`, or final drains unless the change is tied to an exact official
+  `dispatch_ffn_combine_w4_a8` source location.
+- The appendix's embedded status text describes the older all-zero Stage 2.2 failure. Later committed evidence in
+  this report supersedes that status: commit `97afc57d` passed Stage 2.2 with the official-lifecycle top-1
+  expert-0 probe, Gate A, Gate B, C2V, and strict Gate C all passing with max/mean abs `0.0`.
+- The current active gate remains Stage 2.3. The only acceptable next progress is a real-checkpoint same-routing
+  composition probe that reuses the passed Stage 2.2 official GMM2 output, actual SVDQ down output from the same
+  canonical hidden, and a single routed-row identity manifest for both branches.
+- Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed. The public `torch_npu.npu_grouped_matmul` path remains
+  out of scope and must not be used as a W4A8 semantic oracle.
+
+No source behavior was changed for this refresh. It records the new constraint so a rebuilt environment does not
+mistake source inspection, stale all-zero diagnostics, scalar substitutes, or public grouped-matmul experiments for
+Stage 2.3 gate progress.
+
 ## Stage 2.3 Synthetic Same-Routing Manifest - 2026-06-27T02:43Z
 
 This section is the latest authoritative handoff. It supersedes the `2026-06-27T02:35Z` Stage 2.2 handoff only
