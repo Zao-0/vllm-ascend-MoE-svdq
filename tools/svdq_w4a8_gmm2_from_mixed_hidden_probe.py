@@ -323,6 +323,63 @@ def _threshold_error_counts(
     }
 
 
+def _compact_tensor_error(
+    actual: torch.Tensor,
+    expected: torch.Tensor,
+    *,
+    max_abs_tol: float,
+    top_k: int = 8,
+) -> dict[str, Any]:
+    actual_cpu = actual.detach().cpu().float()
+    expected_cpu = expected.detach().cpu().float()
+    diff = (actual_cpu - expected_cpu).abs()
+    signed = actual_cpu - expected_cpu
+    finite_diff = torch.isfinite(diff)
+    denominator = expected_cpu.abs().clamp_min(1.0e-12)
+    relative = torch.where(finite_diff, diff / denominator, torch.full_like(diff, float("inf")))
+    failed = diff > max_abs_tol
+    flat_abs = diff.flatten()
+
+    top_entries: list[dict[str, Any]] = []
+    if flat_abs.numel():
+        top_count = min(int(top_k), int(flat_abs.numel()))
+        top_values, top_indices = torch.topk(flat_abs, k=top_count)
+        for value, flat_index in zip(top_values.tolist(), top_indices.tolist(), strict=True):
+            index_tuple = torch.unravel_index(torch.tensor(int(flat_index)), diff.shape)
+            index = [int(v) for v in index_tuple]
+            idx = tuple(index)
+            top_entries.append(
+                {
+                    "index": index,
+                    "abs_diff": float(value),
+                    "signed_diff": float(signed[idx].item()),
+                    "actual": float(actual_cpu[idx].item()),
+                    "expected": float(expected_cpu[idx].item()),
+                }
+            )
+
+    return {
+        "actual_shape": list(actual_cpu.shape),
+        "expected_shape": list(expected_cpu.shape),
+        "actual_finite": bool(torch.isfinite(actual_cpu).all().item()) if actual_cpu.numel() else True,
+        "expected_finite": bool(torch.isfinite(expected_cpu).all().item()) if expected_cpu.numel() else True,
+        "diff_finite": bool(finite_diff.all().item()) if finite_diff.numel() else True,
+        "max_abs": float(diff.max().item()) if diff.numel() else 0.0,
+        "mean_abs": float(diff.mean().item()) if diff.numel() else 0.0,
+        "numel": int(diff.numel()),
+        "failed_element_count_abs_gt_tolerance": int(failed.sum().item()) if failed.numel() else 0,
+        "actual_nan_count": int(torch.isnan(actual_cpu).sum().item()),
+        "actual_inf_count": int(torch.isinf(actual_cpu).sum().item()),
+        "expected_nan_count": int(torch.isnan(expected_cpu).sum().item()),
+        "expected_inf_count": int(torch.isinf(expected_cpu).sum().item()),
+        "diff_nan_count": int(torch.isnan(diff).sum().item()),
+        "diff_inf_count": int(torch.isinf(diff).sum().item()),
+        "max_relative_error": float(relative.max().item()) if relative.numel() else 0.0,
+        "mean_relative_error": float(relative.mean().item()) if relative.numel() else 0.0,
+        "top_abs_entries": top_entries,
+    }
+
+
 def _residual_distribution_diagnostics(
     actual: torch.Tensor,
     expected: torch.Tensor,
@@ -1171,6 +1228,44 @@ def _official_gmm2_post_dequant_variant_diagnostics(
                 best_key = key
                 best_name = name
 
+    mixed_variant_reports: dict[str, Any] = {}
+    mixed_best_name: str | None = None
+    mixed_best_key: tuple[float, float, int] | None = None
+    low32_scale = scale_variants["low32"]
+    for high_rounding_mode in rounding_modes:
+        for low_rounding_mode in rounding_modes:
+            outputs = []
+            row_start = 0
+            for expert_id, count in enumerate(counts):
+                count = int(count)
+                if count <= 0:
+                    continue
+                row_end = row_start + count
+                scale_e = low32_scale[expert_id].reshape(1, -1)
+                high = _fp32_to_fp16_mode(high_acc[row_start:row_end] * scale_e, mode=high_rounding_mode)
+                low = _fp32_to_fp16_mode(low_acc[row_start:row_end] * scale_e, mode=low_rounding_mode)
+                combined = high * 16.0 + low + bias[expert_id].reshape(1, -1)
+                outputs.append(combined * hidden_scale_cpu[row_start:row_end].reshape(-1, 1))
+                row_start = row_end
+            reference = torch.cat(outputs, dim=0) if outputs else torch.empty((0, output_columns), dtype=torch.float32)
+            actual_slice = actual[: reference.shape[0], : reference.shape[1]]
+            error = _compact_tensor_error(actual_slice, reference, max_abs_tol=max_abs_tol)
+            name = f"high_{high_rounding_mode}__low_{low_rounding_mode}"
+            mixed_variant_reports[name] = {
+                "scale_word": "low32",
+                "high_fp16_rounding_mode": high_rounding_mode,
+                "low_fp16_rounding_mode": low_rounding_mode,
+                "error": error,
+            }
+            key = (
+                float(error["max_abs"]),
+                float(error["mean_abs"]),
+                int(error["failed_element_count_abs_gt_tolerance"]),
+            )
+            if mixed_best_key is None or key < mixed_best_key:
+                mixed_best_key = key
+                mixed_best_name = name
+
     return {
         "enabled": True,
         "diagnostic_only": (
@@ -1191,6 +1286,19 @@ def _official_gmm2_post_dequant_variant_diagnostics(
         "best_variant": best_name,
         "best_key": list(best_key) if best_key is not None else None,
         "variants": variant_reports,
+        "low32_mixed_high_low_rounding": {
+            "enabled": True,
+            "diagnostic_only": (
+                "Low32-scale-only host comparator that applies independent FP16 D2 storage rounding candidates "
+                "to the high and low accumulator halves before the official BlockEpilogue2 high*16+low, aux, "
+                "and hidden-scale formula. It does not alter the strict gate or official kernel path."
+            ),
+            "source_boundary": "official gmm2_accumulator_int32 readback split into high and low D2 rows",
+            "scale_word": "low32",
+            "best_variant": mixed_best_name,
+            "best_key": list(mixed_best_key) if mixed_best_key is not None else None,
+            "variants": mixed_variant_reports,
+        },
     }
 
 

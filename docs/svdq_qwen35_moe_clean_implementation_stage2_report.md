@@ -1,8 +1,106 @@
 # SVDQ Qwen3.5 MoE Clean Implementation - Stage 2 Report
 
+## Stage 2.2 Mixed High/Low D2 Rounding Diagnostic - 2026-06-27T01:46Z
+
+This section is the latest authoritative handoff. It supersedes the `2026-06-27` official-path constraint
+handoff by adding and validating a diagnostic-only comparator for independent high-half and low-half FP16 D2
+rounding candidates. No kernel behavior, lifecycle flag, V2C/C2V protocol, workspace state, tolerance, production
+host tiling, public grouped-matmul path, packed-weight format, or scale formula was changed.
+
+| Stage | Status | Current gate |
+|---|---|---|
+| Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
+| Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Gate A and int32 accumulator Gate B pass for top-1 expert 0; Gate C remains finite/nonzero but fails strict max-abs tolerance. |
+| Stage 2.3 and later | BLOCKED | Blocked on Stage 2.2 Gate C strict numerical match and unresolved Fixpipe/D2/AIV contract detail. |
+| Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
+
+Files changed:
+
+- `tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+
+Exact behavior implemented:
+
+- Added a compact host-side `low32_mixed_high_low_rounding` diagnostic under
+  `gmm2.post_dequant_variant_diagnostics`.
+- The diagnostic starts from the official `gmm2_accumulator_int32` readback, uses the already identified plausible
+  low32 packed scale word, and applies independent FP16 D2 storage rounding candidates to the high and low
+  accumulator halves before the official `BlockEpilogue2` formula:
+  `high * 16 + low + aux`, then hidden-scale multiplication.
+- The diagnostic is comparator-only. It does not change `passed`, strict tolerances, the official kernel path, or
+  production SVDQ fail-closed behavior.
+
+Official source locations tied to this diagnostic:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_mmad_w4a4.hpp:446-461`:
+  official GMM2 copies scale into the Fixpipe buffer and writes FP16 D2 through `copyL0CToGm`.
+- `csrc/mc2/dispatch_ffn_combine/op_kernel/utils/copy_l0c_to_gm_custom.hpp:10-43`:
+  per-channel row-major Fixpipe call used by the W4A8 block path.
+- `csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_epilogue_w4a8post_pertoken_v2.hpp:196-262`:
+  `BlockEpilogue2` casts high/low D2 halves to FP32, applies `high * 16 + low`, aux, hidden scale, and the
+  W4A8_DEBUG FP32 tap.
+
+Validation commands:
+
+- Syntax check:
+  `python -m py_compile tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py`
+- NPU/process preflight logs captured before validation.
+- Real-device normal Gate C probe:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH:-} python tools/svdq_w4a8_gmm2_from_mixed_hidden_probe.py --require-npu --top-k 1 --route-experts 0 --local-num-experts 8 --summary-name phase_stage2_gmm2_mixed_rounding_true_top1_expert0.json`
+
+Evidence paths:
+
+- NPU preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_mixed_rounding_preflight_npus.log`
+- Python logical-device preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_mixed_rounding_preflight_python.log`
+- Active process preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_mixed_rounding_preflight_processes.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_mixed_rounding_true_top1_expert0.log`
+- Probe exit code:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_gmm2_mixed_rounding_true_top1_expert0.exitcode`
+  contains `1`, expected because Stage 2.2 still fails strict Gate C.
+- Probe summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_mixed_rounding_true_top1_expert0.json`
+
+Validated status fields from the new summary:
+
+- `official_gmm2_entry_reached: true`
+- `official_gmm2_aic_raw_output_finite: true`
+- `official_gmm2_aic_raw_output_nonzero: true`
+- `official_gmm2_aic_reference_passed: true`
+- `official_gmm2_accumulator_int32_reference_passed: true`
+- `official_gmm2_c2v_handoff_verified: true`
+- `official_gmm2_post_dequant_finite: true`
+- `official_gmm2_post_dequant_nonzero: true`
+- `official_gmm2_post_dequant_reference_passed: false`
+- `official_gmm2_numerical_gate_passed: false`
+- `gate_a_input_boundary_passed: true`
+
+Numerical result:
+
+- Strict current Gate C reference remains unchanged and fails max tolerance:
+  max abs `0.00037679076194763184`, mean abs `1.82786079676589e-05`.
+- Prior best single rounding variant remains:
+  `scale_low32_fp16_toward_zero`, best key `[0.00023069977760314941, 1.006269667414017e-05, 20]`.
+- New mixed high/low diagnostic best variant:
+  `high_toward_zero__low_toward_zero`, best key
+  `[0.00023069977760314941, 1.006269667414017e-05, 20]`.
+- The mixed diagnostic therefore rejects the hypothesis that different high-half and low-half FP16 rounding modes
+  explain the remaining mismatch.
+
+Current interpretation:
+
+1. Low32 scale remains the only plausible packed scale word for this path.
+2. Independent high/low D2 rounding candidates do not improve beyond applying toward-zero to both halves.
+3. Stage 2.2 still fails. The unresolved boundary remains the precise official Fixpipe `VDEQF16`/D2 behavior or a
+   still-missing AIV comparator detail downstream of the exact int32 accumulator.
+4. Do not relax the gate, modify lifecycle state, or proceed to Stage 2.3.
+
 ## Stage 2.2 Official GMM2 Path Constraint Reaffirmed - 2026-06-27
 
-This section is the latest authoritative handoff. It applies
+Historical section. It applied
 `/root/workspace/lza/svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` as a binding
 constraint for the next work. The earlier sections below are historical evidence. The appendix's all-zero
 post-dequant symptom is superseded by the latest local probe evidence: Gate B int32 accumulator and Gate C
