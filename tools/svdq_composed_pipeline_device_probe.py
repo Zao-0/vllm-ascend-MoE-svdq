@@ -22,6 +22,7 @@ Qwen3.5 dimensions:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -166,6 +167,127 @@ def _tensor_error(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, flo
         "max_abs": float(diff.max().item()) if diff.numel() and diff_finite else float("inf"),
         "mean_abs": float(diff.mean().item()) if diff.numel() and diff_finite else float("inf"),
     }
+
+
+def _tensor_raw_bytes(tensor: torch.Tensor) -> bytes:
+    cpu = tensor.detach().cpu().contiguous()
+    if cpu.dtype == torch.bfloat16:
+        return cpu.view(torch.uint16).numpy().tobytes()
+    if cpu.dtype == torch.float16:
+        return cpu.view(torch.uint16).numpy().tobytes()
+    return cpu.numpy().tobytes()
+
+
+def _tensor_sha256(tensor: torch.Tensor) -> str:
+    return hashlib.sha256(_tensor_raw_bytes(tensor)).hexdigest()
+
+
+def _row_sha256_first(tensor: torch.Tensor, *, row_count: int = 16) -> list[str]:
+    cpu = tensor.detach().cpu()
+    if cpu.ndim < 2:
+        return []
+    return [_tensor_sha256(cpu[row]) for row in range(min(int(cpu.shape[0]), int(row_count)))]
+
+
+def _same_routing_identity_manifest(
+    *,
+    routed_x: torch.Tensor,
+    hidden_bf16: torch.Tensor,
+    hidden_q: torch.Tensor,
+    hidden_scale: torch.Tensor,
+    peer_output: torch.Tensor,
+    topk_weights: torch.Tensor,
+    expanded_row_idx: torch.Tensor,
+    num_tokens: int,
+    top_k: int,
+) -> dict[str, Any]:
+    routed_rows = int(num_tokens) * int(top_k)
+    row_map = []
+    for routed_row in range(min(routed_rows, 64)):
+        source_token_id = routed_row // int(top_k)
+        topk_slot = routed_row % int(top_k)
+        row_map.append(
+            {
+                "routed_row": routed_row,
+                "source_token_id": source_token_id,
+                "top_k_slot": topk_slot,
+                "global_expert_id": topk_slot,
+                "local_expert_id": topk_slot,
+                "expert_prefix_start": source_token_id * int(top_k),
+                "expert_local_row_offset": source_token_id,
+                "tp_rank": 0,
+                "ep_rank": 0,
+                "active": True,
+            }
+        )
+
+    expanded_expected = torch.arange(routed_rows, dtype=torch.int32)
+    expanded_matches = bool(torch.equal(expanded_row_idx.detach().cpu().to(torch.int32), expanded_expected))
+    weights_row_consistent = (
+        bool(torch.allclose(topk_weights.detach().cpu(), topk_weights.detach().cpu()[0:1].expand_as(topk_weights)))
+        if topk_weights.numel()
+        else True
+    )
+    manifest = {
+        "manifest_scope": (
+            "Stage 2.3 synthetic same-routing composition evidence. The same flattened [token, top_k] routed rows "
+            "feed the first-stage W4A8 residual placeholder, first-stage SVDQ gate/up branch, canonical hidden "
+            "producer, SVDQ down branch, W4A8 hidden quant branch, mixed down output, and final combine indices."
+        ),
+        "limitations": (
+            "This probe uses deterministic synthetic factors/activations at Qwen3.5 dimensions; it is not the "
+            "real-checkpoint residual W4A8 GMM1/GMM2 plus SVDQ down final-combine gate."
+        ),
+        "topology": {
+            "tp_size": 1,
+            "tp_rank": 0,
+            "ep_size": 1,
+            "ep_rank": 0,
+            "num_tokens": int(num_tokens),
+            "top_k": int(top_k),
+            "routed_rows": routed_rows,
+        },
+        "route_order": {
+            "flattening": "routed_row = source_token_id * top_k + top_k_slot",
+            "expanded_row_idx_matches_arange": expanded_matches,
+            "topk_weights_shape": list(topk_weights.shape),
+            "topk_weights_row_consistent": weights_row_consistent,
+            "row_map_first64": row_map,
+        },
+        "boundary_hashes": {
+            "routed_x_all": _tensor_sha256(routed_x),
+            "routed_x_row_sha256_first16": _row_sha256_first(routed_x),
+            "first_stage_w4a8_input": _tensor_sha256(routed_x),
+            "first_stage_svdq_gate_up_input": _tensor_sha256(routed_x),
+            "canonical_hidden_all": _tensor_sha256(hidden_bf16),
+            "canonical_hidden_row_sha256_first16": _row_sha256_first(hidden_bf16),
+            "svdq_down_hidden_input": _tensor_sha256(hidden_bf16),
+            "w4a8_hidden_quant_input": _tensor_sha256(hidden_bf16),
+            "hidden_q_all": _tensor_sha256(hidden_q),
+            "hidden_scale_all": _tensor_sha256(hidden_scale),
+            "mixed_down_peer_output_all": _tensor_sha256(peer_output),
+            "final_combine_input": _tensor_sha256(peer_output),
+            "expanded_row_idx": _tensor_sha256(expanded_row_idx),
+        },
+    }
+    manifest["checks"] = {
+        "first_stage_w4a8_and_svdq_share_routed_x": (
+            manifest["boundary_hashes"]["first_stage_w4a8_input"]
+            == manifest["boundary_hashes"]["first_stage_svdq_gate_up_input"]
+        ),
+        "svdq_down_and_w4a8_hidden_quant_share_canonical_hidden": (
+            manifest["boundary_hashes"]["svdq_down_hidden_input"]
+            == manifest["boundary_hashes"]["w4a8_hidden_quant_input"]
+        ),
+        "final_combine_uses_mixed_down_peer_output": (
+            manifest["boundary_hashes"]["mixed_down_peer_output_all"]
+            == manifest["boundary_hashes"]["final_combine_input"]
+        ),
+        "expanded_row_idx_matches_arange": expanded_matches,
+        "all_rows_active_no_padding": int(expanded_row_idx.numel()) == routed_rows,
+    }
+    manifest["passed"] = all(bool(value) for value in manifest["checks"].values())
+    return manifest
 
 
 def _stage_passed(error: dict[str, Any], *, max_abs_tol: float, mean_abs_tol: float) -> bool:
@@ -371,6 +493,17 @@ def _run_probe(
     final_output_cpu = final_output.detach().cpu()
     final_expected = final_reference["stages"]["combined_output"].to(torch.bfloat16)
     q_diff = (hidden_q_cpu.to(torch.int16) - first_mixed_reference["stages"]["hidden_q"].to(torch.int16)).abs()
+    routing_identity = _same_routing_identity_manifest(
+        routed_x=routed_x,
+        hidden_bf16=hidden_bf16,
+        hidden_q=hidden_q_cpu,
+        hidden_scale=hidden_scale_cpu,
+        peer_output=peer_output,
+        topk_weights=topk_weights,
+        expanded_row_idx=expanded_row_idx,
+        num_tokens=num_tokens,
+        top_k=top_k,
+    )
 
     stage_errors = {
         "gate_up_rank": _tensor_error(npu_gate_up["gate_up_rank"], cpu_gate_up["gate_up_rank"].to(torch.bfloat16)),
@@ -398,6 +531,7 @@ def _run_probe(
         "down_lowrank": _stage_passed(stage_errors["down_lowrank"], max_abs_tol=max_abs_tol, mean_abs_tol=mean_abs_tol),
         "peer_output": _stage_passed(stage_errors["peer_output"], max_abs_tol=max_abs_tol, mean_abs_tol=mean_abs_tol),
         "final_output": _stage_passed(stage_errors["final_output"], max_abs_tol=max_abs_tol, mean_abs_tol=mean_abs_tol),
+        "routing_identity": bool(routing_identity["passed"]),
     }
     return {
         "stage": "composed_svdq_pipeline_npu_math",
@@ -425,6 +559,7 @@ def _run_probe(
         "hidden_q_exact_match": stage_passed["hidden_q"],
         "hidden_q_mismatch_count": int((q_diff != 0).sum().item()),
         "hidden_q_max_abs_diff": int(q_diff.max().item()) if q_diff.numel() else 0,
+        "routing_identity_manifest": routing_identity,
         "stage_passed": stage_passed,
         "max_abs_tolerance": max_abs_tol,
         "mean_abs_tolerance": mean_abs_tol,

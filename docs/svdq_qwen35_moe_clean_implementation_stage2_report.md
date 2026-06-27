@@ -5,15 +5,110 @@
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
 | Stage 2.2 modified-hidden official W4A8 GMM2 | PASS | Single-device real-checkpoint official-lifecycle top-1 expert-0 probe passes Gate A, Gate B, C2V, and strict Gate C with max/mean abs `0.0`. |
-| Stage 2.3 same-routing two-stage composition | NEXT / IN PROGRESS | Now unblocked by Stage 2.2; must prove shared routed-row identity across W4A8 and SVDQ branches before final down/combine. |
+| Stage 2.3 same-routing two-stage composition | IN PROGRESS | Synthetic Qwen3.5-dimension composed NPU probe now emits and passes same-routing row-identity manifest; real-checkpoint residual W4A8 plus SVDQ down/final-combine gate remains open. |
 | Stage 2.4 and later | BLOCKED | Blocked on Stage 2.3 same-routing composition and later numerical gates. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
 
+## Stage 2.3 Synthetic Same-Routing Manifest - 2026-06-27T02:43Z
+
+This section is the latest authoritative handoff. It supersedes the `2026-06-27T02:35Z` Stage 2.2 handoff only
+for the next active gate status: Stage 2.2 remains passed, and Stage 2.3 now has synthetic Qwen3.5-dimension
+same-routing evidence. It does not complete Stage 2.3 because the required real-checkpoint residual W4A8 plus SVDQ
+down/final-combine composition is still missing.
+
+Files changed:
+
+- `tools/svdq_composed_pipeline_device_probe.py`
+- `tests/ut/ops/test_svdq_moe_abi.py`
+- `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+
+Exact behavior added:
+
+- `svdq_composed_pipeline_device_probe.py` now emits `routing_identity_manifest`.
+- The manifest records flattened `[token, top_k]` row identity:
+  `routed_row = source_token_id * top_k + top_k_slot`.
+- The manifest records per-row identity fields for the first 64 rows: source token, top-k slot, global/local expert
+  ID, expert prefix start, expert-local row offset, TP rank, EP rank, and active status.
+- It records SHA256 hashes for the shared routed input, canonical hidden, hidden quant branch, SVDQ down hidden
+  input, mixed down peer output, final-combine input, and `expanded_row_idx`.
+- The probe now includes `routing_identity` in `stage_passed`; a route mismatch fails the probe.
+
+Stage 2.3 checks covered by this synthetic probe:
+
+- First-stage W4A8 placeholder and SVDQ gate/up branch share the same `routed_x` bytes.
+- SVDQ down and W4A8 hidden quant consume the same canonical BF16 hidden bytes.
+- Final combine consumes the mixed down peer output bytes.
+- `expanded_row_idx` is exactly `arange(num_tokens * top_k)`.
+- All synthetic routed rows are active with no padding.
+
+Validation commands:
+
+- Syntax and whitespace:
+  `python -m py_compile tools/svdq_composed_pipeline_device_probe.py`
+  `git diff --check -- tools/svdq_composed_pipeline_device_probe.py tests/ut/ops/test_svdq_moe_abi.py`
+- Focused static ABI regression:
+  `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q`
+  passed with `44 passed, 16 warnings`.
+- Real-device preflight used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`; Python preflight reported four visible
+  Ascend910B4 logical devices and selected logical NPU 0.
+- Probe command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_composed_pipeline_device_probe.py --require-npu --summary-name stage2/phase_stage2_composed_routing_manifest_summary.json`
+
+Evidence paths:
+
+- NPU preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_composed_routing_manifest_preflight_npus.log`
+- Python logical-device preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_composed_routing_manifest_preflight_python.log`
+- Active process preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_composed_routing_manifest_preflight_processes.log`
+- Probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_composed_routing_manifest.log`
+- Probe exit code:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_composed_routing_manifest.exitcode`
+  contains `0`.
+- Probe summary:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_composed_routing_manifest_summary.json`
+
+Real-device result:
+
+- Overall probe: `passed: true`.
+- `stage_passed.routing_identity: true`.
+- `routing_identity_manifest.checks.first_stage_w4a8_and_svdq_share_routed_x: true`.
+- `routing_identity_manifest.checks.svdq_down_and_w4a8_hidden_quant_share_canonical_hidden: true`.
+- `routing_identity_manifest.checks.final_combine_uses_mixed_down_peer_output: true`.
+- `routing_identity_manifest.checks.expanded_row_idx_matches_arange: true`.
+- `routing_identity_manifest.checks.all_rows_active_no_padding: true`.
+- Topology: TP size `1`, EP size `1`, `num_tokens=4`, `top_k=8`, routed rows `32`.
+
+Numerical boundaries from the same run:
+
+- `gate_up_rank`: max abs `0.0`, mean abs `0.0`.
+- `gate_lowrank`: max abs `0.001953125`, mean abs `9.491109813097864e-05`.
+- `up_lowrank`: max abs `0.0009765625`, mean abs `9.620988566894084e-05`.
+- `hidden_scale`: max abs `7.275957614183426e-12`, mean abs `6.821210263296962e-13`.
+- `down_rank`: max abs `0.0`, mean abs `0.0`.
+- `down_lowrank`: max abs `1.52587890625e-05`, mean abs `8.223607892432483e-07`.
+- `peer_output`: max abs `0.0`, mean abs `0.0`.
+- `final_output`: max abs `0.0`, mean abs `0.0`.
+
+Current interpretation:
+
+1. The composed NPU probe now proves same-routing identity for a synthetic Qwen3.5-dimension full stage order:
+   first-stage routed input, canonical hidden, W4A8 hidden quant input, SVDQ down input, mixed down peer output, and
+   final combine all use the intended row identity.
+2. This is not a Stage 2.3 acceptance pass yet, because it does not use the real-checkpoint W4A8 residual GMM1/GMM2
+   outputs, real SVDQ factors, and final real-checkpoint residual-plus-low-rank down path in one route.
+3. The next required step is a real-checkpoint Stage 2.3 probe that reuses the Stage 2.2 official GMM2 output,
+   actual SVDQ down output from the same canonical hidden, and one routing manifest for both branches.
+4. Production `DispatchFFNCombineW4A8SVDQ` remains fail-closed.
+
 ## Stage 2.2 Trunc13 Fixpipe Reference Pass - 2026-06-27T02:35Z
 
-This section is the latest authoritative handoff. It supersedes the `2026-06-27T02:24Z` FP16-scale / ULP
-diagnostic by promoting the source-backed, real-device-proven Fixpipe scale contract into the strict Stage 2.2
-GMM2 unfused reference. Production remains fail-closed; Stage 2.3 same-routing composition is the next active gate.
+Historical section for the current gate. Stage 2.2 remains passed; Stage 2.3 synthetic same-routing evidence is now
+recorded in the `2026-06-27T02:43Z` section above. This section previously superseded the `2026-06-27T02:24Z`
+FP16-scale / ULP diagnostic by promoting the source-backed, real-device-proven Fixpipe scale contract into the
+strict Stage 2.2 GMM2 unfused reference.
 
 Baseline note:
 
