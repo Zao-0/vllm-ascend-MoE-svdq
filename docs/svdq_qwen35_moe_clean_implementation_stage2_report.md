@@ -54,17 +54,23 @@ Current state:
   Gate A/B/C on the real device, then validate production fused numerics and four-NPU target-model E2E with exactly
   `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
 
-## Stage 2.4 Official W4A8 Scratch Output Boundary - 2026-06-27
+## Stage 2.4 Official W4A8 Scratch Output And Workspace Boundaries - 2026-06-27
 
 Purpose:
 
 - Added `SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT` as an internal BF16 workspace region for the ordinary official W4A8
   final-combine output.
+- Added `SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE` as a private workspace segment for the official W4A8 wrapper's own
+  `params.ptrWorkspace` layout, sized with `ResidualW4A8OfficialWorkspaceBytes(info)`.
 - Redirected `BuildOfficialW4A8FullLifecycleLaunch().out` from `runtime_.out` to
   `WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)`.
-- Added a readiness check that the official full-lifecycle launch descriptor uses the scratch output region.
+- Redirected `BuildOfficialW4A8FullLifecycleLaunch().workspace` from the SVDQ workspace base to
+  `WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE)`.
+- Added readiness checks that the official full-lifecycle launch descriptor uses the scratch output and private
+  official workspace regions.
 - This prevents a future fail-closed official wrapper bridge from accepting or writing ordinary W4A8 final-combine
-  output as the fused SVDQ result before mixed down and official final combine are validated.
+  output as the fused SVDQ result, or overwriting SVDQ workspace regions with the official wrapper workspace layout,
+  before mixed down and official final combine are validated.
 
 Files changed:
 
@@ -76,8 +82,9 @@ Files changed:
 
 Machine-checkable state:
 
-- `SVDQ_WORKSPACE_REGION_COUNT = 17`
+- `SVDQ_WORKSPACE_REGION_COUNT = 18`
 - `SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT = 16`
+- `SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE = 17`
 - `source_proof.kernel_residual_gmm_official_scratch_output_recorded=true`
 - `production_fail_closed.residual_gmm_official_scratch_output_recorded=true`
 - `source_proof.kernel_residual_gmm_official_full_lifecycle_execution_enabled=false`

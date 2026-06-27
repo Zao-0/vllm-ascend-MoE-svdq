@@ -253,6 +253,16 @@ WORKSPACE_REGIONS = [
         "lifetime_id": 17,
         "purpose": "scratch destination for ordinary official W4A8 final-combine output; never accepted as SVDQ output",
     },
+    {
+        "id": 17,
+        "name": "SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE",
+        "dtype": "SVDQ_DTYPE_INT8",
+        "size_expr": "ResidualW4A8OfficialWorkspaceBytes(info)",
+        "producer_stage": "SVDQ_STAGE_W4A8_GEMM_1",
+        "consumer_stage": "SVDQ_STAGE_W4A8_GEMM_2",
+        "lifetime_id": 18,
+        "purpose": "private workspace for official W4A8 wrapper layout; starts at official params.ptrWorkspace",
+    },
 ]
 
 SYNC_FLAGS = [
@@ -1105,7 +1115,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "runtime_.residual.bias1, runtime_.residual.bias2" in sources["kernel_contract"]
             and "runtime_.probs, runtime_.xActiveMask, WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)"
             in sources["kernel_contract"]
-            and "runtime_.expertTokenNums, runtime_.workspace" in sources[
+            and "runtime_.expertTokenNums, WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE)" in sources[
                 "kernel_contract"
             ]
             and "runtime_.tiling, EmbeddedOfficialW4A8TilingGM(), WorkspaceAddress(SVDQ_REGION_ACCUMULATOR_1)"
@@ -1153,14 +1163,23 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         ),
         "kernel_residual_gmm_official_scratch_output_recorded": (
             "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT = 16" in sources["kernel_tiling"]
-            and "SVDQ_WORKSPACE_REGION_COUNT = 17" in sources["kernel_tiling"]
+            and "SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE = 17" in sources["kernel_tiling"]
+            and "SVDQ_WORKSPACE_REGION_COUNT = 18" in sources["kernel_tiling"]
             and "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT, offset" in sources["host_tiling"]
             and "activeSlots * hiddenSize * BF16_BYTES" in sources["host_tiling"]
+            and "SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE, offset" in sources["host_tiling"]
+            and "ResidualW4A8OfficialWorkspaceBytes(info)" in sources["host_tiling"]
             and "GM_ADDR officialW4A8ScratchOut;" in sources["kernel_contract"]
+            and "GM_ADDR officialW4A8Workspace;" in sources["kernel_contract"]
             and "WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)" in sources["kernel_contract"]
+            and "WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE)" in sources["kernel_contract"]
             and "launch.out == WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)"
             in sources["kernel_contract"]
+            and "launch.workspace == WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE)"
+            in sources["kernel_contract"]
             and "workspace_.officialW4A8ScratchOut = WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)"
+            in sources["kernel_contract"]
+            and "workspace_.officialW4A8Workspace = WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_WORKSPACE)"
             in sources["kernel_contract"]
         ),
         "kernel_residual_gmm_official_full_lifecycle_execution_enabled": (
