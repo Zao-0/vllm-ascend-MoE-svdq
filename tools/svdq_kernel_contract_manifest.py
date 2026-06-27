@@ -243,6 +243,16 @@ WORKSPACE_REGIONS = [
         "lifetime_id": 16,
         "purpose": "down BF16 rank-state buffer between down L1 and down L2 stages",
     },
+    {
+        "id": 16,
+        "name": "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT",
+        "dtype": "SVDQ_DTYPE_BF16",
+        "size_expr": "m * topK * hiddenSize * BF16_BYTES",
+        "producer_stage": "SVDQ_STAGE_W4A8_GEMM_2",
+        "consumer_stage": "SVDQ_STAGE_W4A8_GEMM_2",
+        "lifetime_id": 17,
+        "purpose": "scratch destination for ordinary official W4A8 final-combine output; never accepted as SVDQ output",
+    },
 ]
 
 SYNC_FLAGS = [
@@ -1093,7 +1103,9 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             ]
             and "runtime_.residual.scale1, runtime_.residual.scale2" in sources["kernel_contract"]
             and "runtime_.residual.bias1, runtime_.residual.bias2" in sources["kernel_contract"]
-            and "runtime_.probs, runtime_.xActiveMask, runtime_.out, runtime_.expertTokenNums" in sources[
+            and "runtime_.probs, runtime_.xActiveMask, WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)"
+            in sources["kernel_contract"]
+            and "runtime_.expertTokenNums, runtime_.workspace" in sources[
                 "kernel_contract"
             ]
             and "runtime_.tiling, EmbeddedOfficialW4A8TilingGM(), WorkspaceAddress(SVDQ_REGION_ACCUMULATOR_1)"
@@ -1103,6 +1115,8 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "WorkspaceAddress(SVDQ_REGION_HIDDEN_SCALE), true, true, true, true, true, true, true"
             in sources["kernel_contract"]
             and "launch.gmm1PostDequantFp32 != nullptr && launch.gmm2PostDequantFp32 != nullptr"
+            in sources["kernel_contract"]
+            and "launch.out == WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)"
             in sources["kernel_contract"]
             and "launch.externalHiddenPacked != nullptr && launch.externalHiddenScale != nullptr"
             in sources["kernel_contract"]
@@ -1136,6 +1150,18 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             and "!OfficialW4A8InterleavedProducerReady()" in sources["kernel_contract"]
             and "GMM1 must write the FP32 tap before mixed SwiGLU" in sources["kernel_contract"]
             and "GMM2 must consume the SVDQ hidden" in sources["kernel_contract"]
+        ),
+        "kernel_residual_gmm_official_scratch_output_recorded": (
+            "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT = 16" in sources["kernel_tiling"]
+            and "SVDQ_WORKSPACE_REGION_COUNT = 17" in sources["kernel_tiling"]
+            and "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT, offset" in sources["host_tiling"]
+            and "activeSlots * hiddenSize * BF16_BYTES" in sources["host_tiling"]
+            and "GM_ADDR officialW4A8ScratchOut;" in sources["kernel_contract"]
+            and "WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)" in sources["kernel_contract"]
+            and "launch.out == WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)"
+            in sources["kernel_contract"]
+            and "workspace_.officialW4A8ScratchOut = WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)"
+            in sources["kernel_contract"]
         ),
         "kernel_residual_gmm_official_full_lifecycle_execution_enabled": (
             "DispatchFFNCombineW4A8<DTYPE_A, DTYPE_W1, DTYPE_OUT, false, true> op" in sources[
@@ -2542,6 +2568,9 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
             ],
             "residual_gmm_official_interleaved_producer_contract_recorded": source_proof[
                 "kernel_residual_gmm_official_interleaved_producer_contract_recorded"
+            ],
+            "residual_gmm_official_scratch_output_recorded": source_proof[
+                "kernel_residual_gmm_official_scratch_output_recorded"
             ],
             "residual_gmm_embedded_official_tiling_pointer_recorded": source_proof[
                 "kernel_residual_gmm_official_full_lifecycle_call_surface_recorded"

@@ -1219,7 +1219,7 @@ def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
     tiling = (op_root / "op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp").read_text()
     tiling_header = (op_root / "op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h").read_text()
 
-    assert "SVDQ_WORKSPACE_REGION_COUNT = 16" in tiling_header
+    assert "SVDQ_WORKSPACE_REGION_COUNT = 17" in tiling_header
     assert "SVDQWorkspaceRegion workspaceRegions[SVDQ_WORKSPACE_REGION_COUNT]" in tiling_header
     assert "workspaceBytes" in tiling_header
     assert "BuildWorkspaceMap" in tiling
@@ -1242,6 +1242,7 @@ def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
         "SVDQ_REGION_PEER_OUTPUT",
         "SVDQ_REGION_LOWRANK_RANK_1",
         "SVDQ_REGION_LOWRANK_RANK_2",
+        "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT",
     ):
         assert region in tiling_header
         assert region in tiling
@@ -1272,6 +1273,8 @@ def test_svdq_cann_tiling_workspace_map_matches_required_dataflow():
     assert "routedRows * hiddenSize * FP32_BYTES" in tiling
     assert "SVDQ_REGION_ACCUMULATOR_1, offset, routedRows * gateUpSize * FP32_BYTES" in tiling
     assert "SVDQ_REGION_ACCUMULATOR_2, offset, routedRows * hiddenSize * FP32_BYTES" in tiling
+    assert "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT, offset" in tiling
+    assert "activeSlots * hiddenSize * BF16_BYTES" in tiling
     assert "DispatchFFNCombineW4A8SVDQ AscendC kernel is not implemented yet" not in tiling
     assert "return ge::GRAPH_SUCCESS;" in tiling
 
@@ -1869,11 +1872,13 @@ def test_svdq_cann_tiling_records_w4a8_residual_stage_contract():
         "launch.k == bridge.officialN / 2 && launch.n == bridge.officialK",
         "runtime_.x, runtime_.residual.w1, runtime_.residual.w2, runtime_.expertId",
         "runtime_.residual.scale1, runtime_.residual.scale2, runtime_.residual.bias1",
-        "runtime_.probs, runtime_.xActiveMask, runtime_.out, runtime_.expertTokenNums",
+        "runtime_.probs, runtime_.xActiveMask, WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)",
+        "runtime_.expertTokenNums, runtime_.workspace",
         "runtime_.tiling, EmbeddedOfficialW4A8TilingGM(), WorkspaceAddress(SVDQ_REGION_ACCUMULATOR_1)",
         "WorkspaceAddress(SVDQ_REGION_ACCUMULATOR_2), WorkspaceAddress(SVDQ_REGION_HIDDEN_Q)",
         "WorkspaceAddress(SVDQ_REGION_HIDDEN_SCALE), true, true, true, true, true, true, true",
         "launch.officialTiling != nullptr",
+        "launch.out == WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)",
         "launch.gmm1PostDequantFp32 != nullptr && launch.gmm2PostDequantFp32 != nullptr",
         "launch.externalHiddenPacked != nullptr && launch.externalHiddenScale != nullptr",
         "OfficialW4A8WrapperTypeBound()",
@@ -2778,6 +2783,7 @@ def test_svdq_cann_kernel_contract_resolves_factors_workspace_and_bf16_stages():
         ("lowRankAccumulator1", "SVDQ_REGION_LOWRANK_ACCUMULATOR_1"),
         ("lowRankAccumulator2", "SVDQ_REGION_LOWRANK_ACCUMULATOR_2"),
         ("peerOutput", "SVDQ_REGION_PEER_OUTPUT"),
+        ("officialW4A8ScratchOut", "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT"),
     ):
         assert f"workspace_.{region_field} = WorkspaceAddress({region_id})" in contract
 
@@ -2956,7 +2962,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     )
     assert loaded["counts"] == {
         "factor_abi": 5,
-        "workspace_regions": 16,
+        "workspace_regions": 17,
         "sync_flags": 14,
         "bf16_stages": 7,
         "residual_stages": 4,
@@ -2992,6 +2998,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_fail_closed"]["residual_gmm_official_tiling_bridge_consumed"]
     assert loaded["production_fail_closed"]["residual_gmm_official_full_lifecycle_call_surface_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_official_interleaved_producer_contract_recorded"]
+    assert loaded["production_fail_closed"]["residual_gmm_official_scratch_output_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_embedded_official_tiling_pointer_recorded"]
     assert loaded["production_fail_closed"]["residual_gmm_official_wrapper_type_bound"]
     assert not loaded["production_fail_closed"]["residual_gmm_official_full_lifecycle_execution_enabled"]
@@ -3048,6 +3055,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_residual_gmm_official_tiling_bridge_consumed"]
     assert loaded["source_proof"]["kernel_residual_gmm_official_full_lifecycle_call_surface_recorded"]
     assert loaded["source_proof"]["kernel_residual_gmm_official_interleaved_producer_contract_recorded"]
+    assert loaded["source_proof"]["kernel_residual_gmm_official_scratch_output_recorded"]
     assert not loaded["source_proof"]["kernel_residual_gmm_official_full_lifecycle_execution_enabled"]
     assert not loaded["source_proof"]["kernel_residual_gmm_scalar_execution_enabled"]
     assert loaded["source_proof"]["kernel_residual_gmm_scalar_helpers_absent"]
@@ -3073,9 +3081,19 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["lowrank_helper_uses_separate_rank_workspace"]
     assert loaded["source_proof"]["lowrank_helper_stage_orders_rank_consumers"]
     assert [region["name"] for region in loaded["workspace_regions"][-2:]] == [
-        "SVDQ_REGION_LOWRANK_RANK_1",
         "SVDQ_REGION_LOWRANK_RANK_2",
+        "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT",
     ]
+    assert loaded["workspace_regions"][-1] == {
+        "id": 16,
+        "name": "SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT",
+        "dtype": "SVDQ_DTYPE_BF16",
+        "size_expr": "m * topK * hiddenSize * BF16_BYTES",
+        "producer_stage": "SVDQ_STAGE_W4A8_GEMM_2",
+        "consumer_stage": "SVDQ_STAGE_W4A8_GEMM_2",
+        "lifetime_id": 17,
+        "purpose": "scratch destination for ordinary official W4A8 final-combine output; never accepted as SVDQ output",
+    }
     assert [stage["name"] for stage in loaded["residual_stages"]] == [
         "SVDQ_RESIDUAL_STAGE_QUANT_ROUTED_INPUT",
         "SVDQ_RESIDUAL_STAGE_W4A8_GMM1",

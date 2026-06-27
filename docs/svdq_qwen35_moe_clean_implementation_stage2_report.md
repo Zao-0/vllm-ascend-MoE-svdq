@@ -54,6 +54,43 @@ Current state:
   Gate A/B/C on the real device, then validate production fused numerics and four-NPU target-model E2E with exactly
   `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`.
 
+## Stage 2.4 Official W4A8 Scratch Output Boundary - 2026-06-27
+
+Purpose:
+
+- Added `SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT` as an internal BF16 workspace region for the ordinary official W4A8
+  final-combine output.
+- Redirected `BuildOfficialW4A8FullLifecycleLaunch().out` from `runtime_.out` to
+  `WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT)`.
+- Added a readiness check that the official full-lifecycle launch descriptor uses the scratch output region.
+- This prevents a future fail-closed official wrapper bridge from accepting or writing ordinary W4A8 final-combine
+  output as the fused SVDQ result before mixed down and official final combine are validated.
+
+Files changed:
+
+- `csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h`
+- `csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp`
+- `csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq.h`
+- `tools/svdq_kernel_contract_manifest.py`
+- `tests/ut/ops/test_svdq_moe_abi.py`
+
+Machine-checkable state:
+
+- `SVDQ_WORKSPACE_REGION_COUNT = 17`
+- `SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT = 16`
+- `source_proof.kernel_residual_gmm_official_scratch_output_recorded=true`
+- `production_fail_closed.residual_gmm_official_scratch_output_recorded=true`
+- `source_proof.kernel_residual_gmm_official_full_lifecycle_execution_enabled=false`
+- `production_fail_closed.residual_gmm_execution_enabled=false`
+- `production_admission.production_enable_allowed=false`
+
+Current state:
+
+- No official W4A8 production execution was enabled.
+- No public `torch_npu.npu_grouped_matmul`, scalar W4A8 GEMM, host W4 unpacking, or guessed dequant path was added.
+- This is a production safety boundary for the future official producer bridge; it is not Stage 2.2/2.6 numerical
+  progress by itself.
+
 ## Stage 2.2 Official-vs-Debug GMM2 Lifecycle Table - 2026-06-27
 
 Purpose:

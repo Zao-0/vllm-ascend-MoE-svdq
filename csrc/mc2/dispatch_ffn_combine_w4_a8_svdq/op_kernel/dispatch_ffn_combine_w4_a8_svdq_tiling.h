@@ -20,7 +20,7 @@
 #include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2_tiling.h"
 #include "../../dispatch_ffn_combine_w4_a8/op_kernel/unpermute/moe_token_unpermute_tiling.h"
 
-constexpr uint32_t SVDQ_WORKSPACE_REGION_COUNT = 16;
+constexpr uint32_t SVDQ_WORKSPACE_REGION_COUNT = 17;
 constexpr uint32_t SVDQ_SYNC_FLAG_COUNT = 14;
 constexpr uint32_t SVDQ_BF16_STAGE_COUNT = 7;
 constexpr uint32_t SVDQ_RESIDUAL_STAGE_COUNT = 4;
@@ -46,6 +46,7 @@ enum SVDQWorkspaceRegionId : uint32_t {
     SVDQ_REGION_PEER_OUTPUT = 13,
     SVDQ_REGION_LOWRANK_RANK_1 = 14,
     SVDQ_REGION_LOWRANK_RANK_2 = 15,
+    SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT = 16,
 };
 
 enum SVDQWorkspaceDType : uint32_t {

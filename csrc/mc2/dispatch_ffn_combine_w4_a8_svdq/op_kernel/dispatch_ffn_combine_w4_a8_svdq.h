@@ -172,6 +172,7 @@ struct SVDQWorkspaceGM {
     GM_ADDR peerOutput;
     GM_ADDR lowRankRank1;
     GM_ADDR lowRankRank2;
+    GM_ADDR officialW4A8ScratchOut;
 };
 
 struct SVDQBF16StageContract {
@@ -1088,7 +1089,8 @@ public:
     {
         return {runtime_.x, runtime_.residual.w1, runtime_.residual.w2, runtime_.expertId,
             runtime_.residual.scale1, runtime_.residual.scale2, runtime_.residual.bias1, runtime_.residual.bias2,
-            runtime_.probs, runtime_.xActiveMask, runtime_.out, runtime_.expertTokenNums, runtime_.workspace,
+            runtime_.probs, runtime_.xActiveMask, WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT),
+            runtime_.expertTokenNums, runtime_.workspace,
             runtime_.tiling, EmbeddedOfficialW4A8TilingGM(), WorkspaceAddress(SVDQ_REGION_ACCUMULATOR_1),
             WorkspaceAddress(SVDQ_REGION_ACCUMULATOR_2), WorkspaceAddress(SVDQ_REGION_HIDDEN_Q),
             WorkspaceAddress(SVDQ_REGION_HIDDEN_SCALE), true, true, true, true, true, true, true};
@@ -1103,7 +1105,9 @@ public:
         return launch.x != nullptr && launch.w1 != nullptr && launch.w2 != nullptr &&
                launch.expertId != nullptr && launch.scale1 != nullptr && launch.scale2 != nullptr &&
                launch.bias1 != nullptr && launch.bias2 != nullptr && launch.probs != nullptr &&
-               launch.xActiveMask != nullptr && launch.out != nullptr && launch.expertTokenNums != nullptr &&
+               launch.xActiveMask != nullptr &&
+               launch.out == WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT) &&
+               launch.expertTokenNums != nullptr &&
                launch.workspace != nullptr && launch.svdqTiling != nullptr && launch.officialTiling != nullptr &&
                launch.gmm1PostDequantFp32 != nullptr && launch.gmm2PostDequantFp32 != nullptr &&
                launch.externalHiddenPacked != nullptr && launch.externalHiddenScale != nullptr &&
@@ -1761,6 +1765,7 @@ private:
         workspace_.peerOutput = WorkspaceAddress(SVDQ_REGION_PEER_OUTPUT);
         workspace_.lowRankRank1 = WorkspaceAddress(SVDQ_REGION_LOWRANK_RANK_1);
         workspace_.lowRankRank2 = WorkspaceAddress(SVDQ_REGION_LOWRANK_RANK_2);
+        workspace_.officialW4A8ScratchOut = WorkspaceAddress(SVDQ_REGION_OFFICIAL_W4A8_SCRATCH_OUT);
     }
 
     SVDQRuntimeGM runtime_;
