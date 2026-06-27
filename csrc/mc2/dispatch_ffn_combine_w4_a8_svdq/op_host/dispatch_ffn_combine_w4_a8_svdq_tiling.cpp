@@ -207,6 +207,121 @@ static void BuildSyncFlagTable(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
     tilingData->info.syncFlagCount = SVDQ_SYNC_FLAG_COUNT;
 }
 
+class SVDQBF16RouteOnlyTilingBase : public InnerMoeInitRoutingV2TilingBase {
+public:
+    const InnerMoeInitRoutingV2TilingData& Data() const
+    {
+        return moeInitRoutingTilingData;
+    }
+
+protected:
+    void Tiling4GatherOutCompute() override
+    {
+        auto tilingData = &moeInitRoutingTilingData.gatherOutComputeParamsOp;
+        tilingData->activateRows = totalLength;
+        if (dropPadMode == 0) {
+            tilingData->activateRows = activateNum;
+        }
+        int64_t perCoreRows = CeilDiv(totalLength, aivNum);
+        if (perCoreRows <= 0 || moeInitRoutingTilingData.cols <= 0) {
+            tilingData->needCoreNum = 0;
+            return;
+        }
+
+        tilingData->needCoreNum = CeilDiv(totalLength, perCoreRows);
+        const int64_t cols = moeInitRoutingTilingData.cols;
+        tilingData->perCoreRows = perCoreRows;
+        const int64_t lastCoreRows = totalLength - perCoreRows * (tilingData->needCoreNum - 1);
+        tilingData->lastCoreRows = lastCoreRows;
+
+        const int64_t rowSize = CeilDiv(perCoreRows * static_cast<int64_t>(sizeof(int32_t)), ONE_BLOCK_BYTE) *
+                                ONE_BLOCK_BYTE;
+        const int64_t colSize = CeilDiv(cols * inuptXDtypeSize_, ONE_BLOCK_BYTE) * ONE_BLOCK_BYTE;
+        if (rowSize + colSize < static_cast<int64_t>(aicoreParams_.ubSize) / NUM_TWO) {
+            tilingData->perCorePerLoopRows = perCoreRows;
+            tilingData->perCoreLastLoopRows = perCoreRows;
+            tilingData->lastCorePerLoopRows = lastCoreRows;
+            tilingData->lastCoreLastLoopRows = lastCoreRows;
+            tilingData->perCoreLoops = 1;
+            tilingData->lastCoreLoops = 1;
+            tilingData->perLoopCols = cols;
+            tilingData->lastLoopCols = cols;
+            tilingData->colLoops = 1;
+            return;
+        }
+
+        int64_t baseMaxCols = MAX_COLS_ONE_LOOP;
+        const int64_t baseMaxColsSize = CeilDiv(baseMaxCols * inuptXDtypeSize_, ONE_BLOCK_BYTE) * ONE_BLOCK_BYTE;
+        int64_t basePerLoopMaxRows =
+            (static_cast<int64_t>(aicoreParams_.ubSize) / NUM_TWO - baseMaxColsSize) /
+            static_cast<int64_t>(sizeof(int32_t)) / ONE_BLOCK_BYTE * ONE_BLOCK_BYTE;
+        if (cols < MAX_COLS_ONE_LOOP) {
+            basePerLoopMaxRows = (static_cast<int64_t>(aicoreParams_.ubSize) / NUM_TWO - colSize) /
+                                 static_cast<int64_t>(sizeof(int32_t)) / ONE_BLOCK_BYTE * ONE_BLOCK_BYTE;
+        } else if (perCoreRows < basePerLoopMaxRows) {
+            baseMaxCols = (static_cast<int64_t>(aicoreParams_.ubSize) / NUM_TWO - rowSize) / inuptXDtypeSize_ /
+                          ONE_BLOCK_BYTE * ONE_BLOCK_BYTE;
+        }
+
+        tilingData->perLoopCols = std::min(baseMaxCols, cols);
+        tilingData->lastLoopCols = GetPerOrLastValue(cols, baseMaxCols);
+        tilingData->colLoops = CeilDiv(cols, baseMaxCols);
+        tilingData->perCorePerLoopRows = std::min(perCoreRows, basePerLoopMaxRows);
+        tilingData->perCoreLastLoopRows = GetPerOrLastValue(perCoreRows, basePerLoopMaxRows);
+        tilingData->perCoreLoops = CeilDiv(perCoreRows, basePerLoopMaxRows);
+        tilingData->lastCorePerLoopRows = std::min(lastCoreRows, basePerLoopMaxRows);
+        tilingData->lastCoreLastLoopRows = GetPerOrLastValue(lastCoreRows, basePerLoopMaxRows);
+        tilingData->lastCoreLoops = CeilDiv(lastCoreRows, basePerLoopMaxRows);
+    }
+
+    bool IsFullLoad() override
+    {
+        if (totalLength > sortLoopMaxElement || moeInitRoutingTilingData.cols > MAX_COLS_ONE_LOOP ||
+            dropPadMode == 1) {
+            return false;
+        }
+
+        const int64_t alignedLength = CeilDiv(totalLength, SORT32_ALIGN_ELEMENT) * SORT32_ALIGN_ELEMENT;
+        const int64_t sortSpace = alignedLength * static_cast<int64_t>(sizeof(int32_t)) * ONE_CORE_SORT_BUFFER;
+        const int64_t otherSpace = alignedLength * static_cast<int64_t>(sizeof(int32_t)) * NUM_THREE;
+        const int64_t expertSpace =
+            CeilDiv(expertNum * static_cast<int64_t>(sizeof(int32_t)), ONE_BLOCK_BYTE) * ONE_BLOCK_BYTE;
+        int64_t perCoreXRows = moeInitRoutingTilingData.n / aivNum;
+        const int64_t remainder = moeInitRoutingTilingData.n % aivNum;
+        perCoreXRows = remainder <= 1 ? perCoreXRows + 1 : perCoreXRows + NUM_TWO;
+        const int64_t gatherSpace =
+            CeilDiv(moeInitRoutingTilingData.cols * inuptXDtypeSize_, ONE_BLOCK_BYTE) * ONE_BLOCK_BYTE * perCoreXRows;
+        const int64_t remainUbAfterSort =
+            static_cast<int64_t>(aicoreParams_.ubSize) - sortSpace - otherSpace - expertSpace - gatherSpace;
+        return remainUbAfterSort > 0;
+    }
+};
+
+static void BuildBF16DispatchRoutingTiling(DispatchFFNCombineW4A8SVDQTilingData* tilingData)
+{
+    auto& info = tilingData->info;
+    auto& dispatchRouting = tilingData->dispatchRouting;
+    SVDQBF16RouteOnlyTilingBase routingBase;
+
+    constexpr int64_t inputDtypeSize = sizeof(int16_t);
+    constexpr int64_t scaleDim0 = 0;
+    constexpr int64_t expertCapacity = 0;
+    constexpr int64_t dropPadMode = 0;
+    constexpr int64_t expertTokensCountOrCumsumFlag = 2;
+    constexpr bool expertTokensBeforeCapacityFlag = false;
+    constexpr int64_t quantModeIgnoredByRouteOnlyBase = 1;
+    constexpr uint32_t aivNumInitRouting = 2 * SVDQ_ROUTING_BLOCK_NUM;
+    const int64_t expertNum = static_cast<int64_t>(info.expertPerRank) * static_cast<int64_t>(info.worldSize);
+    const int64_t activeNum = static_cast<int64_t>(info.m) * static_cast<int64_t>(info.topK);
+
+    routingBase.DoTiling(info.m, info.hiddenSize, info.topK, expertCapacity, expertNum, activeNum, dropPadMode,
+        expertTokensCountOrCumsumFlag, expertTokensBeforeCapacityFlag, inputDtypeSize,
+        quantModeIgnoredByRouteOnlyBase, scaleDim0, aivNumInitRouting, SVDQ_ROUTING_UB_SIZE);
+    dispatchRouting.bf16RoutingTilingKey = routingBase.tilingKey_;
+    dispatchRouting.bf16RoutingWorkspaceBytes = routingBase.workspaceSize_;
+    dispatchRouting.moeInitRoutingV2TilingData = routingBase.Data();
+}
+
 static void CopyMoeInitRoutingQuantV2TilingData(
     SVDQDispatchRoutingTiling& dispatchRouting, const optiling::MoeInitRoutingQuantV2TilingBase& routingBase)
 {
@@ -764,6 +879,7 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
 
     BuildWorkspaceMap(tilingData);
     BuildSyncFlagTable(tilingData);
+    BuildBF16DispatchRoutingTiling(tilingData);
     BuildDispatchRoutingTiling(tilingData);
     BuildBF16StageShapeTable(tilingData);
     BuildResidualStageShapeTable(tilingData);
@@ -776,6 +892,7 @@ static ge::graphStatus DispatchFFNCombineW4A8SVDQTilingFunc(gert::TilingContext*
     OP_TILING_CHECK(workSpaces == nullptr,
         OP_LOGE(nodeName, "workSpaces is nullptr."), return ge::GRAPH_FAILED);
     workSpaces[0] = SVDQ_SYSTEM_WORKSPACE + info.workspaceBytes +
+                    tilingData->dispatchRouting.bf16RoutingWorkspaceBytes +
                     tilingData->dispatchRouting.routingWorkspaceBytes;
 
     return ge::GRAPH_SUCCESS;

@@ -14,6 +14,8 @@
 #include "kernel_operator.h"
 #include "dispatch_ffn_combine_w4_a8_svdq_tiling.h"
 #include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_init_routing_quant_v2.cpp"
+#include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_v2_gather_out.h"
+#include "../../dispatch_ffn_combine_w4_a8/op_kernel/moe_init_routing_quant_v2/moe_v2_init_routing_fullload.h"
 #include "lowrank/svdq_fused_down_up.hpp"
 
 namespace DispatchFFNCombineW4A8SVDQImpl {
@@ -28,6 +30,81 @@ constexpr uint32_t SVDQ_RESIDUAL_SCALE1_SLOT = 4;
 constexpr uint32_t SVDQ_RESIDUAL_SCALE2_SLOT = 5;
 constexpr uint32_t SVDQ_RESIDUAL_BIAS1_SLOT = 6;
 constexpr uint32_t SVDQ_RESIDUAL_BIAS2_SLOT = 7;
+
+template <class DTYPE_X = bfloat16_t>
+__aicore__ inline void svdq_moe_init_routing_v2(
+    GM_ADDR x, GM_ADDR expertIdx, GM_ADDR expandedX, GM_ADDR expandedRowIdx,
+    GM_ADDR expertTokensCountOrCumsum, GM_ADDR expertTokensBeforeCapacity, GM_ADDR workspace,
+    const optiling::InnerMoeInitRoutingV2TilingData* tilingData, uint64_t tilingKey)
+{
+    if (g_coreType == AIC || workspace == nullptr) {
+        return;
+    }
+
+    if (tilingKey == 20000) {
+        TPipe sortPipe;
+        MoeInitRoutingQuantV2::MoeV2FullLoad<DTYPE_X> op;
+        op.Init(x, expertIdx, expandedX, expandedRowIdx, expertTokensCountOrCumsum, workspace, tilingData, &sortPipe);
+        op.Process();
+        sortPipe.Destroy();
+        return;
+    }
+
+    if (tilingKey == 10001 || tilingKey == 10011) {
+        TPipe sortPipe;
+        MoeInitRoutingQuantV2::MoeV2SortOneCore op;
+        op.Init<optiling::InnerMoeInitRoutingV2TilingData>(
+            expertIdx, expertTokensCountOrCumsum, expertTokensBeforeCapacity, workspace, tilingData, &sortPipe);
+        op.Process();
+        sortPipe.Destroy();
+    } else if (tilingKey == 10002 || tilingKey == 10012) {
+        TPipe sortPipe;
+        MoeInitRoutingQuantV2::MoeV2SortMultiCore op;
+        op.Init<optiling::InnerMoeInitRoutingV2TilingData>(
+            expertIdx, expertTokensCountOrCumsum, expertTokensBeforeCapacity, workspace, tilingData, &sortPipe);
+        op.Process();
+        sortPipe.Destroy();
+    }
+
+    if (tilingKey == 10001 || tilingKey == 10002) {
+        if (tilingData->expertTokensCountOrCumsumFlag != EXERPT_TOKENS_NONE) {
+            TPipe expertTokenOutPipe;
+            MoeInitRoutingQuantV2::MoeV2ExpertTokenOut expertTokenOutOp;
+            expertTokenOutOp.Init<optiling::InnerMoeInitRoutingV2TilingData>(
+                expertTokensCountOrCumsum, expertTokensBeforeCapacity, expandedRowIdx, workspace, tilingData,
+                &expertTokenOutPipe);
+            expertTokenOutOp.Process();
+            expertTokenOutPipe.Destroy();
+        }
+        TPipe srcToDstPipe;
+        MoeInitRoutingQuantV2::MoeV2SrcToDstOp srcToDstOp;
+        srcToDstOp.Init<optiling::InnerMoeInitRoutingV2TilingData>(
+            expandedRowIdx, workspace, tilingData, &srcToDstPipe);
+        srcToDstOp.Process();
+        srcToDstPipe.Destroy();
+    } else if (tilingKey == 10011 || tilingKey == 10012) {
+        TPipe expertTokenOutPipe;
+        MoeInitRoutingQuantV2::MoeV2ExpertTokenOut expertTokenOutOp;
+        expertTokenOutOp.Init<optiling::InnerMoeInitRoutingV2TilingData>(
+            expertTokensCountOrCumsum, expertTokensBeforeCapacity, expandedRowIdx, workspace, tilingData,
+            &expertTokenOutPipe);
+        expertTokenOutOp.Process();
+        expertTokenOutPipe.Destroy();
+
+        TPipe srcToDstPipe;
+        MoeInitRoutingQuantV2::MoeV2SrcToDstWithCapacity<DTYPE_X, optiling::InnerMoeInitRoutingV2TilingData>
+            srcToDstWithCapacityOp;
+        srcToDstWithCapacityOp.Init(expandedRowIdx, expandedX, workspace, tilingData, &srcToDstPipe);
+        srcToDstWithCapacityOp.Process();
+        srcToDstPipe.Destroy();
+    }
+
+    TPipe gatherPipe;
+    MoeInitRoutingQuantV2::MoeV2GatherOut<DTYPE_X> gatherOp;
+    gatherOp.Init(x, expandedRowIdx, expandedX, workspace, tilingData, &gatherPipe);
+    gatherOp.Process();
+    gatherPipe.Destroy();
+}
 
 enum SVDQBF16LowRankStageId : uint32_t {
     SVDQ_BF16_STAGE_ROUTING = 0,
@@ -459,7 +536,8 @@ public:
 
     __aicore__ inline GM_ADDR DispatchQuantRoutingTempWorkspace() const
     {
-        return runtime_.workspace + tilingData_.info.workspaceBytes;
+        return runtime_.workspace + tilingData_.info.workspaceBytes +
+               tilingData_.dispatchRouting.bf16RoutingWorkspaceBytes;
     }
 
     __aicore__ inline GM_ADDR FactorAddress(uint32_t factorId) const
@@ -601,12 +679,33 @@ public:
 
     __aicore__ inline bool DispatchRoutingReady() const
     {
-        return false;
+        SVDQDispatchRoutingContract contract = DispatchRoutingContract();
+        SVDQDispatchRoutingTiling routingTiling = DispatchRoutingTiling();
+        return runtime_.x != nullptr && runtime_.expertId != nullptr && runtime_.expertTokenNums != nullptr &&
+               runtime_.workspace != nullptr && contract.stageId == SVDQ_STAGE_BF16_DISPATCH &&
+               contract.routedOutputRegionId == SVDQ_REGION_ROUTED_X &&
+               contract.routeIndexRegionId == SVDQ_REGION_EXPANDED_ROW_IDX &&
+               contract.signalQuantFlagId == SVDQ_SYNC_DISPATCH_TO_QUANT_1 &&
+               contract.signalLowRankFlagId == SVDQ_SYNC_DISPATCH_TO_LOWRANK_1 &&
+               contract.signalFinalCombineFlagId == SVDQ_SYNC_DISPATCH_METADATA_TO_UNPERMUTE &&
+               WorkspaceRegion(contract.routedOutputRegionId).size > 0 &&
+               WorkspaceRegion(contract.routeIndexRegionId).size > 0 &&
+               routingTiling.bf16RoutingTilingKey != 0 &&
+               routingTiling.bf16RoutingWorkspaceBytes > 0 && routingTiling.aivNum > 0;
     }
 
     __aicore__ inline bool RunDispatchRoutingStage() const
     {
-        return false;
+        if (!DispatchRoutingReady()) {
+            return false;
+        }
+        SVDQDispatchRoutingContract contract = DispatchRoutingContract();
+        SVDQDispatchRoutingTiling routingTiling = DispatchRoutingTiling();
+        svdq_moe_init_routing_v2<bfloat16_t>(runtime_.x, runtime_.expertId,
+            WorkspaceAddress(contract.routedOutputRegionId), WorkspaceAddress(contract.routeIndexRegionId),
+            runtime_.expertTokenNums, nullptr, DispatchRoutingTempWorkspace(),
+            &routingTiling.moeInitRoutingV2TilingData, routingTiling.bf16RoutingTilingKey);
+        return true;
     }
 
     __aicore__ inline SVDQResidualStageContract ResidualStageContract(uint32_t stageId) const

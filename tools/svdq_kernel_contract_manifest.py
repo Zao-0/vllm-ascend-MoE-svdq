@@ -853,6 +853,9 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             )
             in sources["kernel_tiling"]
             and "struct SVDQDispatchRoutingTiling" in sources["kernel_tiling"]
+            and "bf16RoutingTilingKey" in sources["kernel_tiling"]
+            and "bf16RoutingWorkspaceBytes" in sources["kernel_tiling"]
+            and "InnerMoeInitRoutingV2TilingData moeInitRoutingV2TilingData" in sources["kernel_tiling"]
             and "initRoutingQuantTilingKey" in sources["kernel_tiling"]
             and "routingWorkspaceBytes" in sources["kernel_tiling"]
             and "MoeInitRoutingQuantV2TilingData moeInitRoutingQuantV2TilingData" in sources["kernel_tiling"]
@@ -862,12 +865,14 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
             "DispatchRoutingTiling() const" in sources["kernel_contract"]
             and "DispatchRoutingTempWorkspace() const" in sources["kernel_contract"]
             and "tilingData_.dispatchRouting" in sources["kernel_contract"]
-            and "routingTiling.initRoutingQuantTilingKey != 0" in sources["kernel_contract"]
-            and "routingTiling.routingWorkspaceBytes > 0" in sources["kernel_contract"]
+            and "routingTiling.bf16RoutingTilingKey != 0" in sources["kernel_contract"]
+            and "routingTiling.bf16RoutingWorkspaceBytes > 0" in sources["kernel_contract"]
             and "routingTiling.aivNum > 0" in sources["kernel_contract"]
         ),
         "kernel_dispatch_routing_calls_official_bf16_helper": (
-            "moe_init_routing_v2<bfloat16_t>" in sources["kernel_contract"]
+            "svdq_moe_init_routing_v2<bfloat16_t>" in sources["kernel_contract"]
+            and "MoeInitRoutingQuantV2::MoeV2FullLoad<DTYPE_X>" in sources["kernel_contract"]
+            and "MoeInitRoutingQuantV2::MoeV2GatherOut<DTYPE_X>" in sources["kernel_contract"]
             and "WorkspaceAddress(contract.routedOutputRegionId)" in sources["kernel_contract"]
             and "WorkspaceAddress(contract.routeIndexRegionId)" in sources["kernel_contract"]
             and "runtime_.expertTokenNums" in sources["kernel_contract"]
@@ -878,7 +883,7 @@ def _source_proof(sources: dict[str, str]) -> dict[str, bool]:
         "kernel_dispatch_routing_execution_enabled": (
             "RunDispatchRoutingStage() const" in sources["kernel_contract"]
             and "DispatchRoutingReady()" in sources["kernel_contract"]
-            and "moe_init_routing_v2<bfloat16_t>" in dispatch_source
+            and "svdq_moe_init_routing_v2<bfloat16_t>" in dispatch_source
             and "return true;" in dispatch_source
             and "ExecuteLowRankInvocation(SVDQ_LOWRANK_INVOCATION_GATE_UP)" in process_source
         ),
@@ -1627,9 +1632,6 @@ def validate_manifest_sources(manifest: dict[str, Any], repo_root: Path = REPO_R
         expected_false_source_proofs.update(
             {
                 "host_tiling_graph_success_enabled",
-                "kernel_dispatch_routing_uses_official_tiling_contract",
-                "kernel_dispatch_routing_calls_official_bf16_helper",
-                "kernel_dispatch_routing_execution_enabled",
                 "kernel_residual_gmm_scalar_execution_enabled",
                 "kernel_residual_hidden_quant_scalar_execution_enabled",
                 "kernel_mixed_output_epilogue_scalar_execution_enabled",

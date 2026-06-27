@@ -9,6 +9,43 @@
 | Stage 2.4 and later | IN PROGRESS | Production fused-op integration and four-NPU end-to-end validation remain open. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
 
+## Stage 2.4 Production Dispatch Routing Source Boundary - 2026-06-27
+
+Latest code state:
+
+- Read `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` as a binding constraint. The
+  appendix's older embedded `FAIL / IN PROGRESS` status is superseded only by the later dedicated Stage 2.2 evidence
+  that satisfies the appendix Gate A/B/C fields. The evidence requirements themselves remain binding.
+- Added a production SVDQ BF16 dispatch-routing source boundary that reuses the official W4A8 routing helper set
+  through an SVDQ-local route-only wrapper over `InnerMoeInitRoutingV2TilingData`. This prepares routed BF16 rows and
+  expanded-row metadata before low-rank and residual stages.
+- Added separate route-only routing tiling/workspace fields:
+  `bf16RoutingTilingKey`, `bf16RoutingWorkspaceBytes`, and `moeInitRoutingV2TilingData`.
+- Kept the existing W4A8 quant-routing tiling/workspace for routed-input dynamic quantization and moved
+  `DispatchQuantRoutingTempWorkspace()` after the BF16 route-only workspace so the temporary buffers do not overlap.
+- Production host tiling remains fail-closed with `GRAPH_FAILED`; this is not production admission and does not enable
+  W4A8 GMM1/GMM2, mixed epilogues, final combine, or four-NPU serving.
+- The public `torch_npu.npu_grouped_matmul` path was not used or modified.
+
+Regenerated manifest:
+
+- Command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 python tools/svdq_kernel_contract_manifest.py --evidence-dir /root/workspace/lza/svdq_clean_evidence --output /root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+- Resulting key state:
+  `production_fail_closed.dispatch_routing_execution_enabled=true`,
+  `production_admission.remaining_execution_requirements.dispatch_routing_execution_enabled=true`,
+  `production_admission.production_enable_allowed=false`, and
+  `production_admission.host_tiling_must_remain_fail_closed=true`.
+- Remaining source execution gaps:
+  residual hidden quant, residual W4A8 GMM1/GMM2 production execution, mixed SwiGLU epilogue, mixed output epilogue,
+  final combine, and four-NPU target-model E2E validation.
+
+Validation:
+
+- `python -m py_compile tools/svdq_kernel_contract_manifest.py`
+- `git diff --check -- csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq.h csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_kernel/dispatch_ffn_combine_w4_a8_svdq_tiling.h csrc/mc2/dispatch_ffn_combine_w4_a8_svdq/op_host/dispatch_ffn_combine_w4_a8_svdq_tiling.cpp tools/svdq_kernel_contract_manifest.py tests/ut/ops/test_svdq_moe_abi.py`
+- `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q` -> `46 passed, 16 warnings`
+
 ## Stage 2.2 Official-Path Gate Reconciled With Evidence - 2026-06-27
 
 This is the latest authoritative handoff. The appendix

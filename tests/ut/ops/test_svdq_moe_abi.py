@@ -386,19 +386,23 @@ def test_svdq_host_tiling_builds_official_dispatch_routing_subtiling():
         "moe_init_routing_quant_v2_tiling.h"
     ) in tiling_header
     assert "struct SVDQDispatchRoutingTiling" in tiling_header
+    assert "uint64_t bf16RoutingTilingKey" in tiling_header
+    assert "uint64_t bf16RoutingWorkspaceBytes" in tiling_header
     assert "uint64_t initRoutingQuantTilingKey" in tiling_header
     assert "uint64_t routingWorkspaceBytes" in tiling_header
     assert "uint32_t aivNum" in tiling_header
+    assert "optiling::InnerMoeInitRoutingV2TilingData moeInitRoutingV2TilingData" in tiling_header
     assert "optiling::MoeInitRoutingQuantV2TilingData moeInitRoutingQuantV2TilingData" in tiling_header
     assert "SVDQDispatchRoutingTiling dispatchRouting" in tiling_header
-    assert "bf16RoutingTilingKey" not in tiling_header
-    assert "bf16RoutingWorkspaceBytes" not in tiling_header
-    assert "MoeInitRoutingV2TilingData moeInitRoutingV2TilingData" not in tiling_header
 
     for token in (
         "production tiling is fail-closed",
         "constexpr uint32_t SVDQ_ROUTING_BLOCK_NUM = 20",
         "constexpr uint64_t SVDQ_ROUTING_UB_SIZE = 196352",
+        "SVDQBF16RouteOnlyTilingBase routingBase",
+        "dispatchRouting.bf16RoutingTilingKey = routingBase.tilingKey_",
+        "dispatchRouting.bf16RoutingWorkspaceBytes = routingBase.workspaceSize_",
+        "dispatchRouting.moeInitRoutingV2TilingData = routingBase.Data()",
         "MoeInitRoutingQuantV2TilingBase routingBase",
         "routingBase.DoTiling",
         "expertTokensCountOrCumsumFlag = 2",
@@ -415,7 +419,9 @@ def test_svdq_host_tiling_builds_official_dispatch_routing_subtiling():
         "srcToDstComputeParamsOp",
         "srcToDstCapacityComputeParamsOp",
         "BuildDispatchRoutingTiling(tilingData)",
+        "BuildBF16DispatchRoutingTiling(tilingData)",
         "workSpaces[0] = SVDQ_SYSTEM_WORKSPACE + info.workspaceBytes +",
+        "tilingData->dispatchRouting.bf16RoutingWorkspaceBytes",
         "tilingData->dispatchRouting.routingWorkspaceBytes",
     ):
         assert token in tiling
@@ -2098,14 +2104,19 @@ def test_svdq_kernel_records_dispatch_routing_contract_before_lowrank():
             "__aicore__ inline SVDQResidualStageContract"
         )
     ]
-    assert "moe_init_routing_v2<bfloat16_t>" not in dispatch_source
-    assert "return false;" in dispatch_source
+    assert "svdq_moe_init_routing_v2<bfloat16_t>" in dispatch_source
+    assert "WorkspaceAddress(contract.routedOutputRegionId)" in dispatch_source
+    assert "WorkspaceAddress(contract.routeIndexRegionId)" in dispatch_source
+    assert "&routingTiling.moeInitRoutingV2TilingData" in dispatch_source
+    assert "routingTiling.bf16RoutingTilingKey" in dispatch_source
+    assert "return true;" in dispatch_source
     dispatch_ready_source = contract[
         contract.index("__aicore__ inline bool DispatchRoutingReady() const") : contract.index(
             "__aicore__ inline bool RunDispatchRoutingStage() const"
         )
     ]
-    assert "return false;" in dispatch_ready_source
+    assert "routingTiling.bf16RoutingTilingKey != 0" in dispatch_ready_source
+    assert "routingTiling.bf16RoutingWorkspaceBytes > 0" in dispatch_ready_source
 
     process = contract[
         contract.index("__aicore__ inline void Process()") : contract.index(
@@ -2815,7 +2826,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert not loaded["production_fail_closed"]["host_tiling_success_enabled"]
     assert loaded["production_fail_closed"]["sync_handoff_source_enabled"]
     assert loaded["production_fail_closed"]["lowrank_is_implemented_uses_complete_contract"]
-    assert not loaded["production_fail_closed"]["dispatch_routing_execution_enabled"]
+    assert loaded["production_fail_closed"]["dispatch_routing_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_routed_input_quant_execution_enabled"]
     assert not loaded["production_fail_closed"]["residual_hidden_quant_execution_enabled"]
     assert loaded["production_fail_closed"]["residual_hidden_quant_scalar_helpers_absent"]
@@ -2845,7 +2856,7 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert "stage2_3_real_checkpoint_composition_gate" in loaded["production_admission"]
     assert loaded["production_admission"]["stage2_3_isolated_gate_passed"]
     assert loaded["production_admission"]["remaining_execution_requirements"] == {
-        "dispatch_routing_execution_enabled": False,
+        "dispatch_routing_execution_enabled": True,
         "residual_hidden_quant_execution_enabled": False,
         "residual_w4a8_gmm_execution_enabled": False,
         "mixed_swiglu_epilogue_execution_enabled": False,
@@ -2857,9 +2868,9 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["source_proof"]["kernel_records_dispatch_routing_contract"]
     assert loaded["source_proof"]["host_tiling_builds_dispatch_routing_subtiling"]
     assert loaded["source_proof"]["kernel_tiling_contains_dispatch_routing_subtiling"]
-    assert not loaded["source_proof"]["kernel_dispatch_routing_uses_official_tiling_contract"]
-    assert not loaded["source_proof"]["kernel_dispatch_routing_calls_official_bf16_helper"]
-    assert not loaded["source_proof"]["kernel_dispatch_routing_execution_enabled"]
+    assert loaded["source_proof"]["kernel_dispatch_routing_uses_official_tiling_contract"]
+    assert loaded["source_proof"]["kernel_dispatch_routing_calls_official_bf16_helper"]
+    assert loaded["source_proof"]["kernel_dispatch_routing_execution_enabled"]
     assert loaded["source_proof"]["kernel_process_orders_svdq_data_dependencies"]
     assert loaded["source_proof"]["kernel_validates_complete_sync_flag_table"]
     assert loaded["source_proof"]["kernel_synchronizes_stage_boundaries"]
@@ -2999,9 +3010,6 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
         "uses_probs": True,
     }
     expected_false_source_proofs = {
-        "kernel_dispatch_routing_uses_official_tiling_contract",
-        "kernel_dispatch_routing_calls_official_bf16_helper",
-        "kernel_dispatch_routing_execution_enabled",
         "host_tiling_graph_success_enabled",
         "kernel_residual_gmm_scalar_execution_enabled",
         "kernel_residual_hidden_quant_scalar_execution_enabled",
