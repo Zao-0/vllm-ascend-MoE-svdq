@@ -605,6 +605,17 @@ def _clip_group_counts_for_limit(counts: torch.Tensor, row_limit: int) -> list[i
     return clipped
 
 
+def _expert_row_ranges(counts: list[int]) -> list[tuple[int, int, int]]:
+    ranges: list[tuple[int, int, int]] = []
+    row_start = 0
+    for expert_id, count in enumerate(counts):
+        count = int(count)
+        if count > 0:
+            ranges.append((int(expert_id), int(row_start), count))
+        row_start += count
+    return ranges
+
+
 def _tensor_raw_bytes(tensor: torch.Tensor) -> bytes:
     cpu = tensor.detach().cpu().contiguous()
     if cpu.dtype == torch.bfloat16:
@@ -1404,6 +1415,174 @@ def _official_gmm2_post_dequant_from_actual_d2_diagnostic(
             "low_d2_half": 453000.0,
         },
         "error": error,
+    }
+
+
+def _scale_ratio_stats(
+    *,
+    actual: torch.Tensor,
+    accumulator: torch.Tensor,
+    scale: torch.Tensor,
+    min_abs_accumulator: int,
+) -> dict[str, Any]:
+    actual_cpu = actual.detach().cpu().float()
+    accumulator_cpu = accumulator.detach().cpu().float()
+    scale_cpu = scale.detach().cpu().float().reshape(1, -1)
+    mask = accumulator_cpu.abs() >= float(min_abs_accumulator)
+    if not bool(mask.any().item()):
+        return {
+            "enabled": True,
+            "min_abs_accumulator": int(min_abs_accumulator),
+            "sample_count": 0,
+            "reason": "no accumulator entries meet the threshold",
+        }
+    ratio = actual_cpu[mask] / accumulator_cpu[mask]
+    scale_expanded = scale_cpu.expand_as(accumulator_cpu)[mask]
+    delta = ratio - scale_expanded
+    abs_delta = delta.abs()
+    return {
+        "enabled": True,
+        "min_abs_accumulator": int(min_abs_accumulator),
+        "sample_count": int(ratio.numel()),
+        "ratio_mean": float(ratio.mean().item()),
+        "ratio_min": float(ratio.min().item()),
+        "ratio_max": float(ratio.max().item()),
+        "scale_mean": float(scale_expanded.mean().item()),
+        "ratio_minus_scale_mean": float(delta.mean().item()),
+        "ratio_minus_scale_abs_mean": float(abs_delta.mean().item()),
+        "ratio_minus_scale_abs_max": float(abs_delta.max().item()),
+    }
+
+
+def _official_gmm2_actual_d2_from_accumulator_diagnostics(
+    *,
+    actual_d2_high: torch.Tensor | None,
+    actual_d2_low: torch.Tensor | None,
+    accumulator_int32: torch.Tensor | None,
+    weight_scale: torch.Tensor,
+    expert_token_nums: torch.Tensor,
+    output_columns: int,
+    max_rows: int,
+    max_abs_tol: float,
+) -> dict[str, Any]:
+    if actual_d2_high is None or actual_d2_low is None:
+        return {"enabled": False, "reason": "raw D2 high/low debug readbacks were not captured"}
+    if accumulator_int32 is None:
+        return {"enabled": False, "reason": "debug op did not return gmm2_accumulator_int32"}
+
+    active_row_count = int(expert_token_nums.detach().cpu().to(torch.int64).sum().item())
+    row_count = min(
+        int(actual_d2_high.shape[0]),
+        int(actual_d2_low.shape[0]),
+        int(accumulator_int32.shape[0] // 2),
+        active_row_count,
+        int(max_rows),
+    )
+    if row_count <= 0:
+        return {"enabled": False, "reason": "no rows available for actual D2 accumulator diagnostics"}
+
+    counts = _clip_group_counts_for_limit(expert_token_nums, row_count)
+    accumulator_cpu = accumulator_int32.detach().cpu()[: row_count * 2, :output_columns].to(torch.int32)
+    half_inputs = {
+        "high": {
+            "actual": actual_d2_high.detach().cpu().float()[:row_count, :output_columns],
+            "accumulator": accumulator_cpu[0::2].float(),
+        },
+        "low": {
+            "actual": actual_d2_low.detach().cpu().float()[:row_count, :output_columns],
+            "accumulator": accumulator_cpu[1::2].float(),
+        },
+    }
+    scale_variants = {
+        "low32": _scale_bits_to_fp32(weight_scale, word="low32"),
+        "high32": _scale_bits_to_fp32(weight_scale, word="high32"),
+    }
+    rounding_modes = ("nearest_even", "toward_zero", "floor", "ceil", "none")
+
+    half_reports: dict[str, Any] = {}
+    for half_name, half_data in half_inputs.items():
+        actual = half_data["actual"]
+        accumulator = half_data["accumulator"]
+        variant_reports: dict[str, Any] = {}
+        best_name: str | None = None
+        best_key: tuple[float, float, int] | None = None
+        for scale_name, scale_fp32 in scale_variants.items():
+            for rounding_mode in rounding_modes:
+                outputs: list[torch.Tensor] = []
+                row_start = 0
+                for expert_id, count in enumerate(counts):
+                    count = int(count)
+                    if count <= 0:
+                        continue
+                    row_end = row_start + count
+                    scale_e = scale_fp32[expert_id].reshape(1, -1)
+                    outputs.append(_fp32_to_fp16_mode(accumulator[row_start:row_end] * scale_e, mode=rounding_mode))
+                    row_start = row_end
+                reference = (
+                    torch.cat(outputs, dim=0) if outputs else torch.empty((0, output_columns), dtype=torch.float32)
+                )
+                error = _compact_tensor_error(actual, reference, max_abs_tol=max_abs_tol)
+                name = f"scale_{scale_name}_fp16_{rounding_mode}"
+                variant_reports[name] = {
+                    "scale_word": scale_name,
+                    "fp16_rounding_mode": rounding_mode,
+                    "error": error,
+                }
+                key = (
+                    float(error["max_abs"]),
+                    float(error["mean_abs"]),
+                    int(error["failed_element_count_abs_gt_tolerance"]),
+                )
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best_name = name
+        half_reports[half_name] = {
+            "best_variant": best_name,
+            "best_key": list(best_key) if best_key is not None else None,
+            "variants": variant_reports,
+            "low32_effective_scale_ratio": [
+                {
+                    "threshold": int(threshold),
+                    "by_expert": [
+                        _scale_ratio_stats(
+                            actual=actual[row_start : row_start + int(count)],
+                            accumulator=accumulator[row_start : row_start + int(count)],
+                            scale=scale_variants["low32"][expert_id],
+                            min_abs_accumulator=threshold,
+                        )
+                        for expert_id, row_start, count in _expert_row_ranges(counts)
+                    ],
+                }
+                for threshold in (1, 16, 128)
+            ],
+            "actual_nonzero": bool(torch.any(actual.abs() > 0).item()),
+            "accumulator_nonzero": bool(torch.any(accumulator != 0).item()),
+        }
+
+    return {
+        "enabled": True,
+        "diagnostic_only": (
+            "Compares actual raw D2 high/low readbacks against variants built directly from the official "
+            "GMM2 int32 accumulator readback and packed per-channel scale words. This isolates the "
+            "Fixpipe VDEQF16/D2 value contract and does not alter the strict gate or official kernel path."
+        ),
+        "source_boundary": "official int32 accumulator readback to actual rawDebugMode high/low D2 readbacks",
+        "source_locations": {
+            "accumulator": "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_mmad_w4a4.hpp:454",
+            "fixpipe": "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/block_mmad_w4a4.hpp:461",
+            "raw_high": (
+                "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/"
+                "block_epilogue_w4a8post_pertoken_v2.hpp:200"
+            ),
+            "raw_low": (
+                "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/"
+                "block_epilogue_w4a8post_pertoken_v2.hpp:212"
+            ),
+        },
+        "row_mapping": "even accumulator rows feed high D2; odd accumulator rows feed low D2",
+        "group_counts": counts,
+        "row_count": int(row_count),
+        "halves": half_reports,
     }
 
 
@@ -2611,6 +2790,16 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         max_rows=args.gmm2_reference_max_rows,
         max_abs_tol=args.gmm2_reference_max_abs_tol,
     )
+    actual_d2_from_accumulator_diagnostics = _official_gmm2_actual_d2_from_accumulator_diagnostics(
+        actual_d2_high=raw_d2_high_for_post,
+        actual_d2_low=raw_d2_low_for_post,
+        accumulator_int32=gmm2_accumulator_int32,
+        weight_scale=layer.w2_weight_scale,
+        expert_token_nums=external_expert_token_nums,
+        output_columns=spec.hidden_size,
+        max_rows=args.gmm2_reference_max_rows,
+        max_abs_tol=args.gmm2_reference_max_abs_tol,
+    )
     return {
         "stage": "stage2_modified_hidden_official_w4a8_gmm2",
         "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback -> aclnnSVDQW4A8GMM2DebugReadback",
@@ -2665,6 +2854,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
             },
             "post_dequant_variant_diagnostics": post_dequant_variant_diagnostics,
             "actual_d2_post_dequant_reconstruction": actual_d2_post_dequant_reconstruction,
+            "actual_d2_from_accumulator_diagnostics": actual_d2_from_accumulator_diagnostics,
             "int32_accumulator_readback_reference": accumulator_int32_report,
         },
         "checks": {
