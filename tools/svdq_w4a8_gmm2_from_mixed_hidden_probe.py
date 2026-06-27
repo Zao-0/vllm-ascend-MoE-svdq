@@ -110,6 +110,27 @@ def _has_registered_gmm2_debug_op() -> bool:
     return getattr(torch.ops._C_ascend, "svdq_w4a8_gmm2_debug_readback", None) is not None
 
 
+def _unpack_gmm2_debug_outputs(
+    debug_outputs: Any,
+) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+    if isinstance(debug_outputs, tuple):
+        if len(debug_outputs) == 4:
+            gmm2_post_dequant, hidden_x_readback, hidden_scale_readback, gmm2_accumulator_int32 = debug_outputs
+        elif len(debug_outputs) == 3:
+            gmm2_post_dequant, hidden_x_readback, hidden_scale_readback = debug_outputs
+            gmm2_accumulator_int32 = None
+        else:
+            raise RuntimeError(f"unexpected svdq_w4a8_gmm2_debug_readback tuple length: {len(debug_outputs)}")
+    else:
+        # Backward-compatible fallback for stale installs; the ABI test requires
+        # the tuple-returning debug op after this diagnostic patch is installed.
+        gmm2_post_dequant = debug_outputs
+        hidden_x_readback = None
+        hidden_scale_readback = None
+        gmm2_accumulator_int32 = None
+    return gmm2_post_dequant, hidden_x_readback, hidden_scale_readback, gmm2_accumulator_int32
+
+
 def _routed_experts(args: argparse.Namespace) -> list[int]:
     experts = list(range(args.top_k)) if args.route_experts is None else list(args.route_experts)
     if len(experts) != args.top_k:
@@ -1302,6 +1323,90 @@ def _official_gmm2_post_dequant_variant_diagnostics(
     }
 
 
+def _official_gmm2_post_dequant_from_actual_d2_diagnostic(
+    *,
+    actual_post_dequant: torch.Tensor,
+    actual_d2_high: torch.Tensor | None,
+    actual_d2_low: torch.Tensor | None,
+    hidden_x_scale: torch.Tensor,
+    scale_bias: torch.Tensor,
+    expert_token_nums: torch.Tensor,
+    output_columns: int,
+    max_rows: int,
+    max_abs_tol: float,
+) -> dict[str, Any]:
+    if actual_d2_high is None or actual_d2_low is None:
+        return {"enabled": False, "reason": "raw D2 high/low debug readbacks were not captured"}
+
+    row_count = min(
+        int(actual_post_dequant.shape[0]),
+        int(actual_d2_high.shape[0]),
+        int(actual_d2_low.shape[0]),
+        int(hidden_x_scale.shape[0]),
+        int(max_rows),
+    )
+    if row_count <= 0:
+        return {"enabled": False, "reason": "no rows available for actual D2 post-dequant reconstruction"}
+
+    counts = _clip_group_counts_for_limit(expert_token_nums, row_count)
+    post_cpu = actual_post_dequant.detach().cpu().float()[:row_count, :output_columns]
+    high_cpu = actual_d2_high.detach().cpu().float()[:row_count, :output_columns]
+    low_cpu = actual_d2_low.detach().cpu().float()[:row_count, :output_columns]
+    hidden_scale_cpu = hidden_x_scale.detach().cpu().float()[:row_count]
+    bias = scale_bias.detach().cpu().float().contiguous()
+
+    outputs: list[torch.Tensor] = []
+    row_start = 0
+    for expert_id, count in enumerate(counts):
+        count = int(count)
+        if count <= 0:
+            continue
+        row_end = row_start + count
+        combined = high_cpu[row_start:row_end] * 16.0 + low_cpu[row_start:row_end] + bias[expert_id].reshape(1, -1)
+        outputs.append(combined * hidden_scale_cpu[row_start:row_end].reshape(-1, 1))
+        row_start = row_end
+
+    reconstructed = torch.cat(outputs, dim=0) if outputs else torch.empty((0, output_columns), dtype=torch.float32)
+    actual = post_cpu[: reconstructed.shape[0], : reconstructed.shape[1]]
+    error = _compact_tensor_error(actual, reconstructed, max_abs_tol=max_abs_tol)
+    return {
+        "enabled": True,
+        "passed_with_gate_tolerance": bool(
+            error["actual_finite"]
+            and error["expected_finite"]
+            and error["diff_finite"]
+            and error["max_abs"] <= max_abs_tol
+        ),
+        "diagnostic_only": (
+            "Reconstructs the normal W4A8_DEBUG post-dequant tap from official rawDebugMode=2 high D2 "
+            "and rawDebugMode=3 low D2 readbacks captured through the same full-lifecycle debug op. "
+            "This tests the BlockEpilogue2 AIV high*16+low, aux, and hidden-scale formula using actual "
+            "D2 inputs; it does not alter the strict gate or replace the official kernel path."
+        ),
+        "source_boundary": "official BlockEpilogue2 raw D2 high/low readbacks to normal W4A8_DEBUG post-dequant tap",
+        "source_locations": {
+            "raw_high": (
+                "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/"
+                "block_epilogue_w4a8post_pertoken_v2.hpp:200"
+            ),
+            "raw_low": (
+                "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/"
+                "block_epilogue_w4a8post_pertoken_v2.hpp:212"
+            ),
+            "post_dequant": (
+                "csrc/mc2/dispatch_ffn_combine_w4_a8/op_kernel/utils/"
+                "block_epilogue_w4a8post_pertoken_v2.hpp:224"
+            ),
+        },
+        "group_counts": counts,
+        "raw_debug_swiglu_limits": {
+            "high_d2_half": 451000.0,
+            "low_d2_half": 453000.0,
+        },
+        "error": error,
+    }
+
+
 def _round_up(value: int, align: int) -> int:
     return ((int(value) + int(align) - 1) // int(align)) * int(align)
 
@@ -1886,39 +1991,33 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
     if op is None:
         raise RuntimeError("torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback is not registered.")
 
-    debug_outputs = op(
-        x,
-        [layer.w13_weight],
-        [layer.w2_weight],
-        expert_idx,
-        [layer.w13_weight_scale],
-        [layer.w2_weight_scale],
-        [layer.w13_scale_bias],
-        [layer.w2_scale_bias],
-        probs,
-        hidden_x_int4_packed,
-        hidden_x_scale,
-        external_expert_token_nums,
-        group,
-        args.max_output_size,
-        x_active_mask,
-        args.swiglu_limit,
+    def _call_gmm2_debug_op(
+        swiglu_limit: float,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+        return _unpack_gmm2_debug_outputs(
+            op(
+                x,
+                [layer.w13_weight],
+                [layer.w2_weight],
+                expert_idx,
+                [layer.w13_weight_scale],
+                [layer.w2_weight_scale],
+                [layer.w13_scale_bias],
+                [layer.w2_scale_bias],
+                probs,
+                hidden_x_int4_packed,
+                hidden_x_scale,
+                external_expert_token_nums,
+                group,
+                args.max_output_size,
+                x_active_mask,
+                float(swiglu_limit),
+            )
+        )
+
+    gmm2_post_dequant, hidden_x_readback, hidden_scale_readback, gmm2_accumulator_int32 = _call_gmm2_debug_op(
+        args.swiglu_limit
     )
-    if isinstance(debug_outputs, tuple):
-        if len(debug_outputs) == 4:
-            gmm2_post_dequant, hidden_x_readback, hidden_scale_readback, gmm2_accumulator_int32 = debug_outputs
-        elif len(debug_outputs) == 3:
-            gmm2_post_dequant, hidden_x_readback, hidden_scale_readback = debug_outputs
-            gmm2_accumulator_int32 = None
-        else:
-            raise RuntimeError(f"unexpected svdq_w4a8_gmm2_debug_readback tuple length: {len(debug_outputs)}")
-    else:
-        # Backward-compatible fallback for stale installs; the ABI test requires
-        # the tuple-returning debug op after this diagnostic patch is installed.
-        gmm2_post_dequant = debug_outputs
-        hidden_x_readback = None
-        hidden_scale_readback = None
-        gmm2_accumulator_int32 = None
     torch.npu.synchronize()
     hidden_x_readback_exact = (
         _tensor_int_exact(hidden_x_readback[:active_rows], hidden_x_int4_packed[:active_rows])
@@ -2494,6 +2593,24 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
         max_rows=args.gmm2_reference_max_rows,
         max_abs_tol=args.gmm2_reference_max_abs_tol,
     )
+    raw_d2_high_for_post = None
+    raw_d2_low_for_post = None
+    if not loop_stats_debug and not raw_c2_debug:
+        raw_d2_high_for_post, _, _, _ = _call_gmm2_debug_op(451000.0)
+        torch.npu.synchronize()
+        raw_d2_low_for_post, _, _, _ = _call_gmm2_debug_op(453000.0)
+        torch.npu.synchronize()
+    actual_d2_post_dequant_reconstruction = _official_gmm2_post_dequant_from_actual_d2_diagnostic(
+        actual_post_dequant=actual,
+        actual_d2_high=raw_d2_high_for_post,
+        actual_d2_low=raw_d2_low_for_post,
+        hidden_x_scale=hidden_x_scale[:active_rows],
+        scale_bias=layer.w2_scale_bias,
+        expert_token_nums=external_expert_token_nums,
+        output_columns=spec.hidden_size,
+        max_rows=args.gmm2_reference_max_rows,
+        max_abs_tol=args.gmm2_reference_max_abs_tol,
+    )
     return {
         "stage": "stage2_modified_hidden_official_w4a8_gmm2",
         "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback -> aclnnSVDQW4A8GMM2DebugReadback",
@@ -2547,6 +2664,7 @@ def _run_stage(args: argparse.Namespace, group: str) -> dict[str, Any]:
                 "mean_abs_tolerance": args.gmm2_reference_mean_abs_tol,
             },
             "post_dequant_variant_diagnostics": post_dequant_variant_diagnostics,
+            "actual_d2_post_dequant_reconstruction": actual_d2_post_dequant_reconstruction,
             "int32_accumulator_readback_reference": accumulator_int32_report,
         },
         "checks": {
