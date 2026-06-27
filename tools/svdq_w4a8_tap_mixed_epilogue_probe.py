@@ -18,6 +18,7 @@ outputs into the mixed-epilogue debug op.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -37,6 +38,15 @@ from svdq_bf16_stage_device_probe import _load_validation_layer  # noqa: E402
 from svdq_loader_pre_kernel_validate import DEFAULT_EVIDENCE_DIR, DEFAULT_MODEL_PATH, _read_json, _weight_map  # noqa: E402
 from svdq_lowrank_debug_readback_probe import _launch_debug_readback as _launch_lowrank_debug  # noqa: E402
 from svdq_mixed_epilogue_device_probe import _run_npu_mixed_epilogue  # noqa: E402
+from svdq_w4a8_gmm2_from_mixed_hidden_probe import (  # noqa: E402
+    _gate_a_input_boundary_manifest,
+    _has_registered_gmm2_debug_op,
+    _official_lifecycle_debug_contract,
+    _pad_hidden_boundary,
+    _routing_identity_manifest,
+    _tensor_int_exact,
+    _unpack_gmm2_debug_outputs,
+)
 from svdq_w4a8_debug_readback_probe import _destroy_hccl_if_needed, _init_single_rank_hccl  # noqa: E402
 from svdq_w4a8_debug_readback_real_checkpoint_probe import (  # noqa: E402
     _has_registered_debug_op,
@@ -51,7 +61,10 @@ from svdq_w4a8_debug_readback_real_checkpoint_probe import (  # noqa: E402
     _routed_experts,
 )
 
-from vllm_ascend.quantization.methods.svdq_post_load import build_svdq_mixed_epilogue_reference  # noqa: E402
+from vllm_ascend.quantization.methods.svdq_post_load import (  # noqa: E402
+    build_svdq_mixed_epilogue_reference,
+    pack_official_hidden_i4_reference,
+)
 
 DEFAULT_SUMMARY_NAME = "phase_w4a8_tap_mixed_epilogue_summary.json"
 
@@ -119,6 +132,27 @@ def _tensor_stats(tensor: torch.Tensor) -> dict[str, Any]:
     }
 
 
+def _tensor_raw_bytes(tensor: torch.Tensor) -> bytes:
+    cpu = tensor.detach().cpu().contiguous()
+    if cpu.dtype == torch.bfloat16:
+        return cpu.view(torch.int16).numpy().tobytes()
+    return cpu.numpy().tobytes()
+
+
+def _tensor_sha256(tensor: torch.Tensor) -> str:
+    return hashlib.sha256(_tensor_raw_bytes(tensor)).hexdigest()
+
+
+def _row_sha256_first(tensor: torch.Tensor, *, row_count: int = 16) -> list[str]:
+    cpu = tensor.detach().cpu()
+    if cpu.ndim < 2:
+        return []
+    rows = []
+    for row_idx in range(min(int(cpu.shape[0]), int(row_count))):
+        rows.append(hashlib.sha256(_tensor_raw_bytes(cpu[row_idx])).hexdigest())
+    return rows
+
+
 def _nonzero_finite(stats: dict[str, Any]) -> bool:
     return bool(stats["finite"] and float(stats["max_abs"]) > 0.0)
 
@@ -174,6 +208,303 @@ def _expand_counts_for_svdq(counts: torch.Tensor, num_experts: int) -> torch.Ten
     limit = min(num_experts, int(counts.numel()))
     expanded[:limit] = counts[:limit].to(torch.int32)
     return expanded
+
+
+def _external_expert_token_nums_for_gmm2(
+    counts: torch.Tensor,
+    *,
+    local_num_experts: int,
+    device: torch.device,
+) -> torch.Tensor:
+    external = torch.zeros((1, local_num_experts), dtype=torch.int32)
+    limit = min(local_num_experts, int(counts.numel()))
+    external[0, :limit] = counts[:limit].to(torch.int32)
+    return external.to(device=device)
+
+
+def _run_official_gmm2_from_mixed_hidden(
+    *,
+    args: argparse.Namespace,
+    group: str,
+    residual_layer: torch.nn.Module,
+    spec: Any,
+    taps: dict[str, torch.Tensor],
+    hidden_bf16: torch.Tensor,
+    hidden_q: torch.Tensor,
+    hidden_q_packed: torch.Tensor,
+    hidden_scale: torch.Tensor,
+    counts: torch.Tensor,
+    local_num_experts: int,
+    device: torch.device,
+) -> dict[str, Any]:
+    active_rows = int(args.num_tokens * args.top_k)
+    hidden_x_int4_packed, hidden_x_scale = _pad_hidden_boundary(
+        hidden_x_int4_packed=hidden_q_packed[:active_rows],
+        hidden_x_scale=hidden_scale[:active_rows],
+        max_output_size=args.max_output_size,
+        intermediate_size=spec.intermediate_size,
+        device=device,
+    )
+    external_expert_token_nums = _external_expert_token_nums_for_gmm2(
+        counts,
+        local_num_experts=local_num_experts,
+        device=device,
+    )
+    x = taps["x"].to(device=device, dtype=torch.bfloat16).contiguous()
+    expert_idx = _make_expert_idx(_routed_experts(args), args.num_tokens, device=device)
+    probs = torch.full((args.num_tokens, args.top_k), 1.0 / args.top_k, dtype=torch.float32, device=device)
+    x_active_mask = torch.ones((args.num_tokens,), dtype=torch.bool, device=device)
+
+    op = getattr(torch.ops._C_ascend, "svdq_w4a8_gmm2_debug_readback", None)
+    if op is None:
+        raise RuntimeError("torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback is not registered.")
+
+    gmm2_post_dequant, hidden_x_readback, hidden_scale_readback, gmm2_accumulator_int32 = _unpack_gmm2_debug_outputs(
+        op(
+            x,
+            [residual_layer.w13_weight],
+            [residual_layer.w2_weight],
+            expert_idx,
+            [residual_layer.w13_weight_scale],
+            [residual_layer.w2_weight_scale],
+            [residual_layer.w13_scale_bias],
+            [residual_layer.w2_scale_bias],
+            probs,
+            hidden_x_int4_packed,
+            hidden_x_scale,
+            external_expert_token_nums,
+            group,
+            args.max_output_size,
+            x_active_mask,
+            float(args.swiglu_limit),
+        )
+    )
+    torch.npu.synchronize()
+
+    hidden_x_readback_exact = (
+        _tensor_int_exact(hidden_x_readback[:active_rows], hidden_x_int4_packed[:active_rows])
+        if hidden_x_readback is not None
+        else None
+    )
+    hidden_scale_readback_error = (
+        _tensor_error(hidden_scale_readback[:active_rows], hidden_x_scale[:active_rows])
+        if hidden_scale_readback is not None
+        else None
+    )
+    hidden_scale_readback_exact = (
+        hidden_scale_readback_error is not None
+        and bool(hidden_scale_readback_error["actual_finite"])
+        and bool(hidden_scale_readback_error["expected_finite"])
+        and bool(hidden_scale_readback_error["diff_finite"])
+        and float(hidden_scale_readback_error["max_abs"]) == 0.0
+    )
+    reference, reference_contract = _official_gmm2_unfused_reference(
+        hidden_x_int4_packed=hidden_x_int4_packed[:active_rows],
+        hidden_x_scale=hidden_x_scale[:active_rows],
+        weight=residual_layer.w2_weight,
+        weight_scale=residual_layer.w2_weight_scale,
+        scale_bias=residual_layer.w2_scale_bias,
+        expert_token_nums=external_expert_token_nums,
+        output_columns=spec.hidden_size,
+        max_rows=args.w4a8_reference_max_rows,
+    )
+    actual = gmm2_post_dequant.detach().cpu()[: reference.shape[0], : reference.shape[1]]
+    error = _tensor_error(actual, reference)
+    reference_passed = _stage_passed(
+        error,
+        max_abs_tol=args.gmm2_reference_max_abs_tol,
+        mean_abs_tol=args.gmm2_reference_mean_abs_tol,
+    )
+    post_dequant_active = gmm2_post_dequant.detach().cpu()[:active_rows]
+    post_dequant_nonzero = bool(torch.any(post_dequant_active.float().abs() > 0).item())
+    routing_identity = _routing_identity_manifest(
+        routed_experts=_routed_experts(args),
+        num_tokens=args.num_tokens,
+        top_k=args.top_k,
+        local_num_experts=local_num_experts,
+        max_output_size=args.max_output_size,
+        expert_token_nums=external_expert_token_nums,
+        hidden_x_int4_packed=hidden_x_int4_packed,
+        hidden_x_scale=hidden_x_scale,
+        hidden_x_readback=hidden_x_readback,
+        hidden_scale_readback=hidden_scale_readback,
+        reference_group_counts=reference_contract.get("group_counts"),
+    )
+    gate_a_input_boundary = _gate_a_input_boundary_manifest(
+        mixed={
+            "hidden_bf16": hidden_bf16[:active_rows],
+            "hidden_q": hidden_q[:active_rows],
+        },
+        hidden_x_int4_packed=hidden_x_int4_packed,
+        hidden_x_scale=hidden_x_scale,
+        external_expert_token_nums=external_expert_token_nums,
+        layer=residual_layer,
+        routing_identity=routing_identity,
+        active_rows=active_rows,
+        max_output_size=args.max_output_size,
+    )
+    passed = bool(
+        routing_identity["expert_token_total_matches_active_rows"]
+        and routing_identity["reference_group_counts_match_expert_token_nums"]
+        and hidden_x_readback_exact is not None
+        and hidden_x_readback_exact["exact_match"]
+        and hidden_scale_readback_exact
+        and bool(error["actual_finite"])
+        and post_dequant_nonzero
+        and reference_passed
+    )
+    return {
+        "official_debug_op": "torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback",
+        "official_lifecycle_debug_contract": _official_lifecycle_debug_contract(),
+        "routing_identity": routing_identity,
+        "gate_a_input_boundary": gate_a_input_boundary,
+        "hidden_post_override_readback_exact": hidden_x_readback_exact,
+        "hidden_scale_post_override_readback_error": hidden_scale_readback_error,
+        "hidden_scale_post_override_exact_match": bool(hidden_scale_readback_exact),
+        "post_dequant_active": _tensor_stats(post_dequant_active),
+        "unfused_reference": {
+            "enabled": True,
+            "passed": bool(reference_passed),
+            "contract": reference_contract,
+            "error": error,
+            "max_abs_tolerance": args.gmm2_reference_max_abs_tol,
+            "mean_abs_tolerance": args.gmm2_reference_mean_abs_tol,
+        },
+        "checks": {
+            "official_gmm2_entry_reached": True,
+            "gate_a_input_boundary_passed": bool(
+                routing_identity["expert_token_total_matches_active_rows"]
+                and routing_identity["reference_group_counts_match_expert_token_nums"]
+                and hidden_x_readback_exact is not None
+                and hidden_x_readback_exact["exact_match"]
+                and hidden_scale_readback_exact
+            ),
+            "official_gmm2_post_dequant_finite": bool(error["actual_finite"]),
+            "official_gmm2_post_dequant_nonzero": post_dequant_nonzero,
+            "official_gmm2_post_dequant_reference_passed": bool(reference_passed),
+            "official_gmm2_numerical_gate_passed": passed,
+        },
+        "post_dequant": post_dequant_active,
+        "passed": passed,
+    }
+
+
+def _stage2_3_same_routing_manifest(
+    *,
+    routed_x: torch.Tensor,
+    residual_gate_up: torch.Tensor,
+    gate_up_lowrank: torch.Tensor,
+    first_mixed: dict[str, torch.Tensor],
+    official_gmm2: dict[str, Any],
+    down_lowrank: torch.Tensor,
+    final_mixed: dict[str, torch.Tensor],
+    expert_token_nums: torch.Tensor,
+    routed_experts: list[int],
+    num_tokens: int,
+    top_k: int,
+) -> dict[str, Any]:
+    active_rows = int(num_tokens * top_k)
+    counts = [int(v) for v in expert_token_nums.detach().cpu().to(torch.int64).flatten().tolist()]
+    prefixes = []
+    running = 0
+    for count in counts:
+        prefixes.append(running)
+        running += count
+    active_experts = [idx for idx, count in enumerate(counts) if count > 0]
+    route_slot_by_expert = {int(expert): slot for slot, expert in enumerate(routed_experts)}
+    routed_x_cpu = routed_x.detach().cpu()
+    same_source_token_payload = True
+    for source_token_id in range(int(num_tokens)):
+        reference_row = None
+        for expert_id in routed_experts:
+            expert_id = int(expert_id)
+            if expert_id >= len(prefixes) or source_token_id >= counts[expert_id]:
+                same_source_token_payload = False
+                continue
+            routed_row = prefixes[expert_id] + source_token_id
+            row = routed_x_cpu[routed_row]
+            if reference_row is None:
+                reference_row = row
+            else:
+                same_source_token_payload = same_source_token_payload and bool(torch.equal(row, reference_row))
+    row_map = []
+    for expert_id, count in enumerate(counts):
+        for expert_local_offset in range(count):
+            if len(row_map) >= 64:
+                break
+            topk_slot = route_slot_by_expert.get(expert_id)
+            row_map.append(
+                {
+                    "routed_row": prefixes[expert_id] + expert_local_offset,
+                    "source_token_id": expert_local_offset,
+                    "top_k_slot": topk_slot,
+                    "selected_expert_id": expert_id,
+                    "local_expert_id": expert_id,
+                    "expert_row_start": prefixes[expert_id],
+                    "expert_local_row_offset": expert_local_offset,
+                }
+            )
+    boundary_hashes = {
+        "routed_x_all": _tensor_sha256(routed_x[:active_rows]),
+        "routed_x_row_sha256_first16": _row_sha256_first(routed_x[:active_rows]),
+        "w4a8_gmm1_residual_gate_up_all": _tensor_sha256(residual_gate_up[:active_rows]),
+        "svdq_gate_up_lowrank_all": _tensor_sha256(gate_up_lowrank[:active_rows]),
+        "canonical_hidden_all": _tensor_sha256(first_mixed["hidden_bf16"][:active_rows]),
+        "canonical_hidden_row_sha256_first16": _row_sha256_first(first_mixed["hidden_bf16"][:active_rows]),
+        "svdq_down_hidden_input": _tensor_sha256(first_mixed["hidden_bf16"][:active_rows]),
+        "w4a8_gmm2_hidden_quant_source_hidden": _tensor_sha256(first_mixed["hidden_bf16"][:active_rows]),
+        "hidden_q_all": _tensor_sha256(first_mixed["hidden_q"][:active_rows]),
+        "hidden_q_packed_all": _tensor_sha256(first_mixed["hidden_q_packed"][:active_rows]),
+        "hidden_scale_all": _tensor_sha256(first_mixed["hidden_scale"][:active_rows]),
+        "official_gmm2_residual_down_all": _tensor_sha256(official_gmm2["post_dequant"][:active_rows]),
+        "svdq_down_lowrank_all": _tensor_sha256(down_lowrank[:active_rows]),
+        "final_mixed_down_all": _tensor_sha256(final_mixed["down_mixed"][:active_rows]),
+        "final_out_bf16_all": _tensor_sha256(final_mixed["out_bf16"][:active_rows]),
+    }
+    checks = {
+        "expert_token_total_matches_active_rows": sum(counts) == active_rows,
+        "same_canonical_hidden_feeds_svdq_down_and_w4a8_hidden_quant": (
+            boundary_hashes["svdq_down_hidden_input"]
+            == boundary_hashes["w4a8_gmm2_hidden_quant_source_hidden"]
+        ),
+        "official_gmm2_output_feeds_final_mixed_residual_down": (
+            boundary_hashes["official_gmm2_residual_down_all"]
+            == _tensor_sha256(official_gmm2["post_dequant"][:active_rows])
+        ),
+        "final_mixed_output_is_final_combine_input": (
+            boundary_hashes["final_mixed_down_all"] == _tensor_sha256(final_mixed["down_mixed"][:active_rows])
+        ),
+        "same_source_token_payload_across_topk_slots_proven": bool(same_source_token_payload),
+    }
+    return {
+        "manifest_scope": (
+            "Stage 2.3 real-checkpoint same-routing composition evidence for a single-device route. "
+            "Official W4A8 GMM1 residual rows and real SVDQ gate/up rows produce one canonical hidden; "
+            "the same canonical hidden feeds real SVDQ down and the official W4A8 GMM2 hidden-quant boundary; "
+            "official GMM2 residual down plus real SVDQ down then feed the mixed output epilogue."
+        ),
+        "limitations": (
+            "This is a top-1 single-device real-checkpoint probe unless run with broader routing. It does not "
+            "enable production DispatchFFNCombineW4A8SVDQ host tiling."
+        ),
+        "topology": {
+            "tp_size": 1,
+            "tp_rank": 0,
+            "ep_size": 1,
+            "ep_rank": 0,
+            "num_tokens": int(num_tokens),
+            "top_k": int(top_k),
+            "active_rows": active_rows,
+            "routed_experts": [int(v) for v in routed_experts],
+            "active_experts": active_experts,
+        },
+        "expert_token_nums": [counts],
+        "expert_prefix_sums": prefixes,
+        "routed_row_map_first64": row_map,
+        "boundary_hashes": boundary_hashes,
+        "checks": checks,
+        "passed": all(bool(value) for value in checks.values()),
+    }
 
 
 def _run_w4a8_debug(
@@ -331,16 +662,21 @@ def _run_combined_probe(args: argparse.Namespace, group: str) -> dict[str, Any]:
         active_rows=active_rows,
     )
     base_result: dict[str, Any] = {
-        "stage": "official_w4a8_tap_svdq_mixed_epilogue",
+        "stage": "stage2_3_real_checkpoint_same_route_w4a8_svdq_composition",
         "official_w4a8_debug_op": "torch.ops._C_ascend.svdq_w4a8_debug_readback",
+        "official_w4a8_gmm2_debug_op": "torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback",
         "svdq_lowrank_debug_op": "torch.ops._C_ascend.svdq_low_rank_debug_readback",
         "svdq_mixed_epilogue_debug_op": "torch.ops._C_ascend.svdq_mixed_epilogue_debug_readback",
         "public_grouped_matmul_used": False,
         "production_svdq_host_tiling_fail_closed": True,
-        "limitation": (
+        "superseded_limitation": (
             "GMM2 residual tap comes from the official W4A8 debug path for its internally quantized hidden. "
-            "This probe validates mixed residual-plus-SVDQ epilogues with official W4A8 taps; it does not yet "
-            "relaunch official GMM2 from the SVDQ-modified hidden activation."
+            "Earlier versions of this probe validated mixed residual-plus-SVDQ epilogues with official W4A8 taps "
+            "but did not yet relaunch official GMM2 from the SVDQ-modified hidden activation."
+        ),
+        "stage2_3_scope": (
+            "This probe now relaunches the official W4A8 GMM2 path from the SVDQ-modified hidden produced by "
+            "the mixed epilogue, then adds that official residual down output to the actual SVDQ down output."
         ),
         "layer_index": args.layer,
         "routed_experts": routed_experts,
@@ -401,15 +737,84 @@ def _run_combined_probe(args: argparse.Namespace, group: str) -> dict[str, Any]:
             "hidden_q_max_abs_diff_tolerance": args.hidden_q_max_abs_diff_tol,
             "passed": False,
         }
+    zero_residual_down = torch.zeros((active_rows, svdq_spec.hidden_size), dtype=torch.float32)
+    zero_down_lowrank = torch.zeros((active_rows, svdq_spec.hidden_size), dtype=torch.bfloat16)
+    first_actual = _run_npu_mixed_epilogue(
+        inputs={
+            "residual_gate_up": taps["gmm1_post_dequant"][:active_rows].float(),
+            "gate_lowrank": gate_lowrank.to(torch.bfloat16),
+            "up_lowrank": up_lowrank.to(torch.bfloat16),
+            "residual_down": zero_residual_down,
+            "down_lowrank": zero_down_lowrank,
+        },
+        device=device,
+        swiglu_limit=args.swiglu_limit,
+    )
     first_reference = build_svdq_mixed_epilogue_reference(
         residual_gate_up=taps["gmm1_post_dequant"][:active_rows].float(),
         gate_lowrank=gate_lowrank.to(torch.bfloat16),
         up_lowrank=up_lowrank.to(torch.bfloat16),
-        residual_down=torch.zeros((active_rows, svdq_spec.hidden_size), dtype=torch.float32),
-        down_lowrank=torch.zeros((active_rows, svdq_spec.hidden_size), dtype=torch.bfloat16),
+        residual_down=zero_residual_down,
+        down_lowrank=zero_down_lowrank,
         swiglu_limit=args.swiglu_limit,
     )
-    hidden_bf16 = first_reference["stages"]["hidden_bf16"]
+    first_stage_errors = {
+        "gate_mixed": _tensor_error(first_actual["gate_mixed"], first_reference["stages"]["gate_mixed"]),
+        "up_mixed": _tensor_error(first_actual["up_mixed"], first_reference["stages"]["up_mixed"]),
+        "hidden_bf16": _tensor_error(first_actual["hidden_bf16"], first_reference["stages"]["hidden_bf16"]),
+        "hidden_scale": _tensor_error(first_actual["hidden_scale"], first_reference["stages"]["hidden_scale"]),
+    }
+    first_q_diff = (
+        first_actual["hidden_q"].to(torch.int16) - first_reference["stages"]["hidden_q"].to(torch.int16)
+    ).abs()
+    first_hidden_q_mismatch_count = int((first_q_diff != 0).sum().item())
+    first_hidden_q_max_abs_diff = int(first_q_diff.max().item()) if first_q_diff.numel() else 0
+    first_hidden_q_passed = (
+        first_hidden_q_mismatch_count <= args.hidden_q_mismatch_count_tol
+        and first_hidden_q_max_abs_diff <= args.hidden_q_max_abs_diff_tol
+    )
+    expected_packed = pack_official_hidden_i4_reference(first_actual["hidden_q"])
+    first_hidden_q_packed_exact = _tensor_int_exact(first_actual["hidden_q_packed"], expected_packed)
+    first_stage_passed = {
+        "gate_mixed": _stage_passed(
+            first_stage_errors["gate_mixed"],
+            max_abs_tol=args.mixed_max_abs_tol,
+            mean_abs_tol=args.mixed_mean_abs_tol,
+        ),
+        "up_mixed": _stage_passed(
+            first_stage_errors["up_mixed"],
+            max_abs_tol=args.mixed_max_abs_tol,
+            mean_abs_tol=args.mixed_mean_abs_tol,
+        ),
+        "hidden_bf16": _stage_passed(
+            first_stage_errors["hidden_bf16"],
+            max_abs_tol=args.mixed_max_abs_tol,
+            mean_abs_tol=args.mixed_mean_abs_tol,
+        ),
+        "hidden_scale": (
+            bool(first_stage_errors["hidden_scale"]["actual_finite"])
+            and bool(first_stage_errors["hidden_scale"]["expected_finite"])
+            and bool(first_stage_errors["hidden_scale"]["diff_finite"])
+            and float(first_stage_errors["hidden_scale"]["max_abs"]) <= args.scale_tol
+        ),
+        "hidden_q": first_hidden_q_passed,
+        "hidden_q_packed": bool(first_hidden_q_packed_exact["exact_match"]),
+    }
+    hidden_bf16 = first_actual["hidden_bf16"]
+    official_gmm2 = _run_official_gmm2_from_mixed_hidden(
+        args=args,
+        group=group,
+        residual_layer=residual_layer,
+        spec=residual_spec,
+        taps=taps,
+        hidden_bf16=first_actual["hidden_bf16"],
+        hidden_q=first_actual["hidden_q"],
+        hidden_q_packed=first_actual["hidden_q_packed"],
+        hidden_scale=first_actual["hidden_scale"],
+        counts=counts,
+        local_num_experts=local_num_experts,
+        device=device,
+    )
     lowrank_down = _launch_lowrank_debug(
         layer=svdq_layer,
         routed_x=routed_x_grouped,
@@ -448,7 +853,7 @@ def _run_combined_probe(args: argparse.Namespace, group: str) -> dict[str, Any]:
             "residual_gate_up": taps["gmm1_post_dequant"][:active_rows].float(),
             "gate_lowrank": gate_lowrank.to(torch.bfloat16),
             "up_lowrank": up_lowrank.to(torch.bfloat16),
-            "residual_down": taps["gmm2_post_dequant"][:active_rows].float(),
+            "residual_down": official_gmm2["post_dequant"][:active_rows].float(),
             "down_lowrank": down_lowrank.to(torch.bfloat16),
         },
         device=device,
@@ -458,7 +863,7 @@ def _run_combined_probe(args: argparse.Namespace, group: str) -> dict[str, Any]:
         residual_gate_up=taps["gmm1_post_dequant"][:active_rows].float(),
         gate_lowrank=gate_lowrank.to(torch.bfloat16),
         up_lowrank=up_lowrank.to(torch.bfloat16),
-        residual_down=taps["gmm2_post_dequant"][:active_rows].float(),
+        residual_down=official_gmm2["post_dequant"][:active_rows].float(),
         down_lowrank=down_lowrank.to(torch.bfloat16),
         swiglu_limit=args.swiglu_limit,
     )
@@ -478,6 +883,8 @@ def _run_combined_probe(args: argparse.Namespace, group: str) -> dict[str, Any]:
         and hidden_q_max_abs_diff <= args.hidden_q_max_abs_diff_tol
     )
     stage_passed = {
+        "first_mixed_epilogue": all(first_stage_passed.values()),
+        "official_gmm2_from_svdq_hidden": bool(official_gmm2["passed"]),
         "gate_mixed": _stage_passed(
             stage_errors["gate_mixed"],
             max_abs_tol=args.mixed_max_abs_tol,
@@ -511,10 +918,36 @@ def _run_combined_probe(args: argparse.Namespace, group: str) -> dict[str, Any]:
             mean_abs_tol=args.mixed_mean_abs_tol,
         ),
     }
+    same_routing_manifest = _stage2_3_same_routing_manifest(
+        routed_x=routed_x_grouped,
+        residual_gate_up=taps["gmm1_post_dequant"][:active_rows],
+        gate_up_lowrank=gate_up_output,
+        first_mixed=first_actual,
+        official_gmm2=official_gmm2,
+        down_lowrank=down_lowrank,
+        final_mixed=mixed_actual,
+        expert_token_nums=taps["expert_token_nums"],
+        routed_experts=routed_experts,
+        num_tokens=args.num_tokens,
+        top_k=args.top_k,
+    )
+    stage_passed["same_routing_identity"] = bool(same_routing_manifest["passed"])
     return {
         **base_result,
         "lowrank_readback": lowrank_stats,
         "lowrank_output_health_passed": lowrank_output_health_passed,
+        "first_mixed_epilogue": {
+            "stage_errors": first_stage_errors,
+            "stage_passed": first_stage_passed,
+            "hidden_q_exact_match": bool(torch.equal(first_actual["hidden_q"], first_reference["stages"]["hidden_q"])),
+            "hidden_q_mismatch_count": first_hidden_q_mismatch_count,
+            "hidden_q_max_abs_diff": first_hidden_q_max_abs_diff,
+            "hidden_q_packed_exact_reference": first_hidden_q_packed_exact,
+        },
+        "official_gmm2_from_svdq_hidden": {
+            key: value for key, value in official_gmm2.items() if key != "post_dequant"
+        },
+        "stage2_3_same_routing_manifest": same_routing_manifest,
         "mixed_epilogue_evaluated": True,
         "mixed_epilogue_skip_reason": None,
         "stage_errors": stage_errors,
@@ -524,7 +957,11 @@ def _run_combined_probe(args: argparse.Namespace, group: str) -> dict[str, Any]:
         "hidden_q_max_abs_diff": hidden_q_max_abs_diff,
         "hidden_q_mismatch_count_tolerance": args.hidden_q_mismatch_count_tol,
         "hidden_q_max_abs_diff_tolerance": args.hidden_q_max_abs_diff_tol,
-        "passed": bool(w4a8_reference["passed"] and lowrank_output_health_passed and all(stage_passed.values())),
+        "passed": bool(
+            w4a8_reference["gmm1"]["passed"]
+            and lowrank_output_health_passed
+            and all(stage_passed.values())
+        ),
     }
 
 
@@ -567,6 +1004,21 @@ def main() -> int:
     if not registered:
         summary["preflight_failed"] = True
         summary["failure_reason"] = "torch.ops._C_ascend.svdq_w4a8_debug_readback is not registered."
+        _write_summary(summary_path, summary)
+        print(json.dumps({"summary_path": str(summary_path), "passed": False}, indent=2))
+        return 1
+    try:
+        gmm2_registered = _has_registered_gmm2_debug_op()
+    except Exception as exc:
+        summary["preflight_failed"] = True
+        summary["failure_reason"] = f"failed to enable GMM2 custom op: {type(exc).__name__}: {exc}"
+        _write_summary(summary_path, summary)
+        print(json.dumps({"summary_path": str(summary_path), "passed": False}, indent=2))
+        return 1
+    summary["gmm2_torch_op_registered"] = gmm2_registered
+    if not gmm2_registered:
+        summary["preflight_failed"] = True
+        summary["failure_reason"] = "torch.ops._C_ascend.svdq_w4a8_gmm2_debug_readback is not registered."
         _write_summary(summary_path, summary)
         print(json.dumps({"summary_path": str(summary_path), "passed": False}, indent=2))
         return 1

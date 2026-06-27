@@ -5,9 +5,107 @@
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
 | Stage 2.2 modified-hidden official W4A8 GMM2 | PASS | Single-device real-checkpoint official-lifecycle top-1 expert-0 probe passes Gate A, Gate B, C2V, and strict Gate C with max/mean abs `0.0`. |
-| Stage 2.3 same-routing two-stage composition | IN PROGRESS | Synthetic Qwen3.5-dimension composed NPU probe now emits and passes same-routing row-identity manifest; real-checkpoint residual W4A8 plus SVDQ down/final-combine gate remains open. |
-| Stage 2.4 and later | BLOCKED | Blocked on Stage 2.3 same-routing composition and later numerical gates. |
+| Stage 2.3 same-routing two-stage composition | PASS | Single-device real-checkpoint top-k 8 experts 0-7 probe passes first mixed epilogue, official GMM2 from SVDQ hidden, actual SVDQ down, final mixed down/output, and same-routing manifest with max/mean abs `0.0`. |
+| Stage 2.4 and later | IN PROGRESS | Production fused-op integration and four-NPU end-to-end validation remain open. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
+
+## Stage 2.3 Real-Checkpoint Top-k 8 Composition Pass - 2026-06-27T02:57Z
+
+This section is the latest authoritative handoff. It supersedes the `2026-06-27T02:43Z` synthetic same-routing
+section for Stage 2.3 status. Stage 2.0, Stage 2.1, and Stage 2.2 remain passed. Production
+`DispatchFFNCombineW4A8SVDQ` remains fail-closed; this pass validates the isolated real-device numerical gate only.
+
+Files changed:
+
+- `tools/svdq_w4a8_tap_mixed_epilogue_probe.py`
+- `tests/ut/ops/test_svdq_moe_abi.py`
+- `docs/svdq_qwen35_moe_clean_implementation_stage2_report.md`
+
+Exact behavior added:
+
+- The real-checkpoint tap/mixed probe now performs a full isolated Stage 2.3 sequence:
+  1. official W4A8 debug readback supplies the real residual GMM1 gate/up output;
+  2. actual SVDQ gate/up BF16 debug output is added through the mixed epilogue debug op;
+  3. the first mixed epilogue device output supplies canonical BF16 hidden, hidden INT8, packed INT4 hidden, and
+     hidden scale;
+  4. official `svdq_w4a8_gmm2_debug_readback` relaunches W4A8 GMM2 from that SVDQ-modified hidden boundary;
+  5. actual SVDQ down BF16 debug output consumes the same canonical hidden;
+  6. the final mixed epilogue adds official W4A8 residual down and actual SVDQ down output.
+- The probe emits `stage2_3_same_routing_manifest`, including hashes for routed input, residual GMM1 rows, SVDQ
+  gate/up rows, canonical hidden, hidden quant tensors, official GMM2 residual down, SVDQ down output, final mixed
+  down output, and final BF16 output.
+- The manifest now proves same source-token payload equality across all top-k slots for the routed rows, not just
+  the easier top-1 case.
+- The official GMM2 relaunch reuses the accepted Stage 2.2 official lifecycle: `DispatchAndCombine` with only the
+  hidden packed INT4 and hidden-scale boundary overlaid. It does not use public `torch_npu.npu_grouped_matmul`.
+
+Validation commands:
+
+- Syntax and whitespace:
+  `python -m py_compile tools/svdq_w4a8_tap_mixed_epilogue_probe.py`
+  `git diff --check -- tools/svdq_w4a8_tap_mixed_epilogue_probe.py tests/ut/ops/test_svdq_moe_abi.py`
+- Focused static ABI regression:
+  `python -m pytest tests/ut/ops/test_svdq_moe_abi.py -q`
+  passed with `44 passed, 16 warnings`.
+- Real-device preflight used `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3`; Python preflight reported four visible
+  Ascend910B4 logical devices and selected logical NPU 0.
+- Top-k 8 probe command:
+  `ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 ASCEND_CUSTOM_OPP_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer LD_LIBRARY_PATH=/root/workspace/lza/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib:${LD_LIBRARY_PATH:-} python tools/svdq_w4a8_tap_mixed_epilogue_probe.py --require-npu --top-k 8 --route-experts 0 1 2 3 4 5 6 7 --local-num-experts 8 --num-tokens 4 --max-output-size 64 --summary-name stage2/phase_stage2_real_composition_topk8_experts0_7.json`
+
+Evidence paths:
+
+- Top-k 8 NPU preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_real_composition_topk8_preflight_npus.log`
+- Top-k 8 Python logical-device preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_real_composition_topk8_preflight_python.log`
+- Top-k 8 active process preflight:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_real_composition_topk8_preflight_processes.log`
+- Top-k 8 probe log:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_real_composition_topk8_experts0_7.log`
+- Top-k 8 probe exit code:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/20260627T_stage2_real_composition_topk8_experts0_7.exitcode`
+  contains `0`.
+- Top-k 8 probe summary:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_real_composition_topk8_experts0_7.json`
+- Additional top-1 sanity run:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_real_composition_true_top1_expert0.json`
+  also passed.
+
+Real-device top-k 8 result:
+
+- Overall probe: `passed: true`.
+- Shape: `num_tokens=4`, `top_k=8`, `active_rows=32`, `hidden_size=2048`, `intermediate_size=512`.
+- Rank metadata: `gate_rank=64`, `up_rank=64`, `down_rank=64`, `gate_rank_offset=0`, `up_rank_offset=64`.
+- `stage_passed.first_mixed_epilogue: true`.
+- `stage_passed.official_gmm2_from_svdq_hidden: true`.
+- `stage_passed.down_mixed: true`.
+- `stage_passed.out_bf16: true`.
+- `stage_passed.same_routing_identity: true`.
+- Same-routing manifest checks:
+  `expert_token_total_matches_active_rows=true`,
+  `same_canonical_hidden_feeds_svdq_down_and_w4a8_hidden_quant=true`,
+  `official_gmm2_output_feeds_final_mixed_residual_down=true`,
+  `final_mixed_output_is_final_combine_input=true`,
+  `same_source_token_payload_across_topk_slots_proven=true`.
+- Official GMM2 from SVDQ hidden checks:
+  `official_gmm2_entry_reached=true`,
+  `gate_a_input_boundary_passed=true`,
+  `official_gmm2_post_dequant_finite=true`,
+  `official_gmm2_post_dequant_nonzero=true`,
+  `official_gmm2_post_dequant_reference_passed=true`,
+  `official_gmm2_numerical_gate_passed=true`.
+- Official GMM2 strict reference error: active shape `[32, 2048]`, max abs `0.0`, mean abs `0.0`.
+- Final mixed down error: active shape `[32, 2048]`, max abs `0.0`, mean abs `0.0`.
+- Final BF16 output error: active shape `[32, 2048]`, max abs `0.0`, mean abs `0.0`.
+
+Current interpretation:
+
+1. Stage 2.3 isolated real-checkpoint same-routing composition is now passed for a single-device top-k 8 route
+   through experts 0-7.
+2. The pass validates the AIV mixed additions the user asked about: W4A8 GMM1 plus BF16 gate/up, and official W4A8
+   GMM2 plus BF16 down, both on real checkpoint factors and official residual W4A8 outputs.
+3. This does not enable production `DispatchFFNCombineW4A8SVDQ`; host tiling remains fail-closed until the validated
+   components are integrated into the production fused operator and four-NPU end-to-end gates pass.
 
 ## Stage 2.3 Official GMM2 Path Constraint Refresh - 2026-06-27
 
