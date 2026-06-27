@@ -16,6 +16,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_EVIDENCE_DIR = Path("/root/workspace/lza/svdq_clean_evidence")
+STAGE2_2_GMM2_OFFICIAL_EVIDENCE = Path("phase_stage2_gmm2_trunc13_reference_true_top1_expert0.json")
 STAGE2_3_REAL_COMPOSITION_EVIDENCE = Path(
     "stage2/phase_stage2_real_composition_topk8_finalcombine_fixedidx_experts0_7.json"
 )
@@ -1678,30 +1679,21 @@ def _zero_error(error: dict[str, Any]) -> bool:
     )
 
 
-def _stage2_2_official_gmm2_gate() -> dict[str, Any]:
-    required_status_fields: dict[str, bool | None] = {
-        "official_gmm2_entry_reached": True,
-        "official_gmm2_loop_count": None,
-        "official_gmm2_active_tile_count": None,
-        "official_gmm2_aic_raw_output_finite": None,
-        "official_gmm2_aic_raw_output_nonzero": False,
-        "official_gmm2_aic_reference_passed": False,
-        "official_gmm2_c2v_handoff_verified": False,
-        "official_gmm2_post_dequant_finite": True,
-        "official_gmm2_post_dequant_nonzero": False,
-        "official_gmm2_post_dequant_reference_passed": False,
-        "official_gmm2_numerical_gate_passed": False,
-    }
-    return {
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and value > 0
+
+
+def _stage2_2_official_gmm2_gate(evidence_dir: Path) -> dict[str, Any]:
+    evidence_path = evidence_dir / STAGE2_2_GMM2_OFFICIAL_EVIDENCE
+    gate: dict[str, Any] = {
         "name": "stage2_2_modified_hidden_official_w4a8_gmm2",
-        "status": "fail_in_progress",
+        "evidence_path": str(evidence_path),
+        "required_probe": "svdq_w4a8_gmm2_from_mixed_hidden_probe",
+        "required_summary_name": str(STAGE2_2_GMM2_OFFICIAL_EVIDENCE),
+        "evidence_found": evidence_path.exists(),
         "passed": False,
         "appendix_reference": STAGE2_2_GMM2_OFFICIAL_PATH_APPENDIX,
         "source_of_truth": "official dispatch_ffn_combine_w4_a8 GMM2 AIC/AIV lifecycle",
-        "active_problem": (
-            "official GMM2 post-dequant readback is all zeros while the unfused "
-            "official-contract reference is nonzero"
-        ),
         "stage2_3_and_later_blocked": True,
         "production_tiling_enable_allowed": False,
         "public_grouped_matmul_allowed": False,
@@ -1717,11 +1709,135 @@ def _stage2_2_official_gmm2_gate() -> dict[str, Any]:
             "official BlockEpilogue2/CombineV2 FP32 post-dequant output finite, nonzero, "
             "and strict-reference matched"
         ),
-        "required_status_fields": required_status_fields,
     }
+    if not evidence_path.exists():
+        gate["status"] = "missing_evidence"
+        gate["reason"] = "Stage 2.2 official GMM2 Gate A/B/C evidence has not been generated."
+        return gate
+
+    try:
+        summary = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        gate["status"] = "invalid_evidence_json"
+        gate["reason"] = f"{type(exc).__name__}: {exc}"
+        return gate
+
+    stage = summary.get("stage", {})
+    checks = stage.get("checks", {})
+    lifecycle = stage.get("official_lifecycle_debug_contract", {})
+    routing = stage.get("routing_identity", {})
+    shape = stage.get("shape", {})
+    gmm2 = stage.get("gmm2", {})
+    required_status_fields = {
+        name: bool(checks.get(name))
+        for name in (
+            "official_gmm2_entry_reached",
+            "official_gmm2_loop_stats_valid",
+            "official_gmm2_active_tile_count_nonzero",
+            "official_gmm2_aic_raw_output_finite",
+            "official_gmm2_aic_raw_output_nonzero",
+            "official_gmm2_aic_reference_passed",
+            "official_gmm2_accumulator_int32_reference_passed",
+            "official_gmm2_c2v_handoff_verified",
+            "official_gmm2_post_dequant_finite",
+            "official_gmm2_post_dequant_nonzero",
+            "official_gmm2_post_dequant_reference_passed",
+            "official_gmm2_numerical_gate_passed",
+        )
+    }
+    gate_a_flags = {
+        name: bool(checks.get(name))
+        for name in (
+            "gate_a_input_boundary_passed",
+            "hidden_packed_exact",
+            "hidden_packed_mismatch_count_zero",
+            "hidden_post_override_readback_exact",
+            "hidden_scale_post_override_readback_exact",
+            "hidden_scale_finite",
+            "hidden_scale_nonzero",
+            "canonical_hidden_finite",
+            "canonical_hidden_nonzero",
+        )
+    }
+    routing_flags = {
+        "expert_token_total_matches_active_rows": bool(
+            routing.get("expert_token_total_matches_active_rows")
+        ),
+        "same_source_token_payload_across_topk_slots_proven": bool(
+            routing.get("manifest_scope", {}).get("same_source_token_payload_across_topk_slots_proven")
+        ),
+        "reference_group_counts_match_expert_token_nums": bool(
+            routing.get("reference_group_counts_match_expert_token_nums")
+        ),
+        "local_expert_id_equals_global_expert_id": bool(
+            routing.get("tp_ep_mapping", {}).get("local_expert_id_equals_global_expert_id")
+        ),
+    }
+    lifecycle_flags = {
+        "uses_official_dispatch_and_combine_lifecycle": (
+            lifecycle.get("mode") == "official DispatchAndCombine lifecycle with external hidden/scale overlay"
+        ),
+        "gmm2_only_path_disabled": lifecycle.get("gmm2_only_from_packed") is False,
+        "custom_signal_substitute_absent": not bool(
+            lifecycle.get("forbidden_paths", {}).get("custom_v2c_or_c2v_signal_substitute_used", False)
+        ),
+    }
+    diagnostic_flags = {
+        "loop_count_positive": _positive_int(checks.get("official_gmm2_loop_count")),
+        "active_tile_count_positive": _positive_int(checks.get("official_gmm2_active_tile_count")),
+        "int32_accumulator_reference_passed": bool(
+            gmm2.get("int32_accumulator_readback_reference", {}).get("passed")
+        ),
+        "int32_accumulator_nonzero": bool(
+            gmm2.get("int32_accumulator_readback_reference", {}).get("actual_nonzero")
+        ),
+        "actual_d2_post_dequant_reconstruction_passed": bool(
+            gmm2.get("actual_d2_post_dequant_reconstruction", {}).get("passed_with_gate_tolerance")
+        ),
+    }
+    shape_flags = {
+        "top_k_is_1": int(shape.get("top_k", -1)) == 1,
+        "active_rows_positive": int(shape.get("active_rows", 0)) > 0,
+        "hidden_size_is_2048": int(shape.get("hidden_size", -1)) == 2048,
+        "intermediate_size_is_512": int(shape.get("intermediate_size", -1)) == 512,
+    }
+    passed = bool(
+        summary.get("passed")
+        and stage.get("passed")
+        and not bool(summary.get("skipped"))
+        and bool(stage.get("real_checkpoint_validation"))
+        and not bool(stage.get("public_grouped_matmul_used", False))
+        and bool(stage.get("production_svdq_host_tiling_fail_closed", True))
+        and all(required_status_fields.values())
+        and all(gate_a_flags.values())
+        and all(routing_flags.values())
+        and all(lifecycle_flags.values())
+        and all(diagnostic_flags.values())
+        and all(shape_flags.values())
+    )
+    gate.update(
+        {
+            "status": "passed" if passed else "failed",
+            "passed": passed,
+            "summary_passed": bool(summary.get("passed")),
+            "stage_passed": bool(stage.get("passed")),
+            "shape": shape,
+            "required_status_fields": required_status_fields,
+            "required_gate_a_flags": gate_a_flags,
+            "required_routing_flags": routing_flags,
+            "required_lifecycle_flags": lifecycle_flags,
+            "required_diagnostic_flags": diagnostic_flags,
+            "required_shape_flags": shape_flags,
+            "production_tiling_fail_closed_in_evidence": bool(
+                stage.get("production_svdq_host_tiling_fail_closed", True)
+            ),
+        }
+    )
+    gate["stage2_3_and_later_blocked"] = not passed
+    return gate
 
 
-def _stage2_3_real_composition_gate(evidence_dir: Path) -> dict[str, Any]:
+def _stage2_3_real_composition_gate(evidence_dir: Path, stage2_2_passed: bool) -> dict[str, Any]:
     evidence_path = evidence_dir / STAGE2_3_REAL_COMPOSITION_EVIDENCE
     gate: dict[str, Any] = {
         "name": "stage2_3_real_checkpoint_topk8_composition",
@@ -1836,12 +1952,15 @@ def _stage2_3_real_composition_gate(evidence_dir: Path) -> dict[str, Any]:
         and not bool(stage.get("public_grouped_matmul_used", False))
         and bool(stage.get("production_svdq_host_tiling_fail_closed", True))
     )
+    passed = bool(stage2_2_passed and historical_passed)
     gate.update(
         {
-            "status": "blocked_by_stage2_2_official_gmm2_gate" if historical_passed else "failed",
-            "passed": False,
+            "status": "passed" if passed else (
+                "blocked_by_stage2_2_official_gmm2_gate" if historical_passed else "failed"
+            ),
+            "passed": passed,
             "historical_passed_under_superseded_contract": historical_passed,
-            "blocking_gate": "stage2_2_modified_hidden_official_w4a8_gmm2",
+            "blocking_gate": None if stage2_2_passed else "stage2_2_modified_hidden_official_w4a8_gmm2",
             "summary_passed": bool(summary.get("passed")),
             "stage_passed": bool(stage.get("passed")),
             "shape": shape,
@@ -1864,8 +1983,8 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
     sources = _read_sources(repo_root)
     source_proof = _source_proof(sources)
     host_tiling_source = _production_host_tiling_source(sources)
-    stage2_2_gate = _stage2_2_official_gmm2_gate()
-    stage2_3_gate = _stage2_3_real_composition_gate(evidence_dir)
+    stage2_2_gate = _stage2_2_official_gmm2_gate(evidence_dir)
+    stage2_3_gate = _stage2_3_real_composition_gate(evidence_dir, bool(stage2_2_gate["passed"]))
     manifest = {
         "schema_version": 1,
         "operator": "DispatchFFNCombineW4A8SVDQ",
@@ -2152,10 +2271,9 @@ def build_manifest(repo_root: Path = REPO_ROOT, evidence_dir: Path = DEFAULT_EVI
             "host_tiling_must_remain_fail_closed": True,
             "production_enable_allowed": False,
             "reason": (
-                "Stage 2.2 modified-hidden official W4A8 GMM2 is fail/in progress under the binding "
-                "official-path appendix, so Stage 2.3 and later evidence is historical only. Production "
-                "tiling remains blocked until Stage 2.2 Gate A/B/C, later same-routing composition, fused "
-                "production execution, and four-NPU target-model validation all pass."
+                "Production tiling remains blocked until Stage 2.2 official GMM2 Gate A/B/C, Stage 2.3 "
+                "same-routing composition, fused production execution, and four-NPU target-model validation "
+                "all pass. Passing isolated gates does not enable the production host tiling."
             ),
             "remaining_execution_requirements": {
                 "dispatch_routing_execution_enabled": source_proof["kernel_dispatch_routing_execution_enabled"],

@@ -4,13 +4,58 @@
 |---|---|---|
 | Stage 2.0 seven-output mixed epilogue debug ABI | PASS | Accepted prior Stage 2 evidence. |
 | Stage 2.1 canonical hidden INT8 / packed INT4 boundary | PASS | Packed hidden and hidden scale read back exactly in Stage 2.2 diagnostics. |
-| Stage 2.2 modified-hidden official W4A8 GMM2 | FAIL / IN PROGRESS | Binding appendix `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` supersedes later pass claims; Gate B raw official GMM2 output and Gate C post-dequant reference are not accepted. |
-| Stage 2.3 and later | BLOCKED | Blocked until Stage 2.2 proves the official GMM2 AIC raw output, C2V handoff, BlockEpilogue2/CombineV2 post-dequant output, and strict real-checkpoint reference match. |
+| Stage 2.2 modified-hidden official W4A8 GMM2 | PASS | Dedicated Stage 2.2 evidence now satisfies the appendix Gate A/B/C fields: official lifecycle, nonzero/reference-matched int32 accumulator Gate B, C2V, post-dequant Gate C, and row identity. |
+| Stage 2.3 same-routing and final-combine isolated gates | PASS | Stage 2.3 top-k 8 fixed-index evidence is accepted only after the Stage 2.2 appendix gate passes. |
+| Stage 2.4 and later | IN PROGRESS | Production fused-op integration and four-NPU end-to-end validation remain open. |
 | Production `DispatchFFNCombineW4A8SVDQ` | FAIL-CLOSED | No host tiling enablement. |
 
-## Stage 2.2 Official-Path Appendix Supersession - 2026-06-27
+## Stage 2.2 Official-Path Gate Reconciled With Evidence - 2026-06-27
 
-This is the latest authoritative handoff. The new binding appendix
+This is the latest authoritative handoff. The appendix
+`svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` remains binding for acceptance criteria:
+Stage 2.2 cannot pass from source inspection, final-output-only summaries, public grouped matmul experiments, scalar
+substitutes, or tolerance relaxation. The current dedicated Stage 2.2 real-device evidence does satisfy those
+criteria, so the machine admission manifest now consumes it directly instead of hard-coding Stage 2.2 as failed.
+
+Evidence consumed:
+
+- Stage 2.2 dedicated summary:
+  `/root/workspace/lza/svdq_clean_evidence/phase_stage2_gmm2_trunc13_reference_true_top1_expert0.json`
+- Stage 2.3 top-k 8 final-combine summary:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_real_composition_topk8_finalcombine_fixedidx_experts0_7.json`
+- Updated production admission manifest:
+  `/root/workspace/lza/svdq_clean_evidence/stage2/phase_stage2_4_production_admission_manifest.json`
+
+Stage 2.2 accepted fields:
+
+- `official_gmm2_entry_reached=true`
+- `official_gmm2_loop_count=8`
+- `official_gmm2_active_tile_count=8`
+- `official_gmm2_loop_stats_valid=true`
+- `official_gmm2_active_tile_count_nonzero=true`
+- `official_gmm2_aic_raw_output_finite=true`
+- `official_gmm2_aic_raw_output_nonzero=true`
+- `official_gmm2_aic_reference_passed=true`
+- `official_gmm2_accumulator_int32_reference_passed=true`
+- `official_gmm2_c2v_handoff_verified=true`
+- `official_gmm2_post_dequant_finite=true`
+- `official_gmm2_post_dequant_nonzero=true`
+- `official_gmm2_post_dequant_reference_passed=true`
+- `official_gmm2_numerical_gate_passed=true`
+- Gate A row identity, packed hidden, post-override hidden readback, hidden scale, and padded-row checks pass.
+- Public grouped matmul is not used, and production SVDQ host tiling remains fail-closed.
+
+Machine-checkable guardrail update:
+
+- `tools/svdq_kernel_contract_manifest.py` now reads the dedicated Stage 2.2 evidence file and fails closed if the
+  file is missing, invalid, or lacks any required appendix status field.
+- Stage 2.3 evidence is accepted only when both the Stage 2.2 official-GMM2 gate and Stage 2.3 same-routing/final
+  combine gate pass.
+- Production enablement still remains `false`; passing isolated gates does not enable host tiling or four-NPU service.
+
+## Historical: Stage 2.2 Official-Path Appendix Supersession - 2026-06-27
+
+Historical section superseded by the evidence-backed manifest parser on 2026-06-27. The new binding appendix
 `svdq_qwen35_moe_clean_implementation_stage2_appendix_gmm2_official_path.md` was read and applied as a higher-priority
 constraint. It restores Stage 2.2 to `FAIL / IN PROGRESS` and blocks Stage 2.3+, regardless of later historical
 composition/final-combine summaries, until the official W4A8 GMM2 lifecycle gate passes with explicit Gate A/B/C

@@ -2839,11 +2839,11 @@ def test_svdq_kernel_contract_manifest_documents_workspace_sync_and_stage_map(tm
     assert loaded["production_admission"]["host_tiling_must_remain_fail_closed"]
     assert not loaded["production_admission"]["production_enable_allowed"]
     assert "stage2_2_official_gmm2_gate" in loaded["production_admission"]
-    assert not loaded["production_admission"]["stage2_2_official_gmm2_gate_passed"]
-    assert loaded["production_admission"]["stage2_2_official_gmm2_gate"]["status"] == "fail_in_progress"
-    assert loaded["production_admission"]["stage2_2_official_gmm2_gate"]["stage2_3_and_later_blocked"]
+    assert loaded["production_admission"]["stage2_2_official_gmm2_gate_passed"]
+    assert loaded["production_admission"]["stage2_2_official_gmm2_gate"]["status"] == "passed"
+    assert not loaded["production_admission"]["stage2_2_official_gmm2_gate"]["stage2_3_and_later_blocked"]
     assert "stage2_3_real_checkpoint_composition_gate" in loaded["production_admission"]
-    assert not loaded["production_admission"]["stage2_3_isolated_gate_passed"]
+    assert loaded["production_admission"]["stage2_3_isolated_gate_passed"]
     assert loaded["production_admission"]["remaining_execution_requirements"] == {
         "dispatch_routing_execution_enabled": False,
         "residual_hidden_quant_execution_enabled": False,
@@ -3276,6 +3276,182 @@ def test_svdq_kernel_contract_manifest_keeps_stage2_3_evidence_blocked_by_gmm2_g
     assert gate["blocking_gate"] == "stage2_2_modified_hidden_official_w4a8_gmm2"
     assert not manifest["production_admission"]["stage2_2_official_gmm2_gate_passed"]
     assert not manifest["production_admission"]["stage2_3_isolated_gate_passed"]
+    assert not manifest["production_admission"]["production_enable_allowed"]
+    assert manifest["production_admission"]["host_tiling_must_remain_fail_closed"]
+
+
+def test_svdq_kernel_contract_manifest_accepts_stage2_2_and_stage2_3_evidence(tmp_path):
+    from tools.svdq_kernel_contract_manifest import build_manifest
+
+    zero_error = {
+        "actual_finite": True,
+        "expected_finite": True,
+        "diff_finite": True,
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+    }
+    stage2_2_path = tmp_path / "phase_stage2_gmm2_trunc13_reference_true_top1_expert0.json"
+    stage2_2_path.write_text(
+        json.dumps(
+            {
+                "passed": True,
+                "skipped": False,
+                "stage": {
+                    "passed": True,
+                    "real_checkpoint_validation": True,
+                    "public_grouped_matmul_used": False,
+                    "production_svdq_host_tiling_fail_closed": True,
+                    "shape": {
+                        "top_k": 1,
+                        "active_rows": 16,
+                        "hidden_size": 2048,
+                        "intermediate_size": 512,
+                    },
+                    "routing_identity": {
+                        "expert_token_total_matches_active_rows": True,
+                        "reference_group_counts_match_expert_token_nums": True,
+                        "manifest_scope": {
+                            "same_source_token_payload_across_topk_slots_proven": True,
+                        },
+                        "tp_ep_mapping": {
+                            "local_expert_id_equals_global_expert_id": True,
+                        },
+                    },
+                    "official_lifecycle_debug_contract": {
+                        "mode": "official DispatchAndCombine lifecycle with external hidden/scale overlay",
+                        "gmm2_only_from_packed": False,
+                        "forbidden_paths": {
+                            "custom_v2c_or_c2v_signal_substitute_used": False,
+                        },
+                    },
+                    "checks": {
+                        "official_gmm2_entry_reached": True,
+                        "official_gmm2_loop_count": 8,
+                        "official_gmm2_active_tile_count": 8,
+                        "official_gmm2_loop_stats_valid": True,
+                        "official_gmm2_active_tile_count_nonzero": True,
+                        "official_gmm2_aic_raw_output_finite": True,
+                        "official_gmm2_aic_raw_output_nonzero": True,
+                        "official_gmm2_aic_reference_passed": True,
+                        "official_gmm2_accumulator_int32_reference_passed": True,
+                        "official_gmm2_c2v_handoff_verified": True,
+                        "official_gmm2_post_dequant_finite": True,
+                        "official_gmm2_post_dequant_nonzero": True,
+                        "official_gmm2_post_dequant_reference_passed": True,
+                        "official_gmm2_numerical_gate_passed": True,
+                        "gate_a_input_boundary_passed": True,
+                        "hidden_packed_exact": True,
+                        "hidden_packed_mismatch_count_zero": True,
+                        "hidden_post_override_readback_exact": True,
+                        "hidden_scale_post_override_readback_exact": True,
+                        "hidden_scale_finite": True,
+                        "hidden_scale_nonzero": True,
+                        "canonical_hidden_finite": True,
+                        "canonical_hidden_nonzero": True,
+                    },
+                    "gmm2": {
+                        "int32_accumulator_readback_reference": {
+                            "passed": True,
+                            "actual_nonzero": True,
+                        },
+                        "actual_d2_post_dequant_reconstruction": {
+                            "passed_with_gate_tolerance": True,
+                        },
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    stage2_3_path = tmp_path / "stage2/phase_stage2_real_composition_topk8_finalcombine_fixedidx_experts0_7.json"
+    stage2_3_path.parent.mkdir(parents=True)
+    stage2_3_path.write_text(
+        json.dumps(
+            {
+                "passed": True,
+                "stage": {
+                    "passed": True,
+                    "public_grouped_matmul_used": False,
+                    "production_svdq_host_tiling_fail_closed": True,
+                    "shape": {
+                        "num_tokens": 4,
+                        "top_k": 8,
+                        "active_rows": 32,
+                        "hidden_size": 2048,
+                        "intermediate_size": 512,
+                    },
+                    "rank_metadata": {
+                        "gate_rank": 64,
+                        "up_rank": 64,
+                        "down_rank": 64,
+                        "gate_rank_offset": 0,
+                        "up_rank_offset": 64,
+                    },
+                    "stage_passed": {
+                        "first_mixed_epilogue": True,
+                        "official_gmm2_from_svdq_hidden": True,
+                        "gate_mixed": True,
+                        "up_mixed": True,
+                        "hidden_bf16": True,
+                        "hidden_scale": True,
+                        "hidden_q": True,
+                        "down_mixed": True,
+                        "out_bf16": True,
+                        "final_combine_output": True,
+                        "same_routing_identity": True,
+                    },
+                    "stage2_3_same_routing_manifest": {
+                        "checks": {
+                            "expert_token_total_matches_active_rows": True,
+                            "same_canonical_hidden_feeds_svdq_down_and_w4a8_hidden_quant": True,
+                            "official_gmm2_output_feeds_final_mixed_residual_down": True,
+                            "final_mixed_output_is_final_combine_input": True,
+                            "final_combine_consumes_mixed_down_peer_output": True,
+                            "final_combine_output_validated": True,
+                            "same_source_token_payload_across_topk_slots_proven": True,
+                        }
+                    },
+                    "official_gmm2_from_svdq_hidden": {
+                        "checks": {
+                            "official_gmm2_entry_reached": True,
+                            "gate_a_input_boundary_passed": True,
+                            "official_gmm2_post_dequant_finite": True,
+                            "official_gmm2_post_dequant_nonzero": True,
+                            "official_gmm2_post_dequant_reference_passed": True,
+                            "official_gmm2_numerical_gate_passed": True,
+                        },
+                        "unfused_reference": {"error": zero_error},
+                    },
+                    "stage_errors": {
+                        "down_mixed": zero_error,
+                        "out_bf16": zero_error,
+                        "final_combine_output": zero_error,
+                    },
+                    "real_final_combine": {
+                        "official_surface": "torch_npu.npu_moe_token_unpermute",
+                        "reference": "build_svdq_final_combine_reference",
+                        "index_semantics": "official_token_major_output_slots_to_permuted_input_rows",
+                        "passed": True,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = build_manifest(REPO_ROOT, evidence_dir=tmp_path)
+    stage2_2 = manifest["production_admission"]["stage2_2_official_gmm2_gate"]
+    stage2_3 = manifest["production_admission"]["stage2_3_real_checkpoint_composition_gate"]
+
+    assert stage2_2["status"] == "passed"
+    assert stage2_2["passed"]
+    assert not stage2_2["stage2_3_and_later_blocked"]
+    assert stage2_3["status"] == "passed"
+    assert stage2_3["passed"]
+    assert stage2_3["blocking_gate"] is None
+    assert manifest["production_admission"]["stage2_2_official_gmm2_gate_passed"]
+    assert manifest["production_admission"]["stage2_3_isolated_gate_passed"]
     assert not manifest["production_admission"]["production_enable_allowed"]
     assert manifest["production_admission"]["host_tiling_must_remain_fail_closed"]
 
